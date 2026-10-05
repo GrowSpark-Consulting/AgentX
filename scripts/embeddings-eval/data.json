@@ -1,0 +1,32 @@
+{
+  "note": "PLACEHOLDER facts for testing only. Replace with Raja's real real-estate FAQ lines and real Tanglish chats when he sends them.",
+  "faqs": [
+    { "id": 1, "text": "Green Meadows, Velachery: 2BHK apartments from ₹72 lakhs to ₹85 lakhs." },
+    { "id": 2, "text": "Green Meadows, Velachery: 3BHK apartments from ₹1.05 crore to ₹1.30 crore." },
+    { "id": 3, "text": "Site visits are available Monday to Saturday, 10 am to 6 pm. Sunday is closed." },
+    { "id": 4, "text": "Amenities: swimming pool, gym, children's play area, 24x7 security and power backup." },
+    { "id": 5, "text": "Home loans are available through partner banks including SBI and HDFC." },
+    { "id": 6, "text": "Possession of Green Meadows is planned for December 2027." },
+    { "id": 7, "text": "Palm Heights, Medavakkam: 1BHK apartments from ₹38 lakhs to ₹45 lakhs." },
+    { "id": 8, "text": "One covered car parking slot is included with every apartment." },
+    { "id": 9, "text": "Booking amount is ₹2 lakhs, refundable within 15 days of booking." },
+    { "id": 10, "text": "The project is RERA approved. The RERA registration number is printed on the brochure." }
+  ],
+  "queries": [
+    { "id": 1, "lang": "en", "text": "What is the price of a 2BHK in Velachery?", "expectedFaqId": 1 },
+    { "id": 2, "lang": "en", "text": "Do you have a swimming pool?", "expectedFaqId": 4 },
+    { "id": 3, "lang": "en", "text": "Can I get a home loan?", "expectedFaqId": 5 },
+    { "id": 4, "lang": "ta-en", "text": "2BHK flat Velachery la evlo price?", "expectedFaqId": 1 },
+    { "id": 5, "lang": "ta-en", "text": "3BHK venum, budget 1.2 crore, Velachery side irukka?", "expectedFaqId": 2 },
+    { "id": 6, "lang": "ta-en", "text": "Site visit eppo varalam? Sunday open ah?", "expectedFaqId": 3 },
+    { "id": 7, "lang": "ta-en", "text": "Swimming pool, gym ellam irukka?", "expectedFaqId": 4 },
+    { "id": 8, "lang": "ta-en", "text": "Loan kedaikuma, SBI HDFC la?", "expectedFaqId": 5 },
+    { "id": 9, "lang": "ta-en", "text": "Possession eppo kodupeenga?", "expectedFaqId": 6 },
+    { "id": 10, "lang": "ta-en", "text": "Medavakkam la 1BHK evlo?", "expectedFaqId": 7 },
+    { "id": 11, "lang": "ta-en", "text": "Car parking included ah?", "expectedFaqId": 8 },
+    { "id": 12, "lang": "ta", "text": "வேளச்சேரியில் 2BHK வீட்டின் விலை என்ன?", "expectedFaqId": 1 },
+    { "id": 13, "lang": "ta", "text": "வீட்டை நேரில் பார்க்க எப்போது வரலாம்?", "expectedFaqId": 3 },
+    { "id": 14, "lang": "ta", "text": "வீட்டுக் கடன் கிடைக்குமா?", "expectedFaqId": 5 },
+    { "id": 15, "lang": "ta", "text": "முன்பதிவு தொகை எவ்வளவு? திரும்பப் பெற முடியுமா?", "expectedFaqId": 9 }
+  ]
+}
