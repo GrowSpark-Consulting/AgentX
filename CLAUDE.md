@@ -30,11 +30,10 @@ frontend: app/  components/{ui,dashboard,onboarding}  features/<screen>  fixture
 packs/ · tests/conversations/ · supabase/migrations/ · docs/frontend-architecture-map.md
 
 ## Commands
-pnpm dev · pnpm inngest:dev · pnpm test · pnpm typecheck · pnpm lint · pnpm build
-pnpm db:start · pnpm db:reset · pnpm db:test · pnpm db:status · pnpm db:stop
 pnpm dev · pnpm inngest:dev · pnpm test · pnpm typecheck · pnpm lint · pnpm build · pnpm test:e2e
 (root scripts run every workspace; one package: pnpm --filter @pakka/frontend <script>)
-pnpm db:start · pnpm db:reset · pnpm db:status · pnpm db:stop
+pnpm db:start · pnpm db:reset · pnpm db:test · pnpm db:status · pnpm db:stop
+Local env file: frontend/.env.local (Next.js does not read the repo root).
 Coming later: pnpm test:conversations (M3) · pnpm packs:migrate (M7)
 
 ## Before you finish a task
