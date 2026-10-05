@@ -687,7 +687,7 @@ create policy tenant_isolation on consent_logs
   using (is_member(tenant_id)) with check (is_member(tenant_id));
 ```
 
-For WhatsApp, `channels` keeps only the generic row; `channels.credentials_enc` stays null and all credentials live in `whatsapp_connections`.
+For WhatsApp, `channels` keeps only the generic row; all credentials live in `whatsapp_connections`. (Repo note: migration 0003 drops `channels.credentials_enc`, so secrets have one home. Future channel types get their own `*_connections` table.)
 
 #### Embedded Signup flow (also used by assisted)
 
