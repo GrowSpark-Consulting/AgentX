@@ -19,15 +19,19 @@ Tailwind + shadcn/ui · Zod · Vitest
 - Never write industry names in code; branch on pack capabilities.
 - Never commit secrets. Mask phone numbers in logs.
 - Migrations are append-only in supabase/migrations.
-- Channels are adapters (src/channels), industries are packs (packs/*.json), features are rows in `features`.
-- Read env through `serverEnv()` in src/lib/env.ts; add new variables to its schema and to .env.example.
+- Channels are adapters (backend/src/channels), industries are packs (packs/*.json), features are rows in `features`.
+- Read env through `serverEnv()` in backend/src/lib/env.ts (import `@pakka/backend/lib/env`); add new variables to its schema and to .env.example.
 
 ## Where things live
-src/channels/whatsapp(+/connect)  src/agent  src/booking  src/notify  src/billing  src/consent
-src/features  src/kb  src/inngest  src/lib  src/types · packs/ · tests/conversations/ · supabase/migrations/
+pnpm monorepo. frontend/ is the one Next.js app (routes incl. app/api, UI, fixtures, Playwright);
+backend/ is @pakka/backend (server modules the API routes import); packages/types, packages/config.
+backend/src: channels/whatsapp(+/connect)  agent  booking  notify  billing  consent  features  kb  inngest  lib
+frontend: app/  components/{ui,dashboard,onboarding}  features/<screen>  fixtures/  styles/  tests/
+packs/ · tests/conversations/ · supabase/migrations/ · docs/frontend-architecture-map.md
 
 ## Commands
-pnpm dev · pnpm inngest:dev · pnpm test · pnpm typecheck · pnpm lint · pnpm build
+pnpm dev · pnpm inngest:dev · pnpm test · pnpm typecheck · pnpm lint · pnpm build · pnpm test:e2e
+(root scripts run every workspace; one package: pnpm --filter @pakka/frontend <script>)
 pnpm db:start · pnpm db:reset · pnpm db:status · pnpm db:stop
 Coming later: pnpm test:conversations (M3) · pnpm packs:migrate (M7)
 

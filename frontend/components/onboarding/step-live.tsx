@@ -1,0 +1,59 @@
+"use client";
+
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { ROUTES, TRIAL_CODE } from "@/features/onboarding/data";
+import { bizLabel, industryKey, type OnboardingState } from "@/features/onboarding/state";
+
+export function StepLive({ s }: { s: OnboardingState }) {
+  const K = industryKey(s);
+  const dashHref =
+    ROUTES.dashboard + (K !== "fix" && K !== "re" ? "?industry=" + K : "");
+  const numStatus =
+    s.wa === "live"
+      ? "Live"
+      : s.wa === "pending"
+        ? "Waiting for Meta approval"
+        : "Not connected yet";
+
+  return (
+    <>
+      <div className="bg-primary text-white p-[clamp(28px,5vw,48px)] flex flex-col gap-4">
+        <span className="text-xs font-semibold tracking-[.1em] uppercase">
+          {bizLabel(s)}
+        </span>
+        <h1 className="m-0 text-[clamp(48px,8vw,88px)] leading-[.95] tracking-[-0.035em]">
+          You’re live.
+        </h1>
+        <p className="m-0 text-[17px] max-w-[480px]">
+          Maya is answering WhatsApp enquiries for you right now, day and night.
+        </p>
+      </div>
+
+      <div className="flex flex-col border-t-2 border-foreground">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-3 border-b border-divider text-[15px]">
+          <span>Test number · code {TRIAL_CODE}</span>
+          <strong>Live</strong>
+        </div>
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-3 border-b border-divider text-[15px]">
+          <span>Your number +91 {s.phone}</span>
+          <strong className={cn(s.wa === "live" ? "text-foreground" : "text-brand-700")}>
+            {numStatus}
+          </strong>
+        </div>
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-3 border-b border-divider text-[15px]">
+          <span>Trial</span>
+          <strong>7 days · 150 credits</strong>
+        </div>
+      </div>
+
+      <Button
+        asChild
+        variant="primary"
+        className="self-start text-[17px] px-[22px] py-3.5 min-w-[260px] justify-start"
+      >
+        <a href={dashHref}>Go to my dashboard</a>
+      </Button>
+    </>
+  );
+}

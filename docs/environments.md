@@ -20,9 +20,9 @@ Nobody points local code at staging or production data.
 ### How the `api.*` host works
 
 Meta and Razorpay call short URLs such as `https://api.pakkaagent.in/webhooks/whatsapp`. A host
-rewrite in `next.config.ts` maps every path on an `api.*` host to `/api/<path>`, so that request is
-served by `src/app/api/webhooks/whatsapp/route.ts`. The rewrite matches `api.pakkaagent.in`,
-`api-staging.pakkaagent.in` and `api.localhost`; `tests/api-host-rewrite.test.ts` pins that list.
+rewrite in `frontend/next.config.ts` maps every path on an `api.*` host to `/api/<path>`, so that request is
+served by `frontend/app/api/webhooks/whatsapp/route.ts`. The rewrite matches `api.pakkaagent.in`,
+`api-staging.pakkaagent.in` and `api.localhost`; `frontend/tests/api-host-rewrite.test.ts` pins that list.
 
 ## GitHub
 
@@ -87,8 +87,9 @@ gets its own project on the Pro plan (daily backups, no pausing) before beta.
 One project, `pakka-agent`, in the team's Vercel account (Pro: Hobby is for non-commercial use).
 
 1. **Add New → Project** → import `GrowSpark-Consulting/AgentX` (install the Vercel GitHub app
-   on the org if asked). Framework preset Next.js; root directory `/`; build and install commands
-   default.
+   on the org if asked). Framework preset Next.js; **root directory `frontend`** (the Next.js app in the pnpm
+   monorepo; keep "Include files outside the root directory" on so `backend/` and `packages/`
+   are available). Build and install commands default.
 2. Settings → Environment Variables: add `ENABLE_EXPERIMENTAL_COREPACK=1` to all environments so
    Vercel uses the pnpm version pinned in `packageManager`.
 3. Settings → Git → **Production Branch: `production`**. Pushes to `main` then build as Preview
@@ -100,7 +101,7 @@ One project, `pakka-agent`, in the team's Vercel account (Pro: Hobby is for non-
    - **Preview**, scoped to branch `main`: staging values
    - **Production**: production values
    - Do not set `INNGEST_DEV` on Vercel.
-6. Functions run in `bom1` (Mumbai, set in `vercel.json`) next to the Supabase database.
+6. Functions run in `bom1` (Mumbai, set in `frontend/vercel.json`) next to the Supabase database.
 
 Check a deploy: `https://api-staging.pakkaagent.in/health` returns
 `{"ok":true,"env":"preview","commit":"<sha>"}`.

@@ -1,0 +1,239 @@
+"use client";
+
+import * as React from "react";
+import Link from "next/link";
+
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { CHECKS, POPUP_STEPS, ROUTES, STEP_LABELS, TOTAL_STEPS, type CheckKind } from "@/features/onboarding/data";
+import {
+  initialState,
+  plannedFailure,
+  waitHiIndex,
+  type OnboardingState,
+  type Patch,
+} from "@/features/onboarding/state";
+import { StepVerifyPhone } from "@/components/onboarding/step-verify-phone";
+import { StepBusiness } from "@/components/onboarding/step-business";
+import { StepTeach } from "@/components/onboarding/step-teach";
+import { StepTry } from "@/components/onboarding/step-try";
+import { StepWhatsApp } from "@/components/onboarding/step-whatsapp";
+import { MetaPopup } from "@/components/onboarding/meta-popup";
+import { StepTeam } from "@/components/onboarding/step-team";
+import { StepLive } from "@/components/onboarding/step-live";
+
+const IMPORT_TICK_MS = 550;
+const CHECK_TICK_MS = 650;
+
+export function OnboardingFlow() {
+  const [s, setRaw] = React.useState<OnboardingState>(initialState);
+
+  /** Class-style setState: shallow-merge a patch or an updater's result. */
+  const set = React.useCallback((patch: Patch) => {
+    setRaw((prev) => ({
+      ...prev,
+      ...(typeof patch === "function" ? patch(prev) : patch),
+    }));
+  }, []);
+
+  /* ── Website import: advances one line every 550ms, four lines total ── */
+  React.useEffect(() => {
+    if (s.imp !== "run") return;
+    const t = window.setTimeout(() => {
+      set((x) => {
+        const n = x.impStep + 1;
+        return n >= 4 ? { imp: "done", impStep: 4 } : { impStep: n };
+      });
+    }, IMPORT_TICK_MS);
+    return () => window.clearTimeout(t);
+  }, [s.imp, s.impStep, set]);
+
+  const startImport = React.useCallback(() => {
+    set((x) => (x.imp !== "idle" ? {} : { imp: "run", impStep: 0 }));
+  }, [set]);
+
+  /* ── Connection checks: one row every 650ms; may fail or wait for “hi” ── */
+  React.useEffect(() => {
+    if (s.wa !== "checking" || s.chkFail >= 0 || s.waitHi) return;
+    const t = window.setTimeout(() => {
+      set((x) => {
+        if (x.wa !== "checking") return {};
+        const list = CHECKS[x.chkKind];
+        const n = x.chkStep;
+        if (n === x.chkPlannedFail) return { chkFail: n };
+        if (n === waitHiIndex(x.chkKind)) return { waitHi: true };
+        if (n + 1 >= list.length) return { chkStep: list.length, wa: "live" };
+        return { chkStep: n + 1 };
+      });
+    }, CHECK_TICK_MS);
+    return () => window.clearTimeout(t);
+  }, [s.wa, s.chkStep, s.chkFail, s.waitHi, s.chkRun, set]);
+
+  const startChecks = React.useCallback(
+    (kind: CheckKind) => {
+      set((x) => ({
+        wa: "checking",
+        chkKind: kind,
+        chkStep: 0,
+        chkFail: -1,
+        waitHi: false,
+        chkPlannedFail: plannedFailure(kind, x),
+        chkRun: x.chkRun + 1,
+      }));
+    },
+    [set]
+  );
+
+  /* ── Meta pop-up ── */
+  const openPopup = () => set({ popup: true, popStep: 0, cancelStep: null });
+  const nextPopup = () => {
+    if (s.popStep < POPUP_STEPS.length - 1) {
+      set({ popStep: s.popStep + 1 });
+    } else {
+      set({ popup: false });
+      startChecks("meta");
+    }
+  };
+  const cancelPopup = () =>
+    set((x) => ({ popup: false, cancelStep: POPUP_STEPS[x.popStep].title }));
+
+  /* ── Wizard navigation ── */
+  const st = s.step;
+  const inSteps = st < TOTAL_STEPS;
+
+  const nextOff =
+    (st === 0 && s.otpSent && s.otp.length < 6) ||
+    (st === 1 && !s.biz.trim()) ||
+    (st === 2 && s.imp !== "done");
+
+  const nextLabel =
+    st === 0
+      ? s.otpSent
+        ? "Verify and continue"
+        : "Send code on WhatsApp"
+      : st === 2
+        ? "Looks good"
+        : st === 3
+          ? "I’ve tried it"
+          : st === 4
+            ? s.wa === "idle"
+              ? "Do this later"
+              : s.wa === "pending"
+                ? "Continue while we wait"
+                : "Continue"
+            : st === 5
+              ? "Go live"
+              : "Continue";
+
+  const next = () => {
+    if (st === 0 && !s.otpSent) {
+      set({ otpSent: true });
+      return;
+    }
+    set({ step: st + 1 });
+    window.scrollTo?.(0, 0);
+  };
+  const back = () => set({ step: st - 1 });
+  const skip = () => set({ step: st + 1 });
+
+  return (
+    <div
+      data-screen-label="02 Onboarding"
+      className="min-h-screen flex flex-col text-foreground font-sans"
+    >
+      {/* ── Header ── */}
+      <header className="flex items-center gap-4 py-3.5 px-[clamp(16px,4vw,40px)] border-b-2 border-divider">
+        <Link
+          href={ROUTES.landing}
+          className="flex items-center gap-2.5 text-foreground no-underline mr-auto hover:text-foreground"
+        >
+          <span aria-hidden className="block size-[18px] bg-primary" />
+          <span className="font-extrabold text-lg">Pakka</span>
+        </Link>
+        {inSteps && (
+          <span className="text-[13px] font-semibold">
+            Step {st + 1} of {TOTAL_STEPS}
+          </span>
+        )}
+      </header>
+
+      {/* ── Progress ── */}
+      {inSteps && (
+        <ol
+          aria-label="Onboarding progress"
+          className="m-0 list-none grid grid-cols-6 gap-[3px] pt-4 px-[clamp(16px,4vw,40px)] pb-0"
+        >
+          {STEP_LABELS.map((label, i) => (
+            <li
+              key={label}
+              aria-current={i === st ? "step" : undefined}
+              className="flex flex-col gap-1.5 min-w-0"
+            >
+              <span
+                className={cn("block h-1.5", i <= st ? "bg-primary" : "bg-neutral-300")}
+              />
+              <span
+                className={cn(
+                  "text-[11px] whitespace-nowrap overflow-hidden text-ellipsis",
+                  i === st ? "font-extrabold text-foreground" : "font-normal text-neutral-700"
+                )}
+              >
+                {label}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {/* ── Body ── */}
+      <main className="flex-1 py-[clamp(28px,5vw,56px)] px-[clamp(16px,4vw,40px)] flex flex-col">
+        <div className="max-w-[680px] w-full flex flex-col gap-6">
+          {st === 0 && <StepVerifyPhone s={s} set={set} />}
+          {st === 1 && <StepBusiness s={s} set={set} />}
+          {st === 2 && <StepTeach s={s} set={set} onImport={startImport} />}
+          {st === 3 && <StepTry s={s} />}
+          {st === 4 && (
+            <StepWhatsApp
+              s={s}
+              set={set}
+              onOpenPopup={openPopup}
+              onRunChecks={startChecks}
+            />
+          )}
+          {st === 5 && <StepTeam s={s} set={set} />}
+          {st === 6 && <StepLive s={s} />}
+
+          <MetaPopup s={s} onNext={nextPopup} onCancel={cancelPopup} />
+
+          {/* ── Footer nav ── */}
+          {inSteps && (
+            <div className="flex gap-2.5 items-center pt-4 border-t-2 border-divider flex-wrap">
+              <Button
+                variant="primary"
+                onClick={next}
+                disabled={nextOff}
+                className="text-base px-[18px] py-3 min-w-[200px] justify-start"
+              >
+                {nextLabel}
+              </Button>
+              {st > 0 && (
+                <Button
+                  variant="secondary"
+                  onClick={back}
+                  className="text-base px-[18px] py-3"
+                >
+                  Back
+                </Button>
+              )}
+              {st === 3 && (
+                <Button variant="ghost" onClick={skip}>
+                  Skip for now
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}

@@ -1,7 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
+# Patterns below are unanchored so they match in every workspace (frontend/, backend/, packages/*).
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -11,11 +12,15 @@
 !.yarn/versions
 
 # testing
-/coverage
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
 /build
