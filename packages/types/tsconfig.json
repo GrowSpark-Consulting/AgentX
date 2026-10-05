@@ -1,0 +1,6 @@
+{
+  "extends": "@pakka/config/tsconfig.base.json",
+  "include": [
+    "src"
+  ]
+}
