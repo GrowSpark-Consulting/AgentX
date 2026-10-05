@@ -1,0 +1,8 @@
+allowBuilds:
+  sharp: false
+  unrs-resolver: false
+  # CLIs below download their native binary in postinstall
+  supabase: true
+  inngest-cli: true
+  # pulled in by inngest's telemetry deps; its postinstall is only a version check
+  protobufjs: false
