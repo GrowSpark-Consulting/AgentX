@@ -1,4 +1,4 @@
--- Tenant isolation and write lockdown for 0001_init. Run: pnpm db:test
+-- Tenant isolation and write lockdown for the 0001_init tables. Run: pnpm db:test
 begin;
 create extension if not exists pgtap with schema extensions;
 select plan(11);
@@ -57,9 +57,11 @@ select throws_ok(
   '42501', null,
   'a member cannot grant themselves credits');
 
-update public.tenants set plan_key = 'pro', status = 'active';
-select is((select plan_key from public.tenants
-            where id = '10000000-0000-0000-0000-00000000000a'), 'trial',
+-- 0002 grants members UPDATE on a few tenant columns only; plan and status are not among them.
+select throws_ok(
+  $$update public.tenants set plan_key = 'pro', status = 'active'
+    where id = '10000000-0000-0000-0000-00000000000a'$$,
+  '42501', null,
   'a member cannot change their own plan');
 
 select is((select count(*) from public.plans), 1::bigint,
