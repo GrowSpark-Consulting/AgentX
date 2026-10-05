@@ -49,6 +49,7 @@ password manager's `local` folder.
 | `pnpm lint` · `pnpm typecheck` · `pnpm test` | What CI runs (plus `pnpm build`) |
 | `pnpm db:start` · `pnpm db:stop` · `pnpm db:status` | Local Supabase stack |
 | `pnpm db:reset` | Recreate the local database from `supabase/migrations` and the seed |
+| `pnpm db:test` | pgTAP database tests in `supabase/tests` (tenant isolation, RLS everywhere) |
 
 ## Workflow
 

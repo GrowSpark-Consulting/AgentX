@@ -28,7 +28,7 @@ src/features  src/kb  src/inngest  src/lib  src/types · packs/ · tests/convers
 
 ## Commands
 pnpm dev · pnpm inngest:dev · pnpm test · pnpm typecheck · pnpm lint · pnpm build
-pnpm db:start · pnpm db:reset · pnpm db:status · pnpm db:stop
+pnpm db:start · pnpm db:reset · pnpm db:test · pnpm db:status · pnpm db:stop
 Coming later: pnpm test:conversations (M3) · pnpm packs:migrate (M7)
 
 ## Before you finish a task
