@@ -64,9 +64,10 @@ password manager's `local` folder.
 | `pnpm test:e2e` | Playwright smoke tests for `/onboarding` and `/dashboard` (once: `pnpm --filter @pakka/frontend exec playwright install chromium`) |
 | `pnpm db:start` · `pnpm db:stop` · `pnpm db:status` | Local Supabase stack |
 | `pnpm db:reset` | Recreate the local database from `supabase/migrations` and the seed |
+| `pnpm db:test` | pgTAP database tests in `supabase/tests` (tenant isolation, RLS everywhere) |
 
 ## Workflow
 
-Branch from `main` as `feat/<area>-<short-name>` or `fix/...`, open a pull request, get CI green and
-one review from the area's reviewer, then squash-merge. `main` is protected and deploys to staging.
-Migrations are append-only; schema changes need review from all three developers.
+Branch from `main` as `feat/<area>-<short-name>` or `fix/...`, open a pull request, wait for CI to go
+green, then squash-merge. Reviews are welcome but not required; tag the area's owner when you touch
+their code. `main` is protected and deploys to staging. Migrations are append-only.

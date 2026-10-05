@@ -46,3 +46,5 @@ jobs:
       # Starts Postgres and applies every file in supabase/migrations from scratch.
       - run: pnpm exec supabase db start
       - run: pnpm exec supabase db lint --level error
+      # pgTAP tests in supabase/tests: tenant isolation, RLS on every table.
+      - run: pnpm exec supabase test db

@@ -30,7 +30,7 @@ Repo: https://github.com/GrowSpark-Consulting/AgentX (package name `pakka-agent`
 
 `main` protection:
 
-- Pull request required, 1 approving review, stale approvals dismissed on new commits
+- Pull request required; no approval needed, CI is the gate (team decision, Oct 2026)
 - Required status checks `check` and `migrations` (jobs in `.github/workflows/ci.yml`), branch up to date
 - Linear history, no force pushes, no deletion; applies to admins too
 - Repo merges: squash only, head branches deleted after merge
