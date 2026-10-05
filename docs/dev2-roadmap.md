@@ -8,10 +8,10 @@ Reviewer for this area: Dev 3.
 
 | Module | Contract | Lives in |
 |---|---|---|
-| 4. Booking and slot engine | `findSlots`, `holdSlot`, `confirmBooking`, `rescheduleBooking`, `cancelBooking`; Google Calendar sync | `src/booking` |
-| 5. Notifications and jobs | `notify.send()` (the only way out), every Inngest function except `process-message` | `src/notify`, `src/inngest` |
-| 7. Feature flags and credits | `isEnabled`, `spendCredits` → `spend_credits()` SQL, `getBalance` | `src/features`, `src/billing` |
-| 8. Billing, trial, demo number | Razorpay subscriptions/orders/webhooks, trial grant and lifecycle, route codes | `src/billing` |
+| 4. Booking and slot engine | `findSlots`, `holdSlot`, `confirmBooking`, `rescheduleBooking`, `cancelBooking`; Google Calendar sync | `backend/src/booking` |
+| 5. Notifications and jobs | `notify.send()` (the only way out), every Inngest function except `process-message` | `backend/src/notify`, `backend/src/inngest` |
+| 7. Feature flags and credits | `isEnabled`, `spendCredits` → `spend_credits()` SQL, `getBalance` | `backend/src/features`, `backend/src/billing` |
+| 8. Billing, trial, demo number | Razorpay subscriptions/orders/webhooks, trial grant and lifecycle, route codes | `backend/src/billing` |
 | Shared | Repo, CI, environments, migrations tooling | `.github`, `supabase`, `docs/environments.md` |
 
 ## Milestones

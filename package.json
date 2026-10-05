@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint",
-    "typecheck": "next typegen && tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "dev": "pnpm --filter @pakka/frontend dev",
+    "build": "pnpm --filter @pakka/frontend build",
+    "start": "pnpm --filter @pakka/frontend start",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:watch": "pnpm -r --parallel test:watch",
+    "test:e2e": "pnpm --filter @pakka/frontend test:e2e",
     "inngest:dev": "inngest-cli dev -u http://localhost:3000/api/inngest --no-discovery",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
@@ -17,27 +18,9 @@
     "db:test": "supabase test db",
     "db:status": "supabase status"
   },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.117.2",
-    "inngest": "^4.21.1",
-    "next": "16.3.8",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "zod": "^4.6.5"
-  },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^22.20.5",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.3.8",
     "inngest-cli": "^1.45.1",
-    "supabase": "^2.119.0",
-    "tailwindcss": "^4",
-    "typescript": "^5",
-    "vite-tsconfig-paths": "^6.1.1",
-    "vitest": "^5.0.3"
+    "supabase": "^2.119.0"
   },
   "engines": {
     "node": ">=22.12"

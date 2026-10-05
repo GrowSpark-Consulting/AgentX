@@ -1,0 +1,216 @@
+/* Onboarding stylesheet: loaded only by the (onboarding) root layout. Tailwind with Preflight;
+   utilities are generated from the onboarding domain and the shared UI primitives only. */
+@import "tailwindcss" source(none);
+@import "tw-animate-css";
+@source "../components/onboarding";
+@source "../features/onboarding";
+@source "../components/ui";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Modernist design tokens (source of truth for the look), exposed both as
+   raw CSS variables and as shadcn/ui semantic variables.
+   ══════════════════════════════════════════════════════════════════════ */
+:root {
+  /* Modernist base roles */
+  --pk-bg: #f3f2f2;
+  --pk-surface: #eae9e9;
+  --pk-text: #201e1d;
+  --pk-accent: #ec3013;
+  --pk-accent-2: #e15b47;
+  --pk-divider: color-mix(in srgb, #201e1d 40%, transparent);
+
+  /* Tonal ramps — OKLCH-generated on one shared lightness scale */
+  --pk-neutral-100: #f8f4f4;
+  --pk-neutral-200: #eae7e7;
+  --pk-neutral-300: #d7d3d3;
+  --pk-neutral-400: #bab6b6;
+  --pk-neutral-500: #9b9797;
+  --pk-neutral-600: #7d7979;
+  --pk-neutral-700: #605d5d;
+  --pk-neutral-800: #444141;
+  --pk-neutral-900: #2d2b2b;
+
+  --pk-accent-100: #fff2ef;
+  --pk-accent-200: #ffe0d9;
+  --pk-accent-300: #ffc4b8;
+  --pk-accent-400: #ff9783;
+  --pk-accent-500: #ff563c;
+  --pk-accent-600: #dd2b0f;
+  --pk-accent-700: #ae1800;
+  --pk-accent-800: #7c1405;
+  --pk-accent-900: #4d170e;
+
+  --pk-accent-2-100: #fff2ef;
+  --pk-accent-2-200: #ffe0da;
+  --pk-accent-2-300: #ffc4b9;
+  --pk-accent-2-400: #ff9784;
+  --pk-accent-2-500: #ef6853;
+  --pk-accent-2-600: #c94b39;
+  --pk-accent-2-700: #9e3526;
+  --pk-accent-2-800: #71261b;
+  --pk-accent-2-900: #471d16;
+
+  /* shadcn/ui semantic variables mapped onto the Modernist roles */
+  --radius: 0rem;
+  --background: var(--pk-bg);
+  --foreground: var(--pk-text);
+  --card: var(--pk-surface);
+  --card-foreground: var(--pk-text);
+  --popover: var(--pk-surface);
+  --popover-foreground: var(--pk-text);
+  --primary: var(--pk-accent);
+  --primary-foreground: var(--pk-bg);
+  --secondary: var(--pk-surface);
+  --secondary-foreground: var(--pk-text);
+  --muted: var(--pk-surface);
+  --muted-foreground: var(--pk-neutral-700);
+  --accent: color-mix(in srgb, var(--pk-text) 7%, transparent);
+  --accent-foreground: var(--pk-text);
+  --destructive: var(--pk-accent-700);
+  --border: var(--pk-divider);
+  --input: var(--pk-divider);
+  --ring: var(--pk-accent);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Modernist roles as Tailwind colours */
+  --color-surface: var(--pk-surface);
+  --color-divider: var(--pk-divider);
+
+  --color-neutral-100: var(--pk-neutral-100);
+  --color-neutral-200: var(--pk-neutral-200);
+  --color-neutral-300: var(--pk-neutral-300);
+  --color-neutral-400: var(--pk-neutral-400);
+  --color-neutral-500: var(--pk-neutral-500);
+  --color-neutral-600: var(--pk-neutral-600);
+  --color-neutral-700: var(--pk-neutral-700);
+  --color-neutral-800: var(--pk-neutral-800);
+  --color-neutral-900: var(--pk-neutral-900);
+
+  --color-brand-100: var(--pk-accent-100);
+  --color-brand-200: var(--pk-accent-200);
+  --color-brand-300: var(--pk-accent-300);
+  --color-brand-400: var(--pk-accent-400);
+  --color-brand-500: var(--pk-accent-500);
+  --color-brand-600: var(--pk-accent-600);
+  --color-brand-700: var(--pk-accent-700);
+  --color-brand-800: var(--pk-accent-800);
+  --color-brand-900: var(--pk-accent-900);
+
+  --color-brand-2: var(--pk-accent-2);
+  --color-brand-2-100: var(--pk-accent-2-100);
+  --color-brand-2-200: var(--pk-accent-2-200);
+  --color-brand-2-300: var(--pk-accent-2-300);
+  --color-brand-2-400: var(--pk-accent-2-400);
+  --color-brand-2-500: var(--pk-accent-2-500);
+  --color-brand-2-600: var(--pk-accent-2-600);
+  --color-brand-2-700: var(--pk-accent-2-700);
+  --color-brand-2-800: var(--pk-accent-2-800);
+  --color-brand-2-900: var(--pk-accent-2-900);
+
+  /* Third-party UI colours used by the mock WhatsApp / Meta surfaces */
+  --color-whatsapp: #008069;
+  --color-whatsapp-green: #25d366;
+  --color-meta: #1877f2;
+  --color-meta-tint: #e7f3ff;
+  --color-meta-line: #ccd0d5;
+  --color-meta-chrome: #f0f2f5;
+  --color-meta-ink: #1c1e21;
+  --color-meta-muted: #606770;
+  --color-meta-body: #444950;
+  --color-meta-track: #dadde1;
+  --color-meta-dot: #c4c4c4;
+
+  /* Typography */
+  --font-sans: var(--font-archivo), system-ui, sans-serif;
+  --font-heading: var(--font-archivo), system-ui, sans-serif;
+  --font-mono: ui-monospace, Menlo, monospace;
+  --font-system: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  /* Modernist text inherits the body's 1.55 line-height at every size,
+     so the size utilities don't impose their own leading. */
+  --text-xs--line-height: 1.55;
+  --text-sm--line-height: 1.55;
+  --text-base--line-height: 1.55;
+  --text-lg--line-height: 1.55;
+  --text-xl--line-height: 1.55;
+
+  /* Radii — Modernist is square */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+
+  /* Elevation — soft ink-tinted shadows */
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2d2b2b 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2d2b2b 16%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #2d2b2b 22%, transparent);
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    font-weight: 400;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+    font-weight: 800;
+    line-height: 1.12;
+    letter-spacing: -0.015em;
+    margin: 0 0 8px;
+  }
+  h1 { font-size: 42px; }
+  h2 { font-size: 32px; }
+  h3 { font-size: 25px; }
+  h4 { font-size: 20px; }
+  h5 { font-size: 16px; }
+  h6 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+  p { margin: 0 0 12px; }
+  a { color: var(--primary); text-underline-offset: 3px; }
+  img { display: block; max-width: 100%; }
+
+  button { font: inherit; }
+
+  :focus { outline: none; }
+  :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+  ::selection { background: color-mix(in srgb, var(--primary) 30%, transparent); }
+}

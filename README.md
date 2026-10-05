@@ -6,6 +6,20 @@ books visits, sends reminders and hands chats to staff — billed in monthly cre
 - Specs and contracts: [docs/handover.md](docs/handover.md)
 - Environments, deploys, DNS and secrets: [docs/environments.md](docs/environments.md)
 - Rules for Claude Code (and humans): [CLAUDE.md](CLAUDE.md)
+- Frontend structure and routes: [docs/frontend-architecture-map.md](docs/frontend-architecture-map.md)
+
+## Repository layout
+
+A pnpm monorepo. Run every command below from the repo root; root scripts run the workspaces.
+
+| Folder | Package | What |
+|---|---|---|
+| `frontend/` | `@pakka/frontend` | The one Next.js app: `/`, `/onboarding`, `/dashboard`, `/api/*` routes, UI, fixtures, Playwright |
+| `backend/` | `@pakka/backend` | Server modules the API routes import: Inngest, `serverEnv()`, agent, channels, booking, billing… |
+| `packages/types` | `@pakka/types` | Shared types and Zod schemas |
+| `packages/config` | `@pakka/config` | Shared TypeScript base config |
+| `supabase/` | — | Migrations and database tests |
+| `packs/`, `tests/conversations/`, `scripts/`, `docs/` | — | Industry packs, conversation tests, one-off scripts, docs |
 
 ## Run it locally
 
@@ -46,7 +60,8 @@ password manager's `local` folder.
 |---|---|
 | `pnpm dev` | Next.js dev server |
 | `pnpm inngest:dev` | Inngest dev server, pointed at `/api/inngest` |
-| `pnpm lint` · `pnpm typecheck` · `pnpm test` | What CI runs (plus `pnpm build`) |
+| `pnpm lint` · `pnpm typecheck` · `pnpm test` | What CI runs (plus `pnpm build`), across every workspace |
+| `pnpm test:e2e` | Playwright smoke tests for `/onboarding` and `/dashboard` (once: `pnpm --filter @pakka/frontend exec playwright install chromium`) |
 | `pnpm db:start` · `pnpm db:stop` · `pnpm db:status` | Local Supabase stack |
 | `pnpm db:reset` | Recreate the local database from `supabase/migrations` and the seed |
 | `pnpm db:test` | pgTAP database tests in `supabase/tests` (tenant isolation, RLS everywhere) |
