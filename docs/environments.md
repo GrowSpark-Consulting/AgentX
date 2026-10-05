@@ -13,7 +13,7 @@ Owner: Dev 2. Covers the Day 0 setup: GitHub, Supabase, Inngest, Vercel, DNS and
 | Supabase | Docker via `pnpm db:start` | project `pakka-agent-staging`, Mumbai, Free | project `pakka-agent-prod`, Mumbai, Pro |
 | Inngest | `pnpm inngest:dev` | Inngest branch environment for `main` | Inngest Production |
 | Razorpay | test keys | test keys | live keys |
-| Secrets | `.env.local` (never committed) | Vercel *Preview* env, branch `main` | Vercel *Production* env |
+| Secrets | `frontend/.env.local` (never committed) | Vercel *Preview* env, branch `main` | Vercel *Production* env |
 
 Nobody points local code at staging or production data.
 
@@ -74,7 +74,7 @@ gets its own project on the Pro plan (daily backups, no pausing) before beta.
 ## Inngest
 
 - Local: `pnpm inngest:dev` serves the UI at http://localhost:8288 and syncs `/api/inngest`.
-  `INNGEST_DEV=1` in `.env.local` tells the SDK to use it.
+  `INNGEST_DEV=1` in `frontend/.env.local` tells the SDK to use it.
 - Staging and production: install the **Inngest** integration from the Vercel Marketplace on
   the project. It sets `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY` and re-syncs the app on each
   deploy. Deploys of `main` land in an Inngest branch environment; production deploys land in

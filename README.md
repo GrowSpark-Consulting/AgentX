@@ -28,14 +28,17 @@ You need Node 22.12+, pnpm 11 (`corepack enable` picks the pinned version) and D
 ```bash
 pnpm install
 pnpm db:start                 # local Supabase in Docker; first run pulls images
-cp .env.example .env.local    # then paste the keys printed by `pnpm db:status`
+cp .env.example frontend/.env.local   # then paste the keys printed by `pnpm db:status`
 pnpm dev                      # http://localhost:3000
 pnpm inngest:dev              # second terminal: Inngest dev server on http://localhost:8288
 ```
 
-Fill these from `pnpm db:status` into `.env.local`:
+`.env.local` goes in `frontend/`, not the repo root: Next.js only reads env files from the app's
+own folder. When `pnpm dev` starts it should print `Environments: .env.local`.
 
-| `.env.local` | `pnpm db:status` |
+Fill these from `pnpm db:status` into `frontend/.env.local`:
+
+| `frontend/.env.local` | `pnpm db:status` |
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | API URL (`http://127.0.0.1:54321`) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Publishable / anon key |
