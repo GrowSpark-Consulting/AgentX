@@ -1,3 +1,8 @@
+packages:
+  - frontend
+  - backend
+  - packages/*
+
 allowBuilds:
   sharp: false
   unrs-resolver: false
@@ -6,3 +11,10 @@ allowBuilds:
   inngest-cli: true
   # pulled in by inngest's telemetry deps; its postinstall is only a version check
   protobufjs: false
+
+packageExtensions:
+  # eslint-config-next loads next's bundled Babel parser but doesn't declare `next`. Declaring it as
+  # a peer lets pnpm link the frontend's `next` instead of relying on a hoisted copy at the root.
+  eslint-config-next:
+    peerDependencies:
+      next: "*"

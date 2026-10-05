@@ -1,22 +1,22 @@
 # Owners are requested for review automatically. Fill in GitHub handles at kickoff
 # (see the ownership table in docs/handover.md), then uncomment.
 #
-# /src/channels/      @dev1
-# /src/agent/         @dev1
-# /src/kb/            @dev1
+# /backend/src/channels/ @dev1
+# /backend/src/agent/    @dev1
+# /backend/src/kb/       @dev1
 # /packs/             @dev1
 # /tests/conversations/ @dev1
 #
-# /src/booking/       @dev2
-# /src/notify/        @dev2
-# /src/billing/       @dev2
-# /src/features/      @dev2
-# /src/inngest/       @dev2
+# /backend/src/booking/  @dev2
+# /backend/src/notify/   @dev2
+# /backend/src/billing/  @dev2
+# /backend/src/features/ @dev2
+# /backend/src/inngest/  @dev2
 #
-# /src/app/           @dev3
+# /frontend/           @dev3
 #
 # Shared: all three review
 # /supabase/          @dev1 @dev2 @dev3
-# /src/types/         @dev1 @dev2 @dev3
+# /packages/           @dev1 @dev2 @dev3
 # /.github/           @dev1 @dev2 @dev3
 # /CLAUDE.md          @dev1 @dev2 @dev3

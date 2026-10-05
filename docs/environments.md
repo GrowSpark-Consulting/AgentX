@@ -13,16 +13,16 @@ Owner: Dev 2. Covers the Day 0 setup: GitHub, Supabase, Inngest, Vercel, DNS and
 | Supabase | Docker via `pnpm db:start` | project `pakka-agent-staging`, Mumbai, Free | project `pakka-agent-prod`, Mumbai, Pro |
 | Inngest | `pnpm inngest:dev` | Inngest branch environment for `main` | Inngest Production |
 | Razorpay | test keys | test keys | live keys |
-| Secrets | `.env.local` (never committed) | Vercel *Preview* env, branch `main` | Vercel *Production* env |
+| Secrets | `frontend/.env.local` (never committed) | Vercel *Preview* env, branch `main` | Vercel *Production* env |
 
 Nobody points local code at staging or production data.
 
 ### How the `api.*` host works
 
 Meta and Razorpay call short URLs such as `https://api.pakkaagent.in/webhooks/whatsapp`. A host
-rewrite in `next.config.ts` maps every path on an `api.*` host to `/api/<path>`, so that request is
-served by `src/app/api/webhooks/whatsapp/route.ts`. The rewrite matches `api.pakkaagent.in`,
-`api-staging.pakkaagent.in` and `api.localhost`; `tests/api-host-rewrite.test.ts` pins that list.
+rewrite in `frontend/next.config.ts` maps every path on an `api.*` host to `/api/<path>`, so that request is
+served by `frontend/app/api/webhooks/whatsapp/route.ts`. The rewrite matches `api.pakkaagent.in`,
+`api-staging.pakkaagent.in` and `api.localhost`; `frontend/tests/api-host-rewrite.test.ts` pins that list.
 
 ## GitHub
 
@@ -30,7 +30,7 @@ Repo: https://github.com/GrowSpark-Consulting/AgentX (package name `pakka-agent`
 
 `main` protection:
 
-- Pull request required, 1 approving review, stale approvals dismissed on new commits
+- Pull request required; no approval needed, CI is the gate (team decision, Oct 2026)
 - Required status checks `check` and `migrations` (jobs in `.github/workflows/ci.yml`), branch up to date
 - Linear history, no force pushes, no deletion; applies to admins too
 - Repo merges: squash only, head branches deleted after merge
@@ -74,7 +74,7 @@ gets its own project on the Pro plan (daily backups, no pausing) before beta.
 ## Inngest
 
 - Local: `pnpm inngest:dev` serves the UI at http://localhost:8288 and syncs `/api/inngest`.
-  `INNGEST_DEV=1` in `.env.local` tells the SDK to use it.
+  `INNGEST_DEV=1` in `frontend/.env.local` tells the SDK to use it.
 - Staging and production: install the **Inngest** integration from the Vercel Marketplace on
   the project. It sets `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY` and re-syncs the app on each
   deploy. Deploys of `main` land in an Inngest branch environment; production deploys land in
@@ -87,8 +87,9 @@ gets its own project on the Pro plan (daily backups, no pausing) before beta.
 One project, `pakka-agent`, in the team's Vercel account (Pro: Hobby is for non-commercial use).
 
 1. **Add New → Project** → import `GrowSpark-Consulting/AgentX` (install the Vercel GitHub app
-   on the org if asked). Framework preset Next.js; root directory `/`; build and install commands
-   default.
+   on the org if asked). Framework preset Next.js; **root directory `frontend`** (the Next.js app in the pnpm
+   monorepo; keep "Include files outside the root directory" on so `backend/` and `packages/`
+   are available). Build and install commands default.
 2. Settings → Environment Variables: add `ENABLE_EXPERIMENTAL_COREPACK=1` to all environments so
    Vercel uses the pnpm version pinned in `packageManager`.
 3. Settings → Git → **Production Branch: `production`**. Pushes to `main` then build as Preview
@@ -100,7 +101,7 @@ One project, `pakka-agent`, in the team's Vercel account (Pro: Hobby is for non-
    - **Preview**, scoped to branch `main`: staging values
    - **Production**: production values
    - Do not set `INNGEST_DEV` on Vercel.
-6. Functions run in `bom1` (Mumbai, set in `vercel.json`) next to the Supabase database.
+6. Functions run in `bom1` (Mumbai, set in `frontend/vercel.json`) next to the Supabase database.
 
 Check a deploy: `https://api-staging.pakkaagent.in/health` returns
 `{"ok":true,"env":"preview","commit":"<sha>"}`.
