@@ -30,6 +30,16 @@ export async function spendCredits(
   return z.boolean().parse(data);
 }
 
+/** Gives back the credits spent under refId (a message that was not sent), into the same buckets. Returns the amount. */
+export async function refundCredits(tenantId: string, refId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin().rpc("refund_credits", {
+    p_tenant_id: TenantId.parse(tenantId),
+    p_ref_id: z.guid().parse(refId),
+  });
+  if (error) throw new Error(`refund_credits failed: ${error.message}`);
+  return z.number().int().parse(data);
+}
+
 /** Live balance: plan credits (plan, trial and admin grants) and unexpired top-ups. */
 export async function getBalance(tenantId: string): Promise<Balance> {
   const { data, error } = await supabaseAdmin().rpc("credit_balance", { p_tenant_id: TenantId.parse(tenantId) });
