@@ -1,0 +1,42 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "100000000000001",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "910000000001",
+              "phone_number_id": "200000000000001"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Test Customer"
+                },
+                "wa_id": "910000000101"
+              }
+            ],
+            "messages": [
+              {
+                "from": "910000000101",
+                "id": "wamid.SYNTHETIC_IMAGE_0001",
+                "timestamp": "1759743120",
+                "type": "image",
+                "image": {
+                  "id": "synthetic-media-0001",
+                  "mime_type": "image/jpeg",
+                  "sha256": "synthetic-sha256-not-a-real-hash",
+                  "caption": "Kitchen photo"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

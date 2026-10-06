@@ -1,0 +1,52 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "100000000000001",
+      "changes": [
+        {
+          "field": "future_feature_synthetic",
+          "value": {
+            "anything": "goes",
+            "nested": {
+              "a": 1
+            }
+          }
+        },
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "910000000001",
+              "phone_number_id": "200000000000001"
+            },
+            "new_unknown_key": {
+              "x": 1
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Test Customer"
+                },
+                "wa_id": "910000000101"
+              }
+            ],
+            "messages": [
+              {
+                "from": "910000000101",
+                "id": "wamid.SYNTHETIC_UNKNOWN_0001",
+                "timestamp": "1759743000",
+                "type": "text",
+                "text": {
+                  "body": "Still parsed"
+                },
+                "brand_new_field": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
