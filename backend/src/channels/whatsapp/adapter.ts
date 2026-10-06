@@ -1,0 +1,245 @@
+import { SendResult, type ErrorCode } from "@pakka/types";
+import { z } from "zod";
+import { connectionSecretContext, decryptSecret } from "../../lib/crypto";
+import { serverEnv, type ServerEnv } from "../../lib/env";
+import { mapMetaError } from "./meta-errors";
+import { normalizeE164 } from "./phone";
+
+// The WhatsApp send side (module 1): sendText and markRead on Meta's Graph API. notify.send is the
+// only caller (through a MessageSender wrapper that comes later); nothing else sends messages.
+//
+// - Returns a result, never throws. A failure carries one of the shared error codes, a retryable flag,
+//   and outcomeUnknown (true when the message may have gone out: timeout, network failure, unreadable
+//   answer). The adapter never retries: a retry after a timeout could send twice.
+// - The tenant's token is decrypted per call (AAD context from connectionSecretContext) and goes only
+//   into the Authorization header. It is never stored, logged, or put in a result.
+// - Error messages are fixed strings (ADAPTER_MESSAGES). Meta's own text is never passed on, and `meta`
+//   holds integers only: Meta's code, its subcode and the HTTP status.
+// - No window check: notify.send decides free text or template; the adapter only maps Meta's 131047.
+// - No database access, no logging.
+
+const GRAPH_URL = "https://graph.facebook.com";
+const DEFAULT_TIMEOUT_MS = 10_000;
+const TEXT_MAX = 4096;
+const WAMID_MAX = 256;
+
+export const ADAPTER_MESSAGES = {
+  validation_failed: "The message could not be sent because the number or the text is not valid.",
+  outside_window: "WhatsApp only allows an approved template outside the 24-hour window, so the message was not sent.",
+  rate_limited: "WhatsApp is limiting messages right now. Try again later.",
+  whatsapp_not_connected: "The WhatsApp connection could not be used. Reconnect the number and try again.",
+  upstream_failed: "WhatsApp did not accept the request. Try again in a moment.",
+  no_answer: "WhatsApp did not answer in time, so the message may or may not have been sent.",
+  unclear_answer: "WhatsApp's answer could not be understood, so the message may or may not have been sent.",
+  internal: "The message could not be sent because of a problem on our side.",
+} as const;
+
+/** The connection row subset the adapter needs. Server-only: it holds the encrypted token. */
+export type SendConnection = {
+  tenantId: string;
+  connectionId: string;
+  phoneNumberId: string;
+  tokenEnc: string;
+};
+
+export type AdapterDeps = {
+  /** Injected so tests need no network. */
+  fetch?: typeof fetch;
+  /** Request timeout in milliseconds; default 10 seconds. */
+  timeoutMs?: number;
+  /** Defaults to serverEnv(). */
+  env?: Pick<ServerEnv, "ENCRYPTION_KEY" | "META_GRAPH_API_VERSION">;
+};
+
+export type AdapterError = {
+  code: ErrorCode;
+  retryable: boolean;
+  outcomeUnknown: boolean;
+  message: string;
+  /** Integers from Meta's answer only; never text. */
+  meta?: { code?: number; subcode?: number; httpStatus?: number };
+};
+export type AdapterResult<T> = { ok: true; value: T } | { ok: false; error: AdapterError };
+
+const fail = (
+  code: ErrorCode,
+  message: string,
+  extra: Partial<Pick<AdapterError, "retryable" | "outcomeUnknown" | "meta">> = {},
+): AdapterResult<never> => ({
+  ok: false,
+  error: { code, retryable: false, outcomeUnknown: false, message, ...extra },
+});
+
+const failFor = (code: "validation_failed" | "whatsapp_not_connected" | "internal") => fail(code, ADAPTER_MESSAGES[code]);
+
+type Prepared = { url: string; token: string };
+
+/** Everything that can be checked or decrypted before the network: returns a failure or the URL and token. */
+function prepare(connection: SendConnection, deps: AdapterDeps): AdapterResult<Prepared> {
+  if (!/^\d{1,32}$/.test(connection.phoneNumberId)) return failFor("validation_failed");
+
+  let env: NonNullable<AdapterDeps["env"]>;
+  try {
+    env = deps.env ?? serverEnv();
+  } catch {
+    return failFor("internal");
+  }
+  if (env.ENCRYPTION_KEY === undefined || !/^v\d+\.\d+$/.test(String(env.META_GRAPH_API_VERSION))) {
+    return failFor("internal");
+  }
+
+  let context;
+  try {
+    context = connectionSecretContext({
+      column: "token_enc",
+      tenantId: connection.tenantId,
+      connectionId: connection.connectionId,
+    });
+  } catch {
+    return failFor("internal");
+  }
+  let token: string;
+  try {
+    token = decryptSecret(connection.tokenEnc, context, env);
+  } catch {
+    // Tampered, copied from another row, or encrypted with another key: indistinguishable by design.
+    return failFor("whatsapp_not_connected");
+  }
+  if (token === "") return failFor("whatsapp_not_connected");
+
+  return {
+    ok: true,
+    value: { url: `${GRAPH_URL}/${env.META_GRAPH_API_VERSION}/${connection.phoneNumberId}/messages`, token },
+  };
+}
+
+type Reply = { kind: "reply"; status: number; text: string } | { kind: "no_answer" };
+
+/** One POST with a timeout that holds even if fetch ignores the abort signal. Never throws. */
+async function post(prepared: Prepared, body: unknown, deps: AdapterDeps): Promise<Reply> {
+  const send = deps.fetch ?? fetch;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve("timeout");
+    }, deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  });
+  try {
+    const request = (async (): Promise<Reply> => {
+      const res = await send(prepared.url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${prepared.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      return { kind: "reply", status: res.status, text: await res.text() };
+    })();
+    request.catch(() => undefined); // if the timeout wins, a later rejection must not go unhandled
+    const winner = await Promise.race([request, timeout]);
+    return winner === "timeout" ? { kind: "no_answer" } : winner;
+  } catch {
+    return { kind: "no_answer" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const noAnswer = () => fail("upstream_failed", ADAPTER_MESSAGES.no_answer, { retryable: true, outcomeUnknown: true });
+const unclearAnswer = (httpStatus: number) =>
+  fail("upstream_failed", ADAPTER_MESSAGES.unclear_answer, { outcomeUnknown: true, meta: { httpStatus } });
+
+const asInteger = (value: unknown) => (typeof value === "number" && Number.isInteger(value) ? value : undefined);
+const MetaErrorBody = z.looseObject({
+  error: z.looseObject({ code: z.unknown().optional(), error_subcode: z.unknown().optional() }),
+});
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Turns a non-2xx answer into a typed failure using only Meta's numbers. */
+function failFromMeta(status: number, json: unknown): AdapterResult<never> {
+  const parsed = MetaErrorBody.safeParse(json);
+  const code = parsed.success ? asInteger(parsed.data.error.code) : undefined;
+  const subcode = parsed.success ? asInteger(parsed.data.error.error_subcode) : undefined;
+  const mapped = mapMetaError(code, status);
+  const message = mapped.code in ADAPTER_MESSAGES ? ADAPTER_MESSAGES[mapped.code as keyof typeof ADAPTER_MESSAGES] : ADAPTER_MESSAGES.upstream_failed;
+  return fail(mapped.code, message, {
+    retryable: mapped.retryable,
+    meta: {
+      ...(code !== undefined && { code }),
+      ...(subcode !== undefined && { subcode }),
+      httpStatus: status,
+    },
+  });
+}
+
+const SendBody = z.looseObject({ messages: z.array(z.looseObject({ id: z.string().min(1) })).min(1) });
+const ReadBody = z.looseObject({ success: z.boolean() });
+
+export async function sendText(
+  connection: SendConnection,
+  to: string,
+  body: string,
+  deps: AdapterDeps = {},
+): Promise<AdapterResult<SendResult>> {
+  try {
+    const number = normalizeE164(to);
+    if (number === null || typeof body !== "string" || body.trim() === "" || body.length > TEXT_MAX) {
+      return failFor("validation_failed");
+    }
+    const prepared = prepare(connection, deps);
+    if (!prepared.ok) return prepared;
+
+    const reply = await post(
+      prepared.value,
+      {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: number,
+        type: "text",
+        text: { body, preview_url: false },
+      },
+      deps,
+    );
+    if (reply.kind === "no_answer") return noAnswer();
+    const json = parseJson(reply.text);
+    if (reply.status < 200 || reply.status >= 300) return failFromMeta(reply.status, json);
+
+    const parsed = SendBody.safeParse(json);
+    if (!parsed.success) return unclearAnswer(reply.status);
+    return { ok: true, value: SendResult.parse({ providerMsgId: parsed.data.messages[0].id }) };
+  } catch {
+    return failFor("internal");
+  }
+}
+
+export async function markRead(
+  connection: SendConnection,
+  wamid: string,
+  deps: AdapterDeps = {},
+): Promise<AdapterResult<{ success: true }>> {
+  try {
+    if (typeof wamid !== "string" || wamid.length < 1 || wamid.length > WAMID_MAX) return failFor("validation_failed");
+    const prepared = prepare(connection, deps);
+    if (!prepared.ok) return prepared;
+
+    const reply = await post(prepared.value, { messaging_product: "whatsapp", status: "read", message_id: wamid }, deps);
+    if (reply.kind === "no_answer") return noAnswer();
+    const json = parseJson(reply.text);
+    if (reply.status < 200 || reply.status >= 300) return failFromMeta(reply.status, json);
+
+    const parsed = ReadBody.safeParse(json);
+    if (!parsed.success) return unclearAnswer(reply.status);
+    if (!parsed.data.success) return fail("upstream_failed", ADAPTER_MESSAGES.upstream_failed, { meta: { httpStatus: reply.status } });
+    return { ok: true, value: { success: true } };
+  } catch {
+    return failFor("internal");
+  }
+}
