@@ -33,6 +33,27 @@ describe("InboundMessage", () => {
     },
   );
 
+  it("accepts the seeded Postgres ids, which are not RFC version 1-8 uuids", () => {
+    const seeded = {
+      ...base,
+      tenantId: "d0000000-0000-0000-0000-000000000001", // demo real-estate tenant
+      channelId: "d3000000-0000-0000-0000-0000000000a1", // isolation test A channel
+    };
+    expect(InboundMessage.parse(seeded).tenantId).toBe(seeded.tenantId);
+    const isolation = { ...base, tenantId: "d0000000-0000-0000-0000-0000000000a1" };
+    expect(InboundMessage.safeParse(isolation).success).toBe(true);
+  });
+
+  it.each([
+    ["one hex digit short", "d0000000-0000-0000-0000-00000000000"],
+    ["a non-hex character", "d0000000-0000-0000-0000-00000000000g"],
+    ["no hyphens", "d00000000000000000000000000000001"],
+    ["an empty string", ""],
+  ])("rejects a malformed tenantId and channelId: %s", (_why, id) => {
+    expect(InboundMessage.safeParse({ ...base, tenantId: id }).success).toBe(false);
+    expect(InboundMessage.safeParse({ ...base, channelId: id }).success).toBe(false);
+  });
+
   it("rejects an unknown type, a bad tenant id and a non-ISO timestamp", () => {
     expect(InboundMessage.safeParse({ ...base, type: "sticker" }).success).toBe(false);
     expect(InboundMessage.safeParse({ ...base, tenantId: "t1" }).success).toBe(false);
