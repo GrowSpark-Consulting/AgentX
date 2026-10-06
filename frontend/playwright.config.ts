@@ -15,13 +15,15 @@ const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${PORT}`;
 const FLAG_OFF_PORT = 3101;
 export const FLAG_OFF_URL = process.env.PLAYWRIGHT_BASE_URL ? undefined : `http://localhost:${FLAG_OFF_PORT}`;
 
+/** Placeholder service-role key: the mock accepts it for create_trial_tenant and credit_balance only. */
+const SERVICE_ROLE_KEY = "e2e-service-role-key";
 // Server env shared by both app servers. Placeholder server secrets keep serverEnv() valid without a
-// .env.local and stop the tests from ever using real ones; nothing in the app sends them anywhere.
+// .env.local and stop the tests from ever using real ones; they only ever reach the mock.
 const appEnv = {
   NEXT_PUBLIC_SUPABASE_URL: `http://127.0.0.1:${MOCK_PORT}`,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: "e2e-anon-key",
   NEXT_PUBLIC_APP_URL: `http://localhost:${PORT}`,
-  SUPABASE_SERVICE_ROLE_KEY: "e2e-service-role-key-unused",
+  SUPABASE_SERVICE_ROLE_KEY: SERVICE_ROLE_KEY,
 };
 /** Signed in as owner@test.local; written by auth.setup.ts. */
 export const OWNER_STATE = "tests/e2e/.auth/owner.json";
@@ -54,7 +56,7 @@ export default defineConfig({
           command: "node tests/e2e/support/mock-supabase.mjs",
           url: `http://127.0.0.1:${MOCK_PORT}/health`,
           reuseExistingServer: false,
-          env: { MOCK_SUPABASE_PORT: String(MOCK_PORT) },
+          env: { MOCK_SUPABASE_PORT: String(MOCK_PORT), MOCK_SERVICE_ROLE_KEY: SERVICE_ROLE_KEY },
         },
         {
           // Always a fresh build: NEXT_PUBLIC_* values are compiled in, and they must point at the mock.

@@ -101,7 +101,7 @@ depends on `inngest`, so there's one copy of it.
 | Route | Owner | Status |
 |---|---|---|
 | `/` | Dev 3 | Redirects to `/onboarding` (from the onboarding export). The handover's landing page will take `/` later. |
-| `/onboarding` | Dev 3 | Prototype wizard, mock behaviour only (dummy WhatsApp code, nothing saved); needs a signed-in account, signed out → `/signup?next=/onboarding` |
+| `/onboarding` | Dev 3 | Prototype wizard: the Business step creates the account's trial business; every other step is mock behaviour (dummy WhatsApp code, nothing saved). Needs a signed-in account, signed out → `/signup?next=/onboarding` |
 | `/login` | Dev 3 | Supabase email + password sign-in, or Continue with Google |
 | `/signup` | Dev 3 | New account: email + password (confirmed if the project requires it), or Continue with Google → `/onboarding` |
 | `/auth/callback` | Dev 3 | Finishes Google sign-in and email confirmation links: exchanges the code, then no business → `/onboarding`, member → `/dashboard` |
@@ -125,8 +125,12 @@ browser Supabase client is needed yet: sign-up, sign-in, the Google round trip, 
 reads run on the server.
 
 A new account is told apart from an existing one by membership only: no business yet → onboarding,
-otherwise → dashboard. Onboarding has no saved progress or "completed" flag yet, and nothing creates
-a tenant or membership; that is a separate contract with Dev 1 / Dev 2.
+otherwise → dashboard. Signing up (email or Google) creates only the account. The business is created
+on onboarding's Business step, once the user has typed its name and picked a trade: the `startTrial`
+server action (`lib/onboarding/actions.ts`) calls Dev 2's `createTrialTenant` with the session's user
+id and the trade's pack key, mapped on the server (`INDUSTRIES[].packKey`; trades without a pack can't
+start a trial). An account that already belongs to a business, in any role, gets no new one. Onboarding
+has no saved progress or "completed" flag yet.
 
 | Piece | Where | What it does |
 |---|---|---|
@@ -156,7 +160,8 @@ stripped by `redactSecrets()` (`@pakka/types`) before anything is logged.
 | Meta template submission (`whatsapp_templates` exists since 0007, #21) | Dev 1 (adapter) · Dev 2 (`createTemplate`) | Create template validates fully, then answers `not_available`; a template list reading `whatsapp_templates` is not built yet |
 | `dashboard-screen-contracts.md` brought in line with the agreed send/template/error contract (now in `docs/shared-types.md`) | Dev 3 + Dev 2 | The proposal still lists different error codes, template variables, button types and statuses; the code follows `shared-types.md` |
 | 0001 applied to the hosted project, test user + membership, `frontend/.env.local` with the https API URL | Dev 2 / Raja | Login is verified end to end against the Playwright mock only |
-| Signup that creates the tenant and membership | Dev 3 + Dev 2 | Onboarding is still a prototype; finishing it signed out goes to `/login` |
+| Packs for Hotel, Restaurant and Plumber / Electrician | Dev 1 | Those trades show "Trials for this trade aren't open yet" and create nothing |
+| Pending team invites (no invite flow yet) | Dev 2 | Someone invited to a team who signs up before their membership exists could still start their own trial on the Business step |
 
 ## Onboarding domain
 
@@ -164,7 +169,7 @@ stripped by `redactSecrets()` (`@pakka/types`) before anything is logged.
 |---|---|
 | Code | `components/onboarding/`, `features/onboarding/{data,state}`, `components/ui/` |
 | Steps | 1 Verify phone (OTP) · 2 Business (6 trades) · 3 Teach (website import) · 4 Try it · 5 WhatsApp (Facebook with coexistence, or manual partner / own app; simulated Meta popup; checks) · 6 Team & go live · "You're live" |
-| State | One `OnboardingState` in `OnboardingFlow` (`useState`), timers simulate import and checks. Not shared with the dashboard. A reload restarts at step 1. |
+| State | One `OnboardingState` in `OnboardingFlow` (`useState`), timers simulate import and checks. Not shared with the dashboard. A reload restarts at step 1. The only server call is the Business step's `startTrial`; once it succeeds, the Try and live steps show the real trial code, days and credits instead of the samples. |
 | Mock data | `features/onboarding/data`: `ROUTES`, `TRIAL_CODE`, `INDUSTRIES`, `PROFILES`, `FEATURES`, `CHECKS`, popup steps, fake QR |
 | Exit | "Go to my dashboard" is a plain `<a href>` to `ROUTES.dashboard` (`/dashboard`), plus `?industry=<key>` for non-real-estate trades. Because the two route groups have different root layouts, this is always a **full page load**: the dashboard never renders inside the onboarding tree. |
 

@@ -8,7 +8,9 @@ import {
   type StaffMember,
   type WaMethod,
   INDUSTRIES,
+  TRIAL_CODE,
 } from "@/features/onboarding/data";
+import type { TrialInfo } from "@/lib/onboarding/start-trial";
 
 export type ImportState = "idle" | "run" | "done";
 /** `pending` is kept from the prototype's state model (“Waiting for Meta approval”). */
@@ -24,8 +26,13 @@ export interface OnboardingState {
 
   /* step 1 — business */
   biz: string;
-  bizEdited: boolean;
   ind: number;
+  /** The real trial, once the Business step has created it on the server. */
+  trial: TrialInfo | null;
+  /** Why the Business step couldn't continue, shown on that step. */
+  trialError: string | null;
+  /** The account already belongs to a business, so the Business step created nothing. */
+  hasBusiness: boolean;
 
   /* step 2 — teach */
   site: string;
@@ -69,9 +76,12 @@ export const initialState: OnboardingState = {
   phone: "98400 12345",
   otpSent: false,
   otp: "",
-  biz: "Skyline Homes",
-  bizEdited: false,
+  // Typed by the user: it becomes the real business's name. The trade's sample is only a placeholder.
+  biz: "",
   ind: 0,
+  trial: null,
+  trialError: null,
+  hasBusiness: false,
   site: "skylinehomes.in",
   imp: "idle",
   impStep: 0,
@@ -112,6 +122,11 @@ export function industryKey(state: OnboardingState): IndustryKey {
 
 export function profileOf(state: OnboardingState) {
   return PROFILES[industryKey(state)];
+}
+
+/** The real trial code once the trial exists; the prototype's sample code before that. */
+export function trialCodeOf(state: OnboardingState) {
+  return state.trial?.routeCode ?? TRIAL_CODE;
 }
 
 /** Display fallback used in copy (“It already knows your business.”). */

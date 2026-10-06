@@ -13,7 +13,9 @@
 //   * POST /auth/v1/token?grant_type=pkce checks the code verifier against the stored challenge.
 // GET /__mock/rest-log?email=… lists the PostgREST requests made with that user's token, so tests can
 // check that nothing was written and no tenant-scoped table was read.
-import { createHash, randomBytes } from "node:crypto";
+// POST /rest/v1/rpc/create_trial_tenant (service role only) gives a user a trial business, membership,
+// credits and route code the way the SQL function does; GET /__mock/business?email=… reads them back.
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.MOCK_SUPABASE_PORT ?? 54399);
@@ -71,6 +73,48 @@ const pendingSignups = new Map();
 const outbox = new Map();
 /** Every PostgREST request: { email, method, table, query }; read back with /__mock/rest-log?email=. */
 const restLog = [];
+
+// Trial signup: create_trial_tenant and credit_balance (migrations 0005, 0006), callable only with the
+// service-role key like the real grants. Read back with /__mock/business?email=.
+const SERVICE_ROLE_KEY = process.env.MOCK_SERVICE_ROLE_KEY ?? "e2e-service-role-key";
+/** plans.monthly_credits for 'trial' (supabase/seed/plans.sql). */
+const TRIAL_CREDITS = 300;
+/** tenant id → credit balance, and → TRIAL-xxxx code, for businesses created during a run. */
+const balances = new Map();
+const trialCodes = new Map();
+/** email → number of create_trial_tenant calls made for that user. */
+const trialCalls = new Map();
+const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+/** Same checks and outcomes as public.create_trial_tenant; returns [status, body]. */
+function createTrialTenant({ p_user_id, p_name, p_vertical, p_timezone }) {
+  const fail = (message) => [400, { code: "P0001", details: null, hint: null, message }];
+  const name = String(p_name ?? "").trim();
+  if (!p_user_id) return fail("create_trial_tenant: user id is required");
+  if (!name) return fail("create_trial_tenant: business name is required");
+  if (!/^[a-z][a-z0-9-]*$/.test(String(p_vertical ?? ""))) {
+    return fail("create_trial_tenant: vertical must be a pack key (lowercase letters, digits and hyphens)");
+  }
+  const email = Object.keys(USERS).find((e) => idOf(e) === p_user_id);
+  if (!email) return fail(`create_trial_tenant: unknown user ${p_user_id}`);
+  trialCalls.set(email, (trialCalls.get(email) ?? 0) + 1);
+
+  const owned = USERS[email].memberships.find(([, role]) => role === "owner")?.[0];
+  if (owned) {
+    if (owned.status !== "trial") return fail("create_trial_tenant: this account already owns a business");
+    return [200, [{ tenant_id: owned.id, route_code: trialCodes.get(owned.id) ?? null, trial_ends_at: owned.trial_ends_at, created: false }]];
+  }
+  const t = {
+    ...tenant(randomUUID(), name, p_vertical),
+    timezone: p_timezone ?? "Asia/Kolkata",
+    trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  };
+  const code = `TRIAL-${[...randomBytes(4)].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("")}`;
+  USERS[email].memberships.push([t, "owner"]);
+  balances.set(t.id, TRIAL_CREDITS);
+  trialCodes.set(t.id, code);
+  return [200, [{ tenant_id: t.id, route_code: code, trial_ends_at: t.trial_ends_at, created: true }]];
+}
 
 function issueCode(email, challenge, method) {
   const code = random();
@@ -200,6 +244,15 @@ ${choose("Cancel", "cancel=1")}
     const email = String(url.searchParams.get("email") ?? "").toLowerCase();
     return send(res, 200, restLog.filter((r) => r.email === email));
   }
+  if (path === "/__mock/business") {
+    // The user's businesses as the database would hold them, plus how often a trial was requested.
+    const email = String(url.searchParams.get("email") ?? "").toLowerCase();
+    const memberships = (USERS[email]?.memberships ?? []).map(([t, role]) => ({
+      tenantId: t.id, name: t.name, vertical: t.vertical, status: t.status, planKey: t.plan_key, role,
+      credits: balances.get(t.id) ?? null, routeCode: trialCodes.get(t.id) ?? null,
+    }));
+    return send(res, 200, { memberships, trialCalls: trialCalls.get(email) ?? 0 });
+  }
   if (path === "/__mock/last-email") {
     const mail = outbox.get(String(url.searchParams.get("to") ?? "").toLowerCase());
     return mail ? send(res, 200, mail) : send(res, 404, { msg: "no email" });
@@ -219,6 +272,19 @@ ${choose("Cancel", "cancel=1")}
     const email = emailFromToken(req.headers.authorization);
     const table = path.slice("/rest/v1/".length);
     restLog.push({ email, method: req.method, table, query: url.search });
+    if (table === "rpc/create_trial_tenant" || table === "rpc/credit_balance") {
+      // EXECUTE is granted to service_role only.
+      if ((req.headers.authorization ?? "") !== `Bearer ${SERVICE_ROLE_KEY}`) {
+        return send(res, 403, { code: "42501", details: null, hint: null, message: `permission denied for function ${table.slice(4)}` });
+      }
+      const body = await readBody(req);
+      if (table === "rpc/credit_balance") {
+        const total = balances.get(body.p_tenant_id) ?? 0;
+        return send(res, 200, [{ plan: total, topup: 0, total }]);
+      }
+      const [status, result] = createTrialTenant(body);
+      return send(res, status, result);
+    }
     if (table === "memberships") {
       const rows = email ? USERS[email].memberships.map(([t, role]) => ({ tenant_id: t.id, role, tenants: t })) : [];
       return send(res, 200, rows);

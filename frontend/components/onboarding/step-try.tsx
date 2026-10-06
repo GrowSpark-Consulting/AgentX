@@ -2,12 +2,13 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { QR_CELLS, ROUTES, TRIAL_CODE } from "@/features/onboarding/data";
-import { bizLabel, profileOf, type OnboardingState } from "@/features/onboarding/state";
+import { QR_CELLS, trialChatUrl } from "@/features/onboarding/data";
+import { bizLabel, profileOf, trialCodeOf, type OnboardingState } from "@/features/onboarding/state";
 import { StepIntro } from "@/components/onboarding/primitives";
 
 export function StepTry({ s }: { s: OnboardingState }) {
   const profile = profileOf(s);
+  const code = trialCodeOf(s);
 
   return (
     <>
@@ -40,12 +41,12 @@ export function StepTry({ s }: { s: OnboardingState }) {
             variant="primary"
             className="justify-start bg-whatsapp hover:bg-whatsapp active:bg-whatsapp"
           >
-            <a href={ROUTES.trialChat} target="_blank" rel="noopener noreferrer">
+            <a href={trialChatUrl(code)} target="_blank" rel="noopener noreferrer">
               Open WhatsApp test chat
             </a>
           </Button>
           <div className="text-[13px] bg-surface px-3 py-2.5">
-            Your code is <strong>{TRIAL_CODE}</strong>. It works on our test
+            Your code is <strong>{code}</strong>. It works on our test
             number until your own number is connected.
           </div>
           <div className="text-[13px] text-neutral-700">Try asking: {profile.tryAsk}</div>
