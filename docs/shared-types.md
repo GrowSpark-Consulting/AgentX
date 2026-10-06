@@ -16,7 +16,9 @@ compiles workspace packages itself, and Vitest reads the source directly.
 
 | File | Contents |
 |---|---|
-| `src/whatsapp.ts` | `E164`, `InboundMessageType`, `InboundMessage`, `DeliveryStatus`, `StatusUpdate`, `SendResult` |
+| `src/whatsapp.ts` | `E164`, `InboundMessageType`, `InboundMessage`, `DeliveryStatus`, `StatusUpdate`, `SendResult`; dashboard API bodies: `PhoneInput`, `SendTestMessageInput`, `SendTestMessageResult`, `TemplateButton`, `CreateTemplateInput`, `CreateTemplateResult`, `templateVariables` |
+| `src/errors.ts` | `ERROR_CODES`, `ErrorCode`, `ApiErrorBody` (the error envelope), `redactSecrets`, `containsSecret` |
+| `src/tenancy.ts` | `Role`, `TenantRow`, `MembershipWithTenant`, `TenantContext` (the signed-in user's business) |
 | `src/agent.ts` | `HandoffTrigger`, `Extraction` (step 4), `NextAction` (step 5) |
 | `src/connection.ts` | `ConnectionMethod`, `TokenType`, `ConnectionStatus`, `WhatsAppConnectionPublic`, `ManualConnectInput` |
 | `src/pack.ts` | `PackDefinition` and its parts: `PackField`, `PackFieldType`, `ScoringRule`, `HardFail`, `Scoring`, `PackReminder`, `BookingMode`, `PackCatalog` |
@@ -67,6 +69,13 @@ pnpm --filter @pakka/types typecheck
 | `InboundMessage` | whatsapp | `tenantId` and `channelId` are UUID-shaped (any 8-4-4-4-12 hex, not strict RFC versions); `providerMsgId` non-empty; `from` is E.164; `type` is text, interactive, image, audio, location or document; `timestamp` is an ISO datetime (offset allowed); `contactName`, `text`, `buttonId`, `media {id, mime}` and `routeCode` optional |
 | `StatusUpdate` | whatsapp | `status` is sent, delivered, read or failed; ISO `timestamp`; optional E.164 `recipient`; optional `error {code: int, message}` |
 | `SendResult` | whatsapp | `{ providerMsgId }`, non-empty |
+| `PhoneInput` | whatsapp | `E164` as a person types it: trimmed first, with a message written for them |
+| `SendTestMessageInput` | whatsapp | `to` is `PhoneInput`; `body` trimmed, 1 to 4096 characters |
+| `SendTestMessageResult` | whatsapp | `SendResult` plus `status: "accepted"`. Delivery arrives later as a `StatusUpdate` through the webhook |
+| `TemplateButton` | whatsapp | Union on `type`: `{ type: "quick_reply", text }`, `{ type: "url", text, url }` (http or https), `{ type: "phone_number", text, phoneNumber }` (`PhoneInput`); `text` 1 to 25 characters |
+| `CreateTemplateInput` | whatsapp | `name` lowercase snake_case ending `_v<n>`; `category` utility or marketing; `language` en or ta; `body` 1 to 1024 characters, variables `{{1}}`, `{{2}}` … numbered in order, not at the start or end; `examples` one non-empty sample per variable, in order; optional `header` and `footer` (text, 1 to 60 characters); optional `buttons`, at most 3; optional `connectionId` (UUID-shaped) |
+| `CreateTemplateResult` | whatsapp | `{ id, name, language, status }`; `status` is `pending` (submitted to Meta, awaiting review) or `draft` (saved, not submitted) |
+| `ApiErrorBody` | errors | `{ error: { code, message, fields? } }`; `code` is one of `ERROR_CODES` (section 9); `fields` maps an input field to its message |
 | `HandoffTrigger` | agent | Core enum: asked_human, complaint, negotiation, hot_lead, kb_gap, stuck, credits_exhausted |
 | `Extraction` | agent | `language` en, ta, ta-en, ml, hi or other; `intent` one of the 11 in the handover; `fields` is a record of string to string, number or boolean; `question` and `preferredTime` are nullable but required; `sentiment` positive, neutral, negative or angry; `asksIfHuman` boolean; `confidence` 0 to 1 |
 | `NextAction` | agent | Union discriminated on `kind`: answer_and_ask, ask_fields, offer_slots, confirm_booking, reschedule, cancel, handoff, decline_off_topic, close_disqualified, opt_out_ack. `answer_and_ask` allows at most 2 `askFields` (0 is fine); `ask_fields` needs at least 1; `handoff.trigger` is a `HandoffTrigger` |
@@ -145,45 +154,107 @@ test-number connection seed script; adapter `sendText` and `markRead`; the pack 
 `backend/src/agent/packs/`. The first of these to import `@pakka/types` adds the dependency in its
 own workspace.
 
-## 9. Send-test-message, create-template and errors (delivered by PR #15)
+## 9. Send-test-message, create-template and errors
 
-Written by Dev 3 for the two Meta App Review screens. All of it is in `packages/types/src` and is
-re-exported from the package index. Both routes (`POST /api/messages/test`, `POST /api/templates`) are
-owner or admin only, and today answer `not_available` after validating: nothing is sent or submitted yet.
+Written by Dev 3 for the two Meta App Review screens (PR #15), then agreed: request and response
+shapes and error codes by Dev 1 (review of PR #15), backend behaviour by Dev 2 (Shaaz), and recorded
+in [contracts.md](contracts.md) (Day 1 freeze). Everything here is in `packages/types/src` and
+re-exported from the package index.
+
+| Route | Who | Request | Result |
+|---|---|---|---|
+| `POST /api/messages/test` | Owner, admin | `SendTestMessageInput` | `SendTestMessageResult`: `{ providerMsgId, status: "accepted" }` |
+| `POST /api/templates` | Owner, admin | `CreateTemplateInput` | `CreateTemplateResult`: `{ id, name, language, status: "pending" \| "draft" }` |
+
+Both routes resolve the tenant from the session, never from the body.
+
+### `POST /api/messages/test` (behaviour agreed by Dev 2)
+
+- Sent through `notify.send` with `kind: "test_message"`, for 0 credits.
+- Free text only inside the recipient's 24-hour window; outside it the route answers `outside_window` (409).
+- Recorded in `messages` (`direction = 'out'`, `sender = 'staff'`, `credits_charged = 0`, `provider_msg_id`;
+  the contact is found or created for the number and tagged `test`) and in `audit_logs` (`action = 'test_message.sent'`, actor = the staff user's id).
+- At most 10 test messages per business per rolling hour, counted from `audit_logs`; the next one
+  answers `rate_limited` (429).
+- `"accepted"` means Meta took the message. Delivery arrives later as a `StatusUpdate` through the webhook.
+
+### `POST /api/templates` (behaviour agreed by Dev 2)
+
+- The source of truth is `public.whatsapp_templates`: `id`, `tenant_id`, `connection_id`, `name`,
+  `language`, `category`, `components`, `status`, `rejection_reason`, `meta_template_id`, `updated_at`.
+  `status` is `draft`, `pending`, `approved`, `rejected`, `paused` or `disabled`. Unique on
+  `(connection_id, name, language)`; a duplicate answers `conflict` (409).
+- The create flow submits to Meta, then inserts the row as `pending`. The template-status webhook updates
+  `status` through Dev 2's `set_template_status(...)`.
+- Without `connectionId`, the backend uses the tenant's only active connection.
+- The create screen shows only the `pending` or `draft` it is given; it does not derive any other status.
+
+### Names
 
 | Name | File | What it is |
 |---|---|---|
 | `PhoneInput` | `whatsapp.ts` | `E164` as typed into a form: trimmed, E.164 with a leading `+`, with a user-readable error |
 | `WHATSAPP_TEXT_MAX` | `whatsapp.ts` | 4096, the text body limit used by the test message (Meta's limit: unconfirmed) |
 | `SendTestMessageInput` | `whatsapp.ts` | Zod: `to` (`PhoneInput`), `body` (trimmed, 1 to 4096 characters) |
-| `SendTestMessageResult` | `whatsapp.ts` | TypeScript interface, not a schema: `{ providerMessageId, status: "sent" \| "queued" }` |
+| `SendTestMessageResult` | `whatsapp.ts` | TypeScript interface: `SendResult` plus `status: "accepted"` |
 | `TEMPLATE_CATEGORIES`, `TEMPLATE_LANGUAGES`, `TEMPLATE_BODY_MAX` | `whatsapp.ts` | `utility` or `marketing`; `en` or `ta`; 1024 |
+| `TEMPLATE_HEADER_MAX`, `TEMPLATE_FOOTER_MAX`, `TEMPLATE_BUTTON_TEXT_MAX`, `TEMPLATE_BUTTONS_MAX` | `whatsapp.ts` | 60, 60, 25 and 3 (Meta, confirmed below) |
 | `templateVariables(body)` | `whatsapp.ts` | Distinct `{{n}}` numbers in a body, sorted |
-| `CreateTemplateInput` | `whatsapp.ts` | Zod: `name` (`^[a-z][a-z0-9_]*_v[1-9]\d*$`, max 512), `category`, `language`, `body` (1 to 1024), `examples` (non-empty strings). Variables must be numbered `{{1}}`, `{{2}}`, … and `examples` needs exactly one per variable |
-| `CreateTemplateResult` | `whatsapp.ts` | TypeScript interface: `{ name, language, status: "submitted" \| "draft" }` |
-| `ERROR_CODES`, `ErrorCode` | `errors.ts` | `unauthenticated`, `forbidden`, `not_found`, `validation_failed`, `no_membership`, `whatsapp_not_connected`, `not_available`, `upstream_failed`, `internal` |
+| `TemplateButton` | `whatsapp.ts` | Zod union on `type`: `quick_reply { text }`, `url { text, url }`, `phone_number { text, phoneNumber }` |
+| `CreateTemplateInput` | `whatsapp.ts` | Zod: `name` (`^[a-z][a-z0-9_]*_v[1-9]\d*$`, max 512), `category`, `language`, `body` (1 to 1024), `examples` (non-empty strings), optional `header`, `footer`, `buttons` (at most 3) and `connectionId`. Variables must be numbered `{{1}}`, `{{2}}`, …, may not open or close the body, and `examples` needs exactly one per variable, in order |
+| `CreateTemplateResult` | `whatsapp.ts` | TypeScript interface: `{ id, name, language, status: "pending" \| "draft" }` |
+| `ERROR_CODES`, `ErrorCode` | `errors.ts` | The codes in the table below |
 | `ApiErrorBody` | `errors.ts` | Zod for every API error: `{ error: { code, message, fields? } }`. `fields` (messages keyed by input field) is an addition to the handover's `{ code, message }` |
 | `redactSecrets`, `containsSecret` | `errors.ts` | Strip or detect credentials (connection-string passwords, JWTs, Supabase keys, Meta `EAA…` tokens, bearer headers) before logging or showing text |
 
+### Error codes
+
+| Code | HTTP | Code | HTTP |
+|---|---|---|---|
+| `unauthenticated` | 401 | `outside_window` | 409 |
+| `forbidden` | 403 | `conflict` | 409 |
+| `not_found` | 404 | `rate_limited` | 429 |
+| `validation_failed` | 422 | `insufficient_credits` | 402 |
+| `no_membership` | 403 | `slot_taken` | 409 |
+| `whatsapp_not_connected` | 409 | `plan_required` | 403 |
+| `not_available` | 501 | `seat_limit` | 409 |
+| `upstream_failed` | 502 | `internal` | 500 |
+
 **The HTTP status for each code, and `AppError`, live in `backend/src/lib/errors.ts`, not in this package.**
-Today: `unauthenticated` 401, `forbidden` and `no_membership` 403, `not_found` 404, `validation_failed` 422,
-`whatsapp_not_connected` 409, `not_available` 501, `upstream_failed` 502, `internal` 500. The status map is an
-exhaustive record, so a new code needs an entry there and a title in `frontend/lib/errors.ts`.
+The status map is an exhaustive record, so a new code needs an entry there and a title in `frontend/lib/errors.ts`.
 
-### Proposed, not adopted yet
-Nothing below is in the code. It waits for answers from Dev 2 and Dev 3.
+### Built today
 
-- Error codes `outside_window` (409), `conflict` (409, duplicate template name and language) and `rate_limited` (429).
-- Optional template `header` (text), `footer` and up to 3 `buttons` (quick reply, URL, phone number).
-- A template variant of the test message, for recipients outside the 24-hour window.
+`whatsapp_templates` and `set_template_status` exist (migration 0007, #21). `notify.send`, the adapter's
+`sendText` and Meta template submission do not yet. Until they do, both routes validate the request and
+the role, then answer `whatsapp_not_connected` (no active connection) or `not_available`: nothing is sent,
+recorded or submitted. The table's `category` also allows `authentication`; `CreateTemplateInput` offers
+only `utility` and `marketing`.
+
+### Written into the schema where the agreement didn't say
+
+The `url` button takes http or https only; `phoneNumber` is E.164 (`PhoneInput`); `connectionId` is
+UUID-shaped like `WhatsAppConnectionPublic.id`; `header` and `footer` are plain text. The start/end rule
+comes from Dev 1's review; Meta's other placement rules are unconfirmed and not checked.
+
+### Not reconciled with [dashboard-screen-contracts.md](dashboard-screen-contracts.md)
+
+That file is a proposal and was not changed here:
+
+- Its error list has no `rate_limited`, `no_membership`, `whatsapp_not_connected`, `not_available` or
+  `internal`, and its envelope has no `fields`.
+- Its `Template` has `variables: { tag, name, sample }[]`, buttons typed `'Quick reply' | 'URL' | 'Phone'`
+  and statuses `'Not added' | 'Draft' | 'In review' | 'Approved' | 'Rejected'`. The agreed contract uses
+  `examples: string[]`, `quick_reply | url | phone_number` and the six `whatsapp_templates` statuses.
 
 ### Open questions
-For Dev 2: does the test message go through `notify.send`, and does it cost 0 credits? Is it logged in
-`messages`? What is the template status table, and who updates it from the template-status webhook?
-Is template creation done in the request or in a job? Which connection is used when a tenant has several
-(templates belong to the WABA)? Should the test endpoint be rate limited?
-For Dev 3: do the App Review recordings need header, footer or buttons, or the template variant of the test message?
-For Dev 1: `sendTemplate(to, name, lang, params)` in the handover has no button parameters.
+
+For Dev 2: is template creation done in the request or in a job? What does `POST /api/templates` answer
+when `connectionId` is left out and the tenant has more than one active connection? When does the create
+route return `draft` rather than `pending`?
+For Dev 1: `sendTemplate(to, name, lang, params)` in the handover has no button parameters; a URL button
+can take one variable at the end, which `TemplateButton` does not model yet.
+Not adopted: a template variant of the test message for recipients outside the 24-hour window.
 
 Meta details **unconfirmed** (not shown on the pages read): the error code for sending outside the 24-hour
 window (`131047` is from memory), Meta's error JSON shape, whether `example.body_text` is a flat list or a

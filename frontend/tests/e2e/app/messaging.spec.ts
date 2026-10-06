@@ -51,14 +51,15 @@ test.describe("send test message", () => {
   test("shows a loading state while sending, then the result", async ({ page }) => {
     const release = await holdRoute(page, "**/api/messages/test", {
       status: 200,
-      body: { providerMessageId: "wamid.TEST123", status: "sent" },
+      body: { providerMsgId: "wamid.TEST123", status: "accepted" },
     });
     await page.getByLabel("Recipient's WhatsApp number").fill("+919840012345");
     await page.getByRole("button", { name: "Send test message" }).click();
     await expect(page.getByRole("button", { name: "Sending…" })).toBeDisabled();
     await expect(page.getByRole("status").filter({ hasText: "Sending your message" })).toBeVisible();
     release();
-    await expect(page.getByRole("status").filter({ hasText: "Sent to +919840012345." })).toContainText("wamid.TEST123");
+    const sent = page.getByRole("status").filter({ hasText: "Sent to +919840012345." });
+    await expect(sent).toContainText("WhatsApp accepted the message (ID wamid.TEST123)");
   });
 
   test("reports server and network failures with a retry", async ({ page }) => {
@@ -72,6 +73,43 @@ test.describe("send test message", () => {
     await page.route("**/api/messages/test", (route) => route.abort("internetdisconnected"));
     await appAlert(page).getByRole("button", { name: "Try again" }).click();
     await expect(appAlert(page)).toContainText("We couldn't reach Pakka");
+  });
+});
+
+test.describe("send test message: errors agreed with Dev 2", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/dashboard/messages/test");
+    await page.getByLabel("Recipient's WhatsApp number").fill("+919840012345");
+  });
+
+  test("outside the 24-hour window", async ({ page }) => {
+    await page.route("**/api/messages/test", (route) =>
+      route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "outside_window", message: "This number hasn't messaged you in the last 24 hours." } }),
+      }),
+    );
+    await page.getByRole("button", { name: "Send test message" }).click();
+    const alert = appAlert(page);
+    await expect(alert).toContainText("Outside the 24-hour window");
+    await expect(alert).toContainText("This number hasn't messaged you in the last 24 hours.");
+    await expect(alert.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  });
+
+  test("rate limited", async ({ page }) => {
+    await page.route("**/api/messages/test", (route) =>
+      route.fulfill({
+        status: 429,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "rate_limited", message: "Up to 10 test messages an hour. Try again later." } }),
+      }),
+    );
+    await page.getByRole("button", { name: "Send test message" }).click();
+    const alert = appAlert(page);
+    await expect(alert).toContainText("Too many requests");
+    await expect(alert).toContainText("Up to 10 test messages an hour. Try again later.");
+    await expect(alert.getByRole("button", { name: "Try again" })).toHaveCount(0);
   });
 });
 
@@ -128,6 +166,15 @@ test.describe("create template", () => {
     await page.getByRole("button", { name: "+ Add variable" }).click();
     await expect(page.getByLabel("Message")).toHaveValue("Hi {{1}}");
     await page.getByRole("button", { name: "Submit for review" }).click();
+    // Meta rejects a body that ends (or starts) with a variable.
+    await expect(page.getByText("Start and end the message with words, not a variable")).toBeVisible();
+    await expect(page.getByLabel("Message")).toBeFocused();
+    await page.getByLabel("Message").fill("{{1}}, your visit is booked.");
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(page.getByText("Start and end the message with words, not a variable")).toBeVisible();
+
+    await page.getByLabel("Message").fill("Hi {{1}}, your visit is booked.");
+    await page.getByRole("button", { name: "Submit for review" }).click();
     await expect(page.getByText("Add a sample value")).toBeVisible();
     const sample = page.getByLabel("Sample for {{1}}");
     await expect(sample).toBeFocused();
@@ -147,14 +194,141 @@ test.describe("create template", () => {
   test("shows a loading state while submitting, then the result", async ({ page }) => {
     const release = await holdRoute(page, "**/api/templates", {
       status: 200,
-      body: { name: "booking_confirmed_v1", language: "en", status: "submitted" },
+      body: { id: "40000000-0000-0000-0000-000000000001", name: "booking_confirmed_v1", language: "en", status: "pending" },
     });
     await fillValid(page);
     await page.getByRole("button", { name: "Submit for review" }).click();
     await expect(page.getByRole("button", { name: "Submitting…" })).toBeDisabled();
     await expect(page.getByRole("status").filter({ hasText: "Submitting your template" })).toBeVisible();
     release();
-    await expect(page.getByRole("status").filter({ hasText: "booking_confirmed_v1" })).toContainText("was submitted to Meta for review.");
+    await expect(page.getByRole("status").filter({ hasText: "booking_confirmed_v1" })).toContainText(
+      "(English) was submitted to Meta and is waiting for review.",
+    );
+  });
+
+  test("says when the backend only saved a draft", async ({ page }) => {
+    await page.route("**/api/templates", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ id: "40000000-0000-0000-0000-000000000002", name: "booking_confirmed_v1", language: "ta", status: "draft" }),
+      }),
+    );
+    await fillValid(page);
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    const done = page.getByRole("status").filter({ hasText: "booking_confirmed_v1" });
+    await expect(done).toContainText("(Tamil) was saved as a draft. It hasn't been submitted to Meta.");
+  });
+
+  test("keeps each sample with its variable when the message is edited", async ({ page }) => {
+    await page.getByLabel("Message").fill("Hi {{1}}, see you on {{2}} at {{3}}.");
+    await page.getByLabel("Sample for {{1}}").fill("Karthik");
+    await page.getByLabel("Sample for {{2}}").fill("Sat 24 Oct");
+    await page.getByLabel("Sample for {{3}}").fill("11 am");
+    // Remove {{2}}: {{3}} keeps "11 am" instead of taking {{2}}'s sample.
+    await page.getByLabel("Message").fill("Hi {{1}}, see you at {{3}}.");
+    await expect(page.getByLabel("Sample for {{2}}")).toHaveCount(0);
+    await expect(page.getByLabel("Sample for {{3}}")).toHaveValue("11 am");
+    await expect(page.getByTestId("template-preview")).toContainText("Hi Karthik, see you at 11 am.");
+    // Bring {{2}} back: its sample is still there.
+    await page.getByLabel("Message").fill("Hi {{1}}, see you on {{2}} at {{3}}.");
+    await expect(page.getByLabel("Sample for {{2}}")).toHaveValue("Sat 24 Oct");
+  });
+
+  test("sends header, footer and up to three buttons in the agreed shapes", async ({ page }) => {
+    let sent: unknown;
+    await page.route("**/api/templates", async (route) => {
+      sent = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ id: "40000000-0000-0000-0000-000000000003", name: "booking_confirmed_v1", language: "en", status: "pending" }),
+      });
+    });
+    await fillValid(page);
+    await page.getByLabel("Header (optional)").fill("Booking confirmed");
+    await page.getByLabel("Footer (optional)").fill("Reply STOP to opt out");
+
+    const add = page.getByRole("button", { name: "+ Add button" });
+    await add.click();
+    await page.getByRole("group", { name: "Button 1" }).getByLabel("Button text").fill("Reschedule");
+    await add.click();
+    const second = page.getByRole("group", { name: "Button 2" });
+    await second.getByText("Website", { exact: true }).click();
+    await second.getByLabel("Button text").fill("See booking");
+    await second.getByLabel("Web address").fill("https://pakkaagent.in/b/1");
+    await add.click();
+    const third = page.getByRole("group", { name: "Button 3" });
+    await third.getByText("Phone number", { exact: true }).click();
+    await third.getByLabel("Button text").fill("Call us");
+    await third.getByLabel("Phone number to call").fill("+919840012345");
+    await expect(add).toBeDisabled();
+
+    const preview = page.getByTestId("template-preview");
+    await expect(preview).toContainText("Booking confirmed");
+    await expect(preview).toContainText("Reply STOP to opt out");
+    await expect(page.getByRole("list", { name: "Preview buttons" }).getByRole("listitem")).toHaveText(["Reschedule", "See booking", "Call us"]);
+    await expectNoHorizontalOverflow(page);
+
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "booking_confirmed_v1" })).toBeVisible();
+    expect(sent).toEqual({
+      name: "booking_confirmed_v1",
+      category: "utility",
+      language: "en",
+      body: "Hi {{1}}, your visit is booked for {{2}}.",
+      examples: ["Karthik", "Sat 24 Oct, 11 am"],
+      header: "Booking confirmed",
+      footer: "Reply STOP to opt out",
+      buttons: [
+        { type: "quick_reply", text: "Reschedule" },
+        { type: "url", text: "See booking", url: "https://pakkaagent.in/b/1" },
+        { type: "phone_number", text: "Call us", phoneNumber: "+919840012345" },
+      ],
+    });
+  });
+
+  test("validates buttons and leaves out empty optional fields", async ({ page }) => {
+    let sent: Record<string, unknown> | undefined;
+    await page.route("**/api/templates", async (route) => {
+      sent = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ id: "40000000-0000-0000-0000-000000000004", name: "booking_confirmed_v1", language: "en", status: "pending" }),
+      });
+    });
+    await fillValid(page);
+    await page.getByRole("button", { name: "+ Add button" }).click();
+    const button = page.getByRole("group", { name: "Button 1" });
+    await button.getByText("Website", { exact: true }).click();
+    await button.getByLabel("Web address").fill("pakkaagent.in");
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(button.getByLabel("Button text")).toBeFocused();
+    await expect(button.getByLabel("Button text")).toHaveAccessibleDescription("Add the button text");
+    await expect(button.getByLabel("Web address")).toHaveAccessibleDescription("Enter a web address starting with https://");
+    expect(sent).toBeUndefined();
+
+    await button.getByRole("button", { name: "Remove button 1" }).click();
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "booking_confirmed_v1" })).toBeVisible();
+    expect(Object.keys(sent ?? {}).sort()).toEqual(["body", "category", "examples", "language", "name"]);
+  });
+
+  test("reports a duplicate template", async ({ page }) => {
+    await page.route("**/api/templates", (route) =>
+      route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "conflict", message: "booking_confirmed_v1 already exists in English on this number." } }),
+      }),
+    );
+    await fillValid(page);
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    const alert = appAlert(page);
+    await expect(alert).toContainText("That already exists");
+    await expect(alert).toContainText("booking_confirmed_v1 already exists in English on this number.");
+    await expect(page.getByRole("status").filter({ hasText: "submitted to Meta" })).toHaveCount(0);
   });
 
   test("shows server validation errors on the fields", async ({ page }) => {

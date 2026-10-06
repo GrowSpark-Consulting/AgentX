@@ -86,7 +86,9 @@ export function SendTestMessageForm({ connection, businessName }: { connection: 
         {fields.to ? (
           <p id="to-error" className="app-field-error">{fields.to}</p>
         ) : (
-          <p id="to-hint" className="app-hint">With country code, no spaces. The phone must have WhatsApp.</p>
+          <p id="to-hint" className="app-hint">
+            With country code, no spaces. The phone must have messaged your WhatsApp number in the last 24 hours.
+          </p>
         )}
       </div>
 
@@ -120,8 +122,8 @@ export function SendTestMessageForm({ connection, businessName }: { connection: 
         {status.kind === "sending" ? <LoadingState compact title="Sending your message" description="Waiting for WhatsApp to accept it." /> : null}
         {status.kind === "sent" ? (
           <div className="app-success" role="status">
-            <strong>Sent to {status.to}.</strong> WhatsApp {status.result.status === "queued" ? "queued" : "accepted"} the message
-            (ID {status.result.providerMessageId}). Check the phone.
+            <strong>Sent to {status.to}.</strong> WhatsApp accepted the message (ID {status.result.providerMsgId}). It
+            can take a moment to arrive on the phone.
           </div>
         ) : null}
         {status.kind === "failed" ? (

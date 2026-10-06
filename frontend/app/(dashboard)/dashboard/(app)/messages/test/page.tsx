@@ -29,7 +29,8 @@ export default async function SendTestMessagePage() {
         <p className="app-eyebrow">WhatsApp</p>
         <h1 className="app-h1">Send a test message</h1>
         <p className="app-lede">
-          Send a WhatsApp message from {tenant.name}&apos;s number to any phone, to check the connection works.
+          Send a WhatsApp message from {tenant.name}&apos;s number to a phone that messaged it in the last 24 hours, to
+          check the connection works.
         </p>
       </div>
       <SendTestMessageForm connection={connection} businessName={tenant.name} />

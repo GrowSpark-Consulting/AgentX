@@ -14,6 +14,13 @@ export const ERROR_CODES = [
   "not_available",
   "upstream_failed",
   "internal",
+  "outside_window",
+  "conflict",
+  "rate_limited",
+  "insufficient_credits",
+  "slot_taken",
+  "plan_required",
+  "seat_limit",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

@@ -11,6 +11,13 @@ const STATUS: Record<ErrorCode, number> = {
   not_available: 501,
   upstream_failed: 502,
   internal: 500,
+  outside_window: 409,
+  conflict: 409,
+  rate_limited: 429,
+  insufficient_credits: 402,
+  slot_taken: 409,
+  plan_required: 403,
+  seat_limit: 409,
 };
 
 /**
