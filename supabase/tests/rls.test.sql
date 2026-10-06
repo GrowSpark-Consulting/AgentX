@@ -32,7 +32,8 @@ insert into public.credit_ledger (tenant_id, delta, reason) values
   ('10000000-0000-0000-0000-00000000000a', 300, 'trial_grant'),
   ('10000000-0000-0000-0000-00000000000b', 300, 'trial_grant');
 insert into public.plans (key, name, price_inr, monthly_credits, seats, whatsapp_numbers, feature_keys)
-  values ('trial', 'Trial', 0, 300, 2, 1, array['ai_auto_reply']);
+  values ('trial', 'Trial', 0, 300, 2, 1, array['ai_auto_reply'])
+  on conflict (key) do nothing;  -- the seed may already have it
 
 -- Act as owner A, the way PostgREST does for a signed-in dashboard user.
 set local role authenticated;
@@ -64,7 +65,7 @@ select throws_ok(
   '42501', null,
   'a member cannot change their own plan');
 
-select is((select count(*) from public.plans), 1::bigint,
+select ok((select count(*) from public.plans) >= 1,
   'signed-in users can read the plan catalogue');
 
 -- Signed out.
