@@ -20,8 +20,8 @@ export type ConnectionStatus = z.infer<typeof ConnectionStatus>;
 
 // One row of the whatsapp_connections_public view, snake_case as the database returns it.
 export const WhatsAppConnectionPublic = z.object({
-  id: z.uuid(),
-  tenant_id: z.uuid(),
+  id: z.guid(),
+  tenant_id: z.guid(),
   method: ConnectionMethod,
   waba_id: z.string(),
   phone_number_id: z.string(),
@@ -39,7 +39,7 @@ export type WhatsAppConnectionPublic = z.infer<typeof WhatsAppConnectionPublic>;
 // Body of POST /api/admin/whatsapp/manual. Carries secrets: post once, encrypt on the server,
 // never echo back or keep in client state.
 export const ManualConnectInput = z.object({
-  tenantId: z.uuid(),
+  tenantId: z.guid(),
   wabaId: z.string().min(1),
   phoneNumberId: z.string().min(1),
   token: z.string().min(1),

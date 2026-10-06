@@ -64,14 +64,14 @@ pnpm --filter @pakka/types typecheck
 | Schema | File | Key rules |
 |---|---|---|
 | `E164` | whatsapp | `^\+[1-9]\d{7,14}$`: leading `+`, 8 to 15 digits, no spaces |
-| `InboundMessage` | whatsapp | `tenantId` and `channelId` are uuids; `providerMsgId` non-empty; `from` is E.164; `type` is text, interactive, image, audio, location or document; `timestamp` is an ISO datetime (offset allowed); `contactName`, `text`, `buttonId`, `media {id, mime}` and `routeCode` optional |
+| `InboundMessage` | whatsapp | `tenantId` and `channelId` are UUID-shaped (any 8-4-4-4-12 hex, not strict RFC versions); `providerMsgId` non-empty; `from` is E.164; `type` is text, interactive, image, audio, location or document; `timestamp` is an ISO datetime (offset allowed); `contactName`, `text`, `buttonId`, `media {id, mime}` and `routeCode` optional |
 | `StatusUpdate` | whatsapp | `status` is sent, delivered, read or failed; ISO `timestamp`; optional E.164 `recipient`; optional `error {code: int, message}` |
 | `SendResult` | whatsapp | `{ providerMsgId }`, non-empty |
 | `HandoffTrigger` | agent | Core enum: asked_human, complaint, negotiation, hot_lead, kb_gap, stuck, credits_exhausted |
 | `Extraction` | agent | `language` en, ta, ta-en, ml, hi or other; `intent` one of the 11 in the handover; `fields` is a record of string to string, number or boolean; `question` and `preferredTime` are nullable but required; `sentiment` positive, neutral, negative or angry; `asksIfHuman` boolean; `confidence` 0 to 1 |
 | `NextAction` | agent | Union discriminated on `kind`: answer_and_ask, ask_fields, offer_slots, confirm_booking, reschedule, cancel, handoff, decline_off_topic, close_disqualified, opt_out_ack. `answer_and_ask` allows at most 2 `askFields` (0 is fine); `ask_fields` needs at least 1; `handoff.trigger` is a `HandoffTrigger` |
 | `WhatsAppConnectionPublic` | connection | One row of `whatsapp_connections_public`, snake_case. Secret columns are not in the schema, so Zod strips them if a full row is parsed |
-| `ManualConnectInput` | connection | Admin form body (camelCase): `tenantId` uuid, `wabaId`, `phoneNumberId`, `token`, `tokenType` (business or system_user) and `appSecret` all required and non-empty; `displayPhone` and `clientBusinessId` optional |
+| `ManualConnectInput` | connection | Admin form body (camelCase): `tenantId` UUID-shaped, `wabaId`, `phoneNumberId`, `token`, `tokenType` (business or system_user) and `appSecret` all required and non-empty; `displayPhone` and `clientBusinessId` optional |
 | `PackDefinition` | pack | `key` lower kebab-case; `version` integer of at least 1; `fields` non-empty; `scoring` required; `bookingType` and `bookingModes` both optional; the lists below default to `[]` |
 | `PackField` | pack | `key` lower snake_case; type text, int, boolean, enum, range_inr or date_range_or_month; `enum` needs `options`; `required` defaults to false |
 | `ScoringRule` | pack | **Strict object** (unknown keys fail). Needs one of `match`, `equals`, `in` or `gte`; `points` is an integer of at least 0; optional `value` for `match` |
@@ -88,7 +88,7 @@ pnpm --filter @pakka/types typecheck
 
 - **`StatusUpdate` and `SendResult` are new shapes.** The handover names them without defining them.
 - **ISO timestamps.** `InboundMessage.timestamp` must be an ISO datetime; Meta sends unix seconds, so the parser converts.
-- **uuid ids.** `tenantId` and `channelId` must be uuids.
+- **UUID-shaped ids.** `tenantId`, `channelId` and the connection ids are checked with `z.guid()` (any 8-4-4-4-12 hex), not `z.uuid()`, which also checks the version and variant digits and so rejects the seeded ids such as `d0000000-0000-0000-0000-000000000001`.
 - **`HandoffTrigger` is a core enum, but a pack's `handoffTriggers` is a plain string list.** Pack-specific triggers such as `group_above_15` therefore parse. The pipeline owns what to do with an unknown pack trigger.
 - **`Extraction.fields` is generic.** Checking its keys against the pack's field schema is the loader's or pipeline's job.
 - **`NextAction` limits.** The "max 2 fields" comment in the handover is applied to `answer_and_ask` only. `ask_fields` needs at least 1.

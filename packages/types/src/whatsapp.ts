@@ -14,8 +14,8 @@ export const InboundMessageType = z.enum([
 ]);
 
 export const InboundMessage = z.object({
-  tenantId: z.uuid(),
-  channelId: z.uuid(),
+  tenantId: z.guid(),
+  channelId: z.guid(),
   providerMsgId: z.string().min(1),
   from: E164,
   contactName: z.string().optional(),
