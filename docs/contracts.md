@@ -24,6 +24,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`.
 | `0006_trial_signup` | `create_trial_tenant` (service_role only) |
 | `0007_whatsapp_templates` | `whatsapp_templates`, `set_template_status` (service_role only) |
 | `0008_credit_refunds` | `refund_credits(tenant, ref_id)`: returns a failed send's credits to the same buckets (service_role only) |
+| `0009_notify_functions` | `notify_target`, `notify_template`, `notify_record`: the database side of `notify.send` (service_role only) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -78,7 +79,7 @@ Migration numbers go to whoever merges first.
 `redactSecrets`. Ids are validated with `z.guid()` (seeded ids are not RFC 9562). Secret-bearing row
 types stay in `backend`. Shapes: `docs/shared-types.md`.
 
-**Agreed changes (Dev 1 and Dev 3 apply them in `@pakka/types`):**
+**Fixed (#23), applied in `@pakka/types`:**
 
 - `SendTestMessageResult`: `{ providerMsgId, status: "accepted" }` (was `providerMessageId`, `"sent" | "queued"`).
   Delivery arrives later through the status webhook into `messages.delivery_status`.
@@ -110,12 +111,21 @@ type SendOutcome =
 type NotifyPayload = {
   conversationId?: string;   // customer messages
   to?: string;               // test_message only: E.164 recipient
-  staffUserId?: string;      // staff alerts, lead cards, daily agenda
-  text?: string;
-  templateParams?: string[]; // in {{1}}… order
-  refId?: string;            // becomes credit_ledger.ref_id
+  text?: string;             // free text, inside the 24-hour window
+  templateParams?: string[]; // in {{1}}… order, outside the window
+  actorId?: string;          // the staff user (staff_reply, test_message); recorded in audit_logs
 };
 ```
+
+**Built in `backend/src/notify`** (`send.ts`, `kinds.ts`, `sender.ts`): `NotifyPayload` and
+`SendOutcome` as above. The credit ref is the generated message id (not a payload field).
+`NotificationKind` covers `ai_reply`, `staff_reply`, `test_message` and the customer automations;
+staff-facing kinds arrive with their jobs.
+
+**Adapter plug-in (Dev 1):** `registerSender(factory)`, where
+`factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params) }`
+and both return `{ providerMsgId }`. Until it is registered, `notify.send` answers `not_available`
+before spending credits.
 
 `FeatureKey` lives in `backend/src/billing/credit-costs.ts` for now and moves here with the above.
 
@@ -214,7 +224,7 @@ membership and role, and returns `{ error: { code, message, fields? } }`.
 **Error codes.** The list is `ERROR_CODES` in `packages/types/src/errors.ts`; the HTTP statuses are in
 `backend/src/lib/errors.ts`.
 
-| In `ERROR_CODES` (#15) | HTTP | Agreed additions | HTTP |
+| In `ERROR_CODES` (#15) | HTTP | Added in #23 | HTTP |
 |---|---|---|---|
 | `unauthenticated` | 401 | `outside_window` | 409 |
 | `forbidden` | 403 | `conflict` (e.g. duplicate template name and language) | 409 |
@@ -226,12 +236,13 @@ membership and role, and returns `{ error: { code, message, fields? } }`.
 | `upstream_failed` | 502 | | |
 | `internal` | 500 | | |
 
-**Meta App Review routes (#15), Agreed:**
+**Meta App Review routes (#15; shapes Fixed in #23):**
 
 - `POST /api/messages/test` `{ to, body }` → `{ providerMsgId, status: "accepted" }`; owner or admin.
 - `POST /api/templates` `{ name, category, language, body, examples, header?, footer?, buttons?, connectionId? }`
   → `{ id, name, language, status: "pending" | "draft" }`; owner or admin.
-- Both answer `not_available` until `notify.send`, the adapter and `whatsapp_templates` exist.
+- `notify.send` and `whatsapp_templates` exist. The test route sends through `notify.send` once it
+  is wired (next Dev 2 PR); both routes answer `not_available` until Dev 1's adapter is registered.
 
 **Read routes (Proposed, screen-contracts Q1).** Entitlements and balances are computed on the
 server, so these are routes, not SQL views:
@@ -269,6 +280,6 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 8 | `agent_settings` and `last_check` shapes | Open | Dev 1, Dev 3 |
 | 9 | Pack `bookingType` vs `bookingModes` | Open | Raja + Dev 1 |
 | 10 | PR reviews: CI-only merges vs the plan's paired reviewer | Proposed: paired review for `supabase/`, `packages/` and this file | All |
-| 11 | Test message and template routes | **Agreed** (sections 2, 4, 6) | Dev 1 + Dev 2 + Dev 3 |
+| 11 | Test message and template routes | **Agreed**; types Fixed in #23, `notify.send` built | Dev 1 + Dev 2 + Dev 3 |
 | 12 | `isEnabled` also checks business status (paused, cancelled, trial ended) | Built in #18; confirm | Dev 1 + Dev 2 |
 | 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
