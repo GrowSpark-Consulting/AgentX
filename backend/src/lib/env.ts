@@ -27,7 +27,8 @@ const serverEnvSchema = z.object({
   META_GRAPH_API_VERSION: z
     .string()
     .regex(/^v\d+\.\d+$/, "must look like v26.0")
-    .optional(),
+    // One pinned version; an unset variable can never build a "/undefined/" Graph API URL.
+    .default("v26.0"),
   META_WEBHOOK_VERIFY_TOKEN: secret.optional(),
   META_SYSTEM_USER_TOKEN: secret.optional(),
   WHATSAPP_DEMO_WABA_ID: secret.optional(),
