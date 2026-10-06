@@ -1,0 +1,20 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "100000000000001",
+      "time": 1759743000,
+      "changes": [
+        {
+          "field": "message_template_status_update",
+          "value": {
+            "event": "REJECTED",
+            "message_template_id": "123456789012346",
+            "message_template_name": "offer_blast_v1",
+            "reason": "INCORRECT_CATEGORY"
+          }
+        }
+      ]
+    }
+  ]
+}
