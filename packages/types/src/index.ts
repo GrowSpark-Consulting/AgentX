@@ -1,3 +1,6 @@
 // Shared types and Zod schemas used by more than one workspace (owned by all three developers).
-// Empty until the first shared contract lands; see docs/dashboard-screen-contracts.md.
-export {};
+// A contract change is a pull request that the owner and reviewer both see.
+export * from "./agent";
+export * from "./connection";
+export * from "./pack";
+export * from "./whatsapp";
