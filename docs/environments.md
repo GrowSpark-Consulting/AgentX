@@ -67,6 +67,11 @@ The CLI version is pinned in `package.json`, so everyone and CI run the same one
    pnpm exec supabase link --project-ref <staging-ref>
    pnpm exec supabase db push
    ```
+5. Load the seed (plans, features, demo and isolation-test businesses; safe to re-run):
+   `pnpm exec supabase db push --include-seed`. Seed files and their order are in
+   `supabase/config.toml` → `[db.seed].sql_paths`. The seed creates no logins; to give a signed-up
+   user access to an isolation-test business, use the snippet at the top of
+   `supabase/seed/demo_tenants.sql`. Never run `supabase db reset --linked`: it wipes the project.
 
 Free projects pause after a week with no traffic; resume from the dashboard. Production
 gets its own project on the Pro plan (daily backups, no pausing) before beta.
