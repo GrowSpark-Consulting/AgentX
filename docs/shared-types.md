@@ -2,7 +2,8 @@
 
 Owner: all three developers (shared package). First contracts written by Dev 1 in PR #8.
 Related: [handover.md](handover.md) (the specs these schemas come from) ·
-[frontend-architecture-map.md](frontend-architecture-map.md)
+[frontend-architecture-map.md](frontend-architecture-map.md) ·
+[whatsapp-webhook-parser.md](whatsapp-webhook-parser.md) (parser-local types)
 
 ## 1. What this is
 
