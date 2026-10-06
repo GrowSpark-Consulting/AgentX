@@ -22,6 +22,24 @@ describe("WhatsAppConnectionPublic", () => {
     expect(WhatsAppConnectionPublic.parse(row).status).toBe("active");
   });
 
+  it("accepts the seeded Postgres ids, which are not RFC version 1-8 uuids", () => {
+    const seeded = {
+      ...row,
+      id: "d4000000-0000-0000-0000-0000000000a1", // isolation test A connection
+      tenant_id: "d0000000-0000-0000-0000-0000000000a1", // isolation test A tenant
+    };
+    expect(WhatsAppConnectionPublic.parse(seeded).id).toBe(seeded.id);
+  });
+
+  it.each([
+    ["one hex digit short", "d0000000-0000-0000-0000-00000000000"],
+    ["a non-hex character", "d0000000-0000-0000-0000-00000000000g"],
+    ["no hyphens", "d00000000000000000000000000000001"],
+  ])("rejects a malformed id and tenant_id: %s", (_why, bad) => {
+    expect(WhatsAppConnectionPublic.safeParse({ ...row, id: bad }).success).toBe(false);
+    expect(WhatsAppConnectionPublic.safeParse({ ...row, tenant_id: bad }).success).toBe(false);
+  });
+
   it("rejects an unknown method or status", () => {
     expect(WhatsAppConnectionPublic.safeParse({ ...row, method: "bsp" }).success).toBe(false);
     expect(WhatsAppConnectionPublic.safeParse({ ...row, status: "broken" }).success).toBe(false);
@@ -50,6 +68,13 @@ describe("ManualConnectInput", () => {
 
   it("accepts the admin form", () => {
     expect(ManualConnectInput.parse(input).tokenType).toBe("system_user");
+  });
+
+  it("accepts the seeded demo tenant id and rejects a malformed one", () => {
+    const seeded = { ...input, tenantId: "d0000000-0000-0000-0000-000000000001" };
+    expect(ManualConnectInput.safeParse(seeded).success).toBe(true);
+    const bad = { ...input, tenantId: "d0000000-0000-0000-0000-00000000000g" };
+    expect(ManualConnectInput.safeParse(bad).success).toBe(false);
   });
 
   it("requires the token and the app secret", () => {
