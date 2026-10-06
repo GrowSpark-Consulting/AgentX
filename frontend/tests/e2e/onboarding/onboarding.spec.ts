@@ -1,4 +1,5 @@
 import { test as base, expect, type Page } from "@playwright/test";
+import { SIGNED_OUT, signUp, uniqueEmail } from "../support/app";
 
 /** Any console error or uncaught page error fails the test. */
 const test = base.extend<{ consoleErrors: string[] }>({
@@ -41,8 +42,8 @@ async function openOnboarding(page: Page) {
 }
 
 /** Walks the wizard to the given step heading, picking a trade on the Business step. */
-async function walkTo(page: Page, stop: "WhatsApp" | "Team" | "Live", trade = "Real estate") {
-  await next(page, "Send code on WhatsApp").click();
+async function walkTo(page: Page, stop: "WhatsApp" | "Team" | "Live", trade = "Real estate", { codeSent = false } = {}) {
+  if (!codeSent) await next(page, "Send code on WhatsApp").click();
   await page.getByPlaceholder("––––––").fill("123456");
   await next(page, "Verify and continue").click();
   await option(page, trade).click();
@@ -135,6 +136,7 @@ test("manual partner access fails without IDs, then waits for “hi”", async (
 });
 
 test.describe("onboarding → dashboard", () => {
+  // Signed in through the project's storage state: /dashboard is the signed-in home.
   test("completing onboarding is a full page load to /dashboard", async ({ page }) => {
     await openOnboarding(page);
     await walkTo(page, "Live");
@@ -142,7 +144,7 @@ test.describe("onboarding → dashboard", () => {
     await page.evaluate(() => ((window as unknown as { __onboardingDoc: boolean }).__onboardingDoc = true));
     await page.getByRole("link", { name: "Go to my dashboard" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.locator('[data-screen-label="03 Home"]')).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Test Realty" })).toBeVisible();
     expect(await page.evaluate(() => (window as unknown as { __onboardingDoc?: boolean }).__onboardingDoc)).toBeUndefined();
     // The dashboard document has neither the onboarding wizard nor its font class on <html>.
     await expect(page.getByRole("heading", { name: "Start your free trial" })).toHaveCount(0);
@@ -150,11 +152,33 @@ test.describe("onboarding → dashboard", () => {
     await expectNoHorizontalOverflow(page);
   });
 
-  test("a non-real-estate trade opens its sample tenant (temporary ?industry=)", async ({ page }) => {
+});
+
+test.describe("onboarding needs an account", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  test("signed out, / and /onboarding go to sign-up", async ({ page }) => {
+    for (const path of ["/", "/onboarding"]) {
+      await page.goto(path);
+      await expect(page).toHaveURL(/\/signup\?next=%2Fonboarding$/);
+      await expect(page.getByRole("heading", { name: "Sign up" })).toBeVisible();
+    }
+  });
+
+  test("a new account walks the existing wizard, with the same dummy WhatsApp code and no email code", async ({ page }) => {
+    await signUp(page, uniqueEmail());
+    await expect(page).toHaveURL(/\/onboarding$/);
+
+    // Reload with the frozen clock the wizard's timers need; the session cookie carries over.
     await openOnboarding(page);
-    await walkTo(page, "Live", "Salon");
-    await page.getByRole("link", { name: "Go to my dashboard" }).click();
-    await expect(page).toHaveURL(/\/dashboard\?industry=salon$/);
-    await expect(page.getByText("Glow Studio").first()).toBeVisible();
+    await expect(page.getByLabel("Your WhatsApp number")).toBeVisible();
+    await expect(page.getByLabel(/email/i)).toHaveCount(0);
+    await next(page, "Send code on WhatsApp").click();
+    await expect(page.getByText(/6-digit code sent to \+91/)).toBeVisible();
+    await expect(page.getByText(/sent to .*@/)).toHaveCount(0);
+
+    await walkTo(page, "Live", "Salon", { codeSent: true });
+    await expect(page.getByRole("link", { name: "Go to my dashboard" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
   });
 });

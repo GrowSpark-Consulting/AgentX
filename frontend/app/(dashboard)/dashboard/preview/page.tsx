@@ -3,7 +3,7 @@ import { PakkaRoot, type PakkaRootProps } from "@/components/dashboard/pakka-roo
 // TEMPORARY: these URL switches exist for the prototype's demo states and the Playwright visual
 // suite. Production data will come from the signed-in tenant, not the URL.
 // Defaults match the original component's editor defaults. Every value can be overridden from the
-// URL, e.g. /dashboard?theme=dark&frame=phone&account=trial&credits=low&plan=starter&firstDay=1&industry=salon
+// URL, e.g. /dashboard/preview?theme=dark&frame=phone&account=trial&credits=low&plan=starter&firstDay=1&industry=salon
 // The app itself also reads ?screen=<home|inbox|leads|…> and ?chat=<lead id> on mount.
 const DEFAULTS: Required<PakkaRootProps> = {
   industry: "re",

@@ -34,7 +34,9 @@ export function screenRoot(page: Page, screen: Screen) {
 
 /** Opens /dashboard with the given query string and waits for the client-only app to mount. */
 export async function openApp(page: Page, query = "") {
-  await page.goto(`/dashboard${query ? `?${query}` : ""}`);
+  // The prototype moved to /dashboard/preview when /dashboard became the signed-in home; the
+  // project's storage state signs the browser in.
+  await page.goto(`/dashboard/preview${query ? `?${query}` : ""}`);
   await expect(page.locator(".sc-host").first()).toBeVisible();
 }
 
