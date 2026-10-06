@@ -15,6 +15,19 @@ describe("formatError", () => {
     });
   });
 
+  it.each([
+    ["outside_window", "Outside the 24-hour window"],
+    ["conflict", "That already exists"],
+    ["rate_limited", "Too many requests"],
+    ["insufficient_credits", "Not enough credits"],
+    ["slot_taken", "That slot is taken"],
+    ["plan_required", "Not on your plan"],
+    ["seat_limit", "No seats left"],
+  ] as const)("gives the agreed code %s a title and keeps the API's message", (code, title) => {
+    const formatted = formatError(new ApiError(409, { error: { code, message: "Pick another time." } }));
+    expect(formatted).toMatchObject({ code, title, message: "Pick another time." });
+  });
+
   it("keeps field errors from a validation response", () => {
     const err = new ApiError(422, { error: { code: "validation_failed", message: "Check the highlighted fields.", fields: { to: "Bad number" } } });
     expect(formatError(err)).toMatchObject({ code: "validation_failed", fields: { to: "Bad number" }, retryable: false });

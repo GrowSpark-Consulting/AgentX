@@ -30,6 +30,13 @@ const TITLES: Record<ErrorCode, string> = {
   not_available: "Not available yet",
   upstream_failed: "Couldn't reach the service",
   internal: "Something went wrong",
+  outside_window: "Outside the 24-hour window",
+  conflict: "That already exists",
+  rate_limited: "Too many requests",
+  insufficient_credits: "Not enough credits",
+  slot_taken: "That slot is taken",
+  plan_required: "Not on your plan",
+  seat_limit: "No seats left",
 };
 
 const GENERIC: FormattedError = {

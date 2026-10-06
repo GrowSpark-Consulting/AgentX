@@ -101,7 +101,7 @@ function MessagingTools() {
       <div className="app-grid">
         <Link className="app-card" href="/dashboard/messages/test">
           <span className="app-card-title">Send a test message</span>
-          <span className="app-card-text">Send a WhatsApp message from your business number to any phone.</span>
+          <span className="app-card-text">Send a WhatsApp message from your business number to a phone that messaged it in the last 24 hours.</span>
         </Link>
         <Link className="app-card" href="/dashboard/templates/new">
           <span className="app-card-title">Create a template</span>

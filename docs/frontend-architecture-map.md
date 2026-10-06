@@ -153,8 +153,8 @@ stripped by `redactSecrets()` (`@pakka/types`) before anything is logged.
 | Migration 0003 applied to each database (it is in the repo since PR #5) | Dev 2 | Where `whatsapp_connections_public` is missing, the panel shows "details aren't available yet"; sending answers `whatsapp_not_connected` |
 | Connect flow: Embedded Signup + `POST /api/onboarding/whatsapp/embedded-signup` (handover module 10) | Dev 1 (server) · Dev 3 (UI) | "Connect WhatsApp" is shown switched off with the reason; nothing is connected or saved |
 | WhatsApp adapter `sendText` | Dev 1 | Even with an active connection, sending answers `not_available` (never a fake success) |
-| Template table + Meta template submission | Dev 2 (table) · Dev 1 (adapter) | Create template validates fully, then answers `not_available`; no template list yet (nothing to read) |
-| Contract PR for `PhoneInput`, `SendTestMessageInput`/`Result`, `CreateTemplateInput`/`Result`, `ApiErrorBody`/`ERROR_CODES` and the two routes | Dev 3, reviewed by Dev 1 + Dev 2 | These live in `packages/types` locally but are not in `docs/shared-types.md`; the error codes also differ from `dashboard-screen-contracts.md` |
+| Meta template submission (`whatsapp_templates` exists since 0007, #21) | Dev 1 (adapter) · Dev 2 (`createTemplate`) | Create template validates fully, then answers `not_available`; a template list reading `whatsapp_templates` is not built yet |
+| `dashboard-screen-contracts.md` brought in line with the agreed send/template/error contract (now in `docs/shared-types.md`) | Dev 3 + Dev 2 | The proposal still lists different error codes, template variables, button types and statuses; the code follows `shared-types.md` |
 | 0001 applied to the hosted project, test user + membership, `frontend/.env.local` with the https API URL | Dev 2 / Raja | Login is verified end to end against the Playwright mock only |
 | Signup that creates the tenant and membership | Dev 3 + Dev 2 | Onboarding is still a prototype; finishing it signed out goes to `/login` |
 

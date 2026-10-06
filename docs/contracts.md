@@ -1,0 +1,274 @@
+# Contracts — Pakka Agent
+
+The contracts between the three areas: schema, shared types, function signatures, events, API
+routes and error codes (9-day plan, section 3). Each item is marked:
+
+- **Fixed:** in the handover, a merged migration or a merged PR.
+- **Agreed:** decided between the owners and waiting to be built; changing it needs a PR all three see.
+- **Proposed:** to be decided in the freeze meeting.
+
+Shapes of shared types are documented in `docs/shared-types.md`; specs in `docs/handover.md`;
+screen-level contracts in `docs/dashboard-screen-contracts.md`.
+
+## 1. Schema
+
+**Fixed (merged and applied to staging)**
+
+| Migration | Contents |
+|---|---|
+| `0001_init` | 21 core tables, RLS on every table, `is_member()`, tenant indexes |
+| `0002_packs_and_bookings` | Pack versions `(key, version)`, generic bookings (`kind`, `details`, optional `resource_id`), `catalog_items`, `quotes`, member write policies |
+| `0003_whatsapp_connections_and_consent` | `whatsapp_connections`, `connect_links`, `consent_logs`, `whatsapp_connections_public` (security_invoker), `channels.credentials_enc` dropped |
+| `0004_kb_vector_index` | HNSW `vector_cosine_ops` on `kb_chunks.embedding` |
+| `0005_credit_functions` | `spend_credits`, `grant_credits`, `renew_plan_credits`, `credit_balance` (service_role only) |
+| `0006_trial_signup` | `create_trial_tenant` (service_role only) |
+| `0007_whatsapp_templates` | `whatsapp_templates`, `set_template_status` (service_role only) |
+| `0008_credit_refunds` | `refund_credits(tenant, ref_id)`: returns a failed send's credits to the same buckets (service_role only) |
+
+- `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
+  Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
+- Seed: `supabase/seed/` (plans, 21 features, demo and isolation-test businesses, services, resources, hours).
+- Only the 0005 functions write `credit_ledger`.
+- **Member writes from the browser** (everything else is read-only for members; server code writes):
+
+| Table | Members can |
+|---|---|
+| `catalog_items` | read/write own tenant |
+| `quotes` | read/write own tenant; lead and catalog item must be in the same tenant |
+| `services`, `resources` | insert/update/delete own tenant |
+| `leads` | update `stage`, `owner_user_id`, `outcome`, `fields` |
+| `tenants` | update `name`, `timezone`, `business_hours`, `agent_settings` |
+| `memberships` | update their own `whatsapp_phone`, `takeover_pref` |
+| `consent_logs` | read and insert own tenant (no update or delete) |
+
+**Agreed: template status table** (Dev 2 builds it as the next free migration):
+
+```sql
+create table public.whatsapp_templates (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  connection_id uuid not null references public.whatsapp_connections(id) on delete cascade,
+  name text not null,                  -- versioned, e.g. reminder_24h_v1
+  language text not null,              -- en, ta
+  category text not null check (category in ('utility','marketing','authentication')),
+  components jsonb not null,           -- body, examples, optional header, footer, up to 3 buttons
+  status text not null default 'pending'
+    check (status in ('draft','pending','approved','rejected','paused','disabled')),
+  rejection_reason text,
+  meta_template_id text unique,
+  updated_at timestamptz not null default now(),
+  unique (connection_id, name, language)
+);
+```
+
+- RLS: members read their own tenant; only the server writes.
+- Dev 2's `createTemplate` inserts the row as `pending` after Dev 1's adapter submits the template to Meta.
+- Dev 1's webhook, on `message_template_status_update`, calls Dev 2's
+  `set_template_status(meta_template_id, status, reason)`. It never writes the table directly.
+
+**Proposed:** `match_kb_chunks(p_tenant_id, p_query vector(1024), p_k)` (Dev 1): security invoker,
+`search_path = ''`, `hnsw.iterative_scan = relaxed_order`, executable by `service_role` only.
+Migration numbers go to whoever merges first.
+
+## 2. Shared types (`@pakka/types`)
+
+**Fixed (#8, #12, #15):** `E164`, `PhoneInput`, `InboundMessage`, `StatusUpdate`, `SendResult`,
+`Extraction`, `NextAction`, `HandoffTrigger`, the browser-safe connection types,
+`PackDefinition`, `SendTestMessageInput`, `CreateTemplateInput`, `ERROR_CODES`, `ApiErrorBody`,
+`redactSecrets`. Ids are validated with `z.guid()` (seeded ids are not RFC 9562). Secret-bearing row
+types stay in `backend`. Shapes: `docs/shared-types.md`.
+
+**Agreed changes (Dev 1 and Dev 3 apply them in `@pakka/types`):**
+
+- `SendTestMessageResult`: `{ providerMsgId, status: "accepted" }` (was `providerMessageId`, `"sent" | "queued"`).
+  Delivery arrives later through the status webhook into `messages.delivery_status`.
+- `CreateTemplateInput`: optional `header` (text), `footer`, up to 3 `buttons`
+  (`quick_reply`, `url`, `phone_number`), optional `connectionId` (default: the business's only
+  active connection).
+- `CreateTemplateResult`: `{ id, name, language, status: "pending" | "draft" }`.
+- `ERROR_CODES`: the additions in section 6.
+
+**Proposed (Dev 2 adds them):**
+
+```ts
+type CreditReason =
+  | 'plan_grant' | 'topup' | 'trial_grant' | 'ai_reply' | 'template_utility' | 'template_marketing'
+  | 'staff_alert' | 'cycle_reset' | 'admin' | 'refund';          // 'refund' written only by refund_credits
+
+type NotificationKind =               // decides toggle, template and credit cost
+  | 'ai_reply' | 'consent_notice' | 'booking_confirmation' | 'reminder_24h' | 'reminder_2h'
+  | 'followup_nudge' | 'noshow_rebooking' | 'feedback_request' | 'review_request'
+  | 'handoff_customer_notice' | 'staff_alert' | 'lead_card' | 'daily_agenda'
+  | 'trial_message' | 'credit_alert' | 'quote_sent' | 'quote_followup' | 'pretrip_info'
+  | 'staff_reply' | 'test_message';
+
+type SendOutcome =
+  | { status: 'sent'; messageId: string; providerMsgId: string; creditsCharged: number; usedTemplate: boolean }
+  | { status: 'skipped'; reason: 'feature_off' | 'opted_out' | 'insufficient_credits' | 'outside_window' | 'conversation_not_ai' }
+  | { status: 'failed'; error: { code: string; message: string } };
+
+type NotifyPayload = {
+  conversationId?: string;   // customer messages
+  to?: string;               // test_message only: E.164 recipient
+  staffUserId?: string;      // staff alerts, lead cards, daily agenda
+  text?: string;
+  templateParams?: string[]; // in {{1}}… order
+  refId?: string;            // becomes credit_ledger.ref_id
+};
+```
+
+`FeatureKey` lives in `backend/src/billing/credit-costs.ts` for now and moves here with the above.
+
+## 3. JSON shapes in jsonb columns
+
+| Column | Shape | Status |
+|---|---|---|
+| `tenants.business_hours`, `resources.working_hours` | `{ "mon": [{ "start": "10:00", "end": "19:00" }], … }`. Keys `mon`–`sun`; local time in `tenants.timezone`; several intervals allow split shifts; a missing day or `[]` means closed | Proposed (used by the seed) |
+| `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits only) | Proposed (used by the seed) |
+| `tenant_features.settings` | Reminders: `{ "offset_minutes": 1440 }`; other features `{}` | Proposed |
+| `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
+| `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
+| `tenants.agent_settings` | Persona name, tone, languages, handoff default, scoring overrides | **To define: Dev 1 + Dev 3** |
+| `whatsapp_connections.last_check` | One entry per validation check | **To define: Dev 1** |
+
+A service is bookable on any active resource of the same tenant whose `type` equals `services.resource_type`.
+
+## 4. Function signatures
+
+**Fixed (merged).** Dev 2's functions take `tenantId` first and filter by it.
+
+```ts
+// backend/src/billing/credits.ts (#13)
+spendCredits(tenantId, amount, reason: SpendReason, refId?): Promise<boolean>   // false = would go below zero
+getBalance(tenantId): Promise<{ plan: number; topup: number; total: number }>
+// backend/src/features/is-enabled.ts (#18)
+isEnabled(tenantId, featureKey: FeatureKey): Promise<boolean>
+getFeatureStates(tenantId, { fresh? }): Promise<FeatureState[]>
+invalidateFeatureCache(tenantId?): void
+// backend/src/billing/trial.ts (#18)
+createTrialTenant({ userId, name, vertical, timezone? }): Promise<{ tenantId, routeCode, trialEndsAt, created }>
+```
+
+- `isEnabled` is on only when the business is live (active, or in a trial whose end date has not
+  passed), the plan includes the feature and the toggle is on (`default_on` when unset). The
+  handover says plan + toggle; the status check is new and needs confirming (decision 12).
+- `createTrialTenant`: one self-serve business per account. A repeat call during the trial returns
+  the same business (`created: false`); an account that already owns a paying business gets an error.
+
+**Fixed (handover), to be built:**
+
+```ts
+notify.send(tenantId, kind: NotificationKind, payload: NotifyPayload): Promise<SendOutcome>   // Dev 2
+findSlots(tenantId, { serviceId, resourceType, from, to, pincode? }): Promise<Slot[]>          // Dev 2
+holdSlot / confirmBooking / rescheduleBooking / cancelBooking                                 // Dev 2
+buildLeadCard(leadId): Promise<LeadCard>                                                      // Dev 1
+```
+
+**`notify.send` behaviour (Proposed, test message Agreed):**
+
+1. `isEnabled` for the kind's feature, if it has one (`staff_reply`, `consent_notice`, `lead_card` and
+   `test_message` have none).
+2. Skip if the contact has opted out, unless the kind is the final opt-out confirmation.
+3. Inside 24 h of `last_customer_msg_at`: free text. Outside: the kind's approved template; if it has
+   none, return `skipped / outside_window`.
+4. `spendCredits` with the kind's cost; 0-cost kinds skip it. `false` returns `skipped / insufficient_credits`.
+5. Send through Dev 1's adapter, store the `messages` row (`credits_charged`), write `audit_logs`.
+6. If the adapter fails after credits were spent, call `refund_credits(tenantId, messageId)`.
+
+**`test_message` (Agreed):**
+
+- 0 credits.
+- Always through `notify.send`.
+- Free text inside 24 h; otherwise `outside_window`.
+- Recorded in `messages` (`direction 'out'`, `sender 'staff'`, `credits_charged 0`,
+  `provider_msg_id`; the contact is found or created for the number and tagged `test`) and in
+  `audit_logs` (`action 'test_message.sent'`, actor = the staff user).
+- Limit: 10 per business per rolling hour, counted from `audit_logs`; over it, `rate_limited`.
+
+## 5. Events (Inngest)
+
+**Fixed names (handover):** `whatsapp/message.received`, `whatsapp/connected`, `booking.confirmed`,
+`booking.changed`, `handoff.opened`, `handoff.own_number`, `tenant.trial_started`, `credits.spent`.
+
+**Payloads (Proposed):** ids only, never phone numbers, message text or tokens. An event that may be
+sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_started` uses
+`trial_started:<tenantId>`, Fixed in #18).
+
+| Event | Payload |
+|---|---|
+| `whatsapp/message.received` | `{ tenantId, conversationId, messageId }` |
+| `whatsapp/connected` | `{ tenantId, connectionId }` |
+| `booking.confirmed` | `{ tenantId, bookingId }` |
+| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }` |
+| `handoff.opened` | `{ tenantId, handoffId, conversationId }` |
+| `handoff.own_number` | `{ tenantId, handoffId }` |
+| `tenant.trial_started` | `{ tenantId }` |
+| `credits.spent` | `{ tenantId, amount, reason, balanceAfter }` |
+
+## 6. API routes and errors
+
+**Fixed:** the handover's route table, including the module 10 endpoints. Every route validates
+input with Zod, resolves the tenant from the session (the browser never sends `tenantId`), checks
+membership and role, and returns `{ error: { code, message, fields? } }`.
+
+**Error codes.** The list is `ERROR_CODES` in `packages/types/src/errors.ts`; the HTTP statuses are in
+`backend/src/lib/errors.ts`.
+
+| In `ERROR_CODES` (#15) | HTTP | Agreed additions | HTTP |
+|---|---|---|---|
+| `unauthenticated` | 401 | `outside_window` | 409 |
+| `forbidden` | 403 | `conflict` (e.g. duplicate template name and language) | 409 |
+| `not_found` | 404 | `rate_limited` | 429 |
+| `validation_failed` | 422 | `insufficient_credits` | 402 |
+| `no_membership` | 403 | `slot_taken` | 409 |
+| `whatsapp_not_connected` | 409 | `plan_required` | 403 |
+| `not_available` | 501 | `seat_limit` | 409 |
+| `upstream_failed` | 502 | | |
+| `internal` | 500 | | |
+
+**Meta App Review routes (#15), Agreed:**
+
+- `POST /api/messages/test` `{ to, body }` → `{ providerMsgId, status: "accepted" }`; owner or admin.
+- `POST /api/templates` `{ name, category, language, body, examples, header?, footer?, buttons?, connectionId? }`
+  → `{ id, name, language, status: "pending" | "draft" }`; owner or admin.
+- Both answer `not_available` until `notify.send`, the adapter and `whatsapp_templates` exist.
+
+**Read routes (Proposed, screen-contracts Q1).** Entitlements and balances are computed on the
+server, so these are routes, not SQL views:
+
+| Route | Returns | Owner |
+|---|---|---|
+| `GET /api/features` | Every feature with `available`, `enabled`, `creditCost` (`getFeatureStates(…, { fresh: true })`) | Dev 2 |
+| `GET /api/billing/balance` | Balance plus renewal date and trial end | Dev 2 |
+| `GET /api/dashboard/summary` | Month counts: enquiries, qualified, booked, after-hours handled | Dev 2 |
+
+Plain lists (leads, conversations, bookings, services) are read directly under RLS.
+
+## 7. Rules
+
+- Every query filters by `tenant_id`, including with the service role.
+- Every outbound message goes through `notify.send`; every credit change goes through the 0005 functions.
+- Secrets live only in `whatsapp_connections`, encrypted; never logged, returned or sent to the browser.
+- Phone numbers are masked in logs (`+9198xxxxxx21`).
+- Migrations are append-only. Never edit a merged migration.
+- No industry names in code; branch on pack capabilities.
+- Reminders are relative to an event anchor, never a fixed time.
+- Times are ISO 8601 UTC on the wire and `timestamptz` in the database; money is integer rupees.
+
+## 8. Decisions
+
+| # | Decision | Status | Owner |
+|---|---|---|---|
+| 1 | Template status table | **Agreed** (section 1) | Dev 1 + Dev 2 |
+| 2 | Refund when a send fails after spending | **Agreed**: `refund_credits` (0008), same buckets and expiry, once per message | Dev 2 |
+| 3 | `NotificationKind`, `SendOutcome`, `NotifyPayload` | Proposed (`test_message` Agreed) | Dev 1 + Dev 2 |
+| 4 | Event payloads: ids only, fixed ids for re-sendable events | Proposed | All |
+| 5 | Read routes vs views (screen-contracts Q1) | Proposed: routes | Dev 2 + Dev 3 |
+| 6 | Prices (screen-contracts Q6) | Handover v1.0 prices, seeded; Raja to confirm | Raja |
+| 7 | Notification matrix, quiet hours, weekly report, retention (Q7) | Proposed: not in v1 | Raja |
+| 8 | `agent_settings` and `last_check` shapes | Open | Dev 1, Dev 3 |
+| 9 | Pack `bookingType` vs `bookingModes` | Open | Raja + Dev 1 |
+| 10 | PR reviews: CI-only merges vs the plan's paired reviewer | Proposed: paired review for `supabase/`, `packages/` and this file | All |
+| 11 | Test message and template routes | **Agreed** (sections 2, 4, 6) | Dev 1 + Dev 2 + Dev 3 |
+| 12 | `isEnabled` also checks business status (paused, cancelled, trial ended) | Built in #18; confirm | Dev 1 + Dev 2 |
+| 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
