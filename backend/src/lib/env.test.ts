@@ -55,3 +55,24 @@ describe("parseServerEnv", () => {
     ).toThrow(/META_GRAPH_API_VERSION/);
   });
 });
+
+describe("META_GRAPH_API_VERSION default", () => {
+  it("defaults to v26.0 when unset or empty", () => {
+    expect(parseServerEnv(base).META_GRAPH_API_VERSION).toBe("v26.0");
+    expect(
+      parseServerEnv({ ...base, META_GRAPH_API_VERSION: "" }).META_GRAPH_API_VERSION,
+    ).toBe("v26.0");
+  });
+
+  it("keeps an explicit version", () => {
+    expect(
+      parseServerEnv({ ...base, META_GRAPH_API_VERSION: "v27.0" }).META_GRAPH_API_VERSION,
+    ).toBe("v27.0");
+  });
+
+  it.each(["latest", "26.0", " v26.0", "v26"])("still rejects %j", (bad) => {
+    expect(() => parseServerEnv({ ...base, META_GRAPH_API_VERSION: bad })).toThrow(
+      /META_GRAPH_API_VERSION/,
+    );
+  });
+});
