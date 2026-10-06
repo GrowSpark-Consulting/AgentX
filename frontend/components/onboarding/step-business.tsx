@@ -14,8 +14,9 @@ export function StepBusiness({
   s: OnboardingState;
   set: SetState;
 }) {
+  // The trade's sample business name is only a placeholder: the name becomes the real business's.
   const pickIndustry = (i: number) =>
-    set((x) => {
+    set(() => {
       const profile = PROFILES[INDUSTRIES[i].key];
       return {
         ind: i,
@@ -24,9 +25,10 @@ export function StepBusiness({
         faq: [...DEFAULT_FAQ],
         staff: profile.staff.map((p) => ({ ...p })),
         site: profile.site,
-        ...(x.bizEdited ? {} : { biz: profile.biz }),
+        trialError: null,
       };
     });
+  const trialOpen = Boolean(INDUSTRIES[s.ind]?.packKey);
 
   return (
     <>
@@ -39,7 +41,9 @@ export function StepBusiness({
         <Input
           id="pk-biz"
           value={s.biz}
-          onChange={(e) => set({ biz: e.target.value, bizEdited: true })}
+          placeholder={PROFILES[INDUSTRIES[s.ind]?.key ?? "re"].biz}
+          onChange={(e) => set({ biz: e.target.value, trialError: null })}
+          autoComplete="organization"
           className="min-h-12 text-[17px]"
         />
       </div>
@@ -75,7 +79,23 @@ export function StepBusiness({
             );
           })}
         </div>
+        {!trialOpen && (
+          <p role="status" className="m-0 mt-2 text-sm text-brand-700">
+            Trials for this trade aren’t open yet.
+          </p>
+        )}
       </div>
+
+      {s.trialError && (
+        <div role="alert" className="border-2 border-primary bg-brand-100 text-brand-900 px-3.5 py-3 text-sm">
+          {s.trialError}
+        </div>
+      )}
+      {s.hasBusiness && (
+        <p role="status" className="m-0 text-sm text-neutral-700">
+          Your account already belongs to a business, so no new one was created.
+        </p>
+      )}
     </>
   );
 }

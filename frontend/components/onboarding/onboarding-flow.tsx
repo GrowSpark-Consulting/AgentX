@@ -5,14 +5,16 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { CHECKS, POPUP_STEPS, ROUTES, STEP_LABELS, TOTAL_STEPS, type CheckKind } from "@/features/onboarding/data";
+import { CHECKS, INDUSTRIES, POPUP_STEPS, ROUTES, STEP_LABELS, TOTAL_STEPS, type CheckKind } from "@/features/onboarding/data";
 import {
+  industryKey,
   initialState,
   plannedFailure,
   waitHiIndex,
   type OnboardingState,
   type Patch,
 } from "@/features/onboarding/state";
+import { startTrial } from "@/lib/onboarding/actions";
 import { StepVerifyPhone } from "@/components/onboarding/step-verify-phone";
 import { StepBusiness } from "@/components/onboarding/step-business";
 import { StepTeach } from "@/components/onboarding/step-teach";
@@ -97,13 +99,37 @@ export function OnboardingFlow() {
   const cancelPopup = () =>
     set((x) => ({ popup: false, cancelStep: POPUP_STEPS[x.popStep].title }));
 
+  /* ── Business step: the server creates the trial business (or finds the account's business) ── */
+  const [savingBusiness, startSavingBusiness] = React.useTransition();
+  const submitBusiness = () => {
+    startSavingBusiness(async () => {
+      const result = await startTrial({ name: s.biz, industry: industryKey(s) });
+      if (result.status === "ready") {
+        set({ trial: result.trial, hasBusiness: false, trialError: null, step: 2 });
+      } else if (result.status === "has_business") {
+        set({ hasBusiness: true, trialError: null, step: 2 });
+      } else {
+        set({
+          trialError:
+            result.status === "unavailable"
+              ? "Trials for this trade aren’t open yet."
+              : result.status === "invalid"
+                ? (result.fields.name ?? result.fields.industry ?? "Check your business details.")
+                : result.message,
+        });
+        return;
+      }
+      window.scrollTo?.(0, 0);
+    });
+  };
+
   /* ── Wizard navigation ── */
   const st = s.step;
   const inSteps = st < TOTAL_STEPS;
 
   const nextOff =
     (st === 0 && s.otpSent && s.otp.length < 6) ||
-    (st === 1 && !s.biz.trim()) ||
+    (st === 1 && (!s.biz.trim() || !INDUSTRIES[s.ind]?.packKey || savingBusiness)) ||
     (st === 2 && s.imp !== "done");
 
   const nextLabel =
@@ -111,7 +137,9 @@ export function OnboardingFlow() {
       ? s.otpSent
         ? "Verify and continue"
         : "Send code on WhatsApp"
-      : st === 2
+      : st === 1 && savingBusiness
+        ? "Setting up…"
+        : st === 2
         ? "Looks good"
         : st === 3
           ? "I’ve tried it"
@@ -128,6 +156,10 @@ export function OnboardingFlow() {
   const next = () => {
     if (st === 0 && !s.otpSent) {
       set({ otpSent: true });
+      return;
+    }
+    if (st === 1) {
+      submitBusiness();
       return;
     }
     set({ step: st + 1 });
@@ -220,6 +252,7 @@ export function OnboardingFlow() {
                 <Button
                   variant="secondary"
                   onClick={back}
+                  disabled={savingBusiness}
                   className="text-base px-[18px] py-3"
                 >
                   Back

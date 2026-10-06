@@ -2,8 +2,8 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ROUTES, TRIAL_CODE } from "@/features/onboarding/data";
-import { bizLabel, industryKey, type OnboardingState } from "@/features/onboarding/state";
+import { ROUTES } from "@/features/onboarding/data";
+import { bizLabel, industryKey, trialCodeOf, type OnboardingState } from "@/features/onboarding/state";
 
 export function StepLive({ s }: { s: OnboardingState }) {
   const K = industryKey(s);
@@ -15,6 +15,11 @@ export function StepLive({ s }: { s: OnboardingState }) {
       : s.wa === "pending"
         ? "Waiting for Meta approval"
         : "Not connected yet";
+  // The real trial once it exists; the prototype's sample figures before that.
+  const trialSummary = s.trial
+    ? `${s.trial.trialDays} ${s.trial.trialDays === 1 ? "day" : "days"}` +
+      (s.trial.credits === null ? "" : ` · ${s.trial.credits} credits`)
+    : "7 days · 150 credits";
 
   return (
     <>
@@ -32,7 +37,7 @@ export function StepLive({ s }: { s: OnboardingState }) {
 
       <div className="flex flex-col border-t-2 border-foreground">
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-3 border-b border-divider text-[15px]">
-          <span>Test number · code {TRIAL_CODE}</span>
+          <span>Test number · code {trialCodeOf(s)}</span>
           <strong>Live</strong>
         </div>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-3 border-b border-divider text-[15px]">
@@ -43,7 +48,7 @@ export function StepLive({ s }: { s: OnboardingState }) {
         </div>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-3 border-b border-divider text-[15px]">
           <span>Trial</span>
-          <strong>7 days · 150 credits</strong>
+          <strong>{trialSummary}</strong>
         </div>
       </div>
 

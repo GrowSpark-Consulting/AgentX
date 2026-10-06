@@ -8,7 +8,8 @@ export const metadata: Metadata = {
 };
 
 // Needs a signed-in account (the proxy redirects first; this is the authoritative check). The wizard
-// itself is unchanged and still keeps its state in the browser only.
+// keeps its state in the browser, except the Business step, which creates the account's trial
+// business on the server (lib/onboarding/actions.ts).
 export default async function OnboardingPage() {
   const { user } = await getAuth();
   if (!user) redirect("/signup?next=%2Fonboarding");

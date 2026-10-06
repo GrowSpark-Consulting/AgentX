@@ -46,6 +46,7 @@ async function walkTo(page: Page, stop: "WhatsApp" | "Team" | "Live", trade = "R
   if (!codeSent) await next(page, "Send code on WhatsApp").click();
   await page.getByPlaceholder("––––––").fill("123456");
   await next(page, "Verify and continue").click();
+  await page.getByLabel("Business name").fill("Sunrise Homes");
   await option(page, trade).click();
   await next(page, "Continue").click();
   await next(page, "Import").click();
@@ -76,7 +77,16 @@ test("walks every step without overflow, and Back returns", async ({ page }) => 
 
   await expect(page.getByRole("heading", { name: "Tell us about your business" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
+  // The name starts empty (the trade's sample is only a placeholder) and is required.
+  const name = page.getByLabel("Business name");
+  await expect(name).toHaveValue("");
+  await expect(name).toHaveAttribute("placeholder", "Skyline Homes");
+  await expect(next(page, "Continue")).toBeDisabled();
   await option(page, "Salon").click();
+  await expect(name).toHaveValue("");
+  await name.fill("   ");
+  await expect(next(page, "Continue")).toBeDisabled();
+  await name.fill("Glow Studio");
   await next(page, "Continue").click();
 
   await expect(page.getByRole("heading", { name: "Teach your assistant" })).toBeVisible();

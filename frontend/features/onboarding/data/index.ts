@@ -1,13 +1,15 @@
 /* Mock data for the Pakka onboarding prototype. Content is copied verbatim
    from the original design; only the shape changed (tuples → typed objects). */
 
+export const TRIAL_CODE = "TRIAL-7F3K";
+
+/** The WhatsApp test chat, with a trial code as the first message. */
+export const trialChatUrl = (code: string) => `https://wa.me/919000000000?text=${encodeURIComponent(code)}`;
+
 export const ROUTES = {
   landing: "/",
   dashboard: "/dashboard",
-  trialChat: "https://wa.me/919000000000?text=TRIAL-7F3K",
 } as const;
-
-export const TRIAL_CODE = "TRIAL-7F3K";
 export const TOTAL_STEPS = 6;
 
 export const STEP_LABELS = [
@@ -25,12 +27,17 @@ export interface Industry {
   key: IndustryKey;
   name: string;
   books: string;
+  /**
+   * The vertical pack a trial business in this trade runs on. Trades without one can't start a
+   * trial yet. Only the server maps a trade to its pack (lib/onboarding/start-trial.ts).
+   */
+  packKey?: string;
 }
 
 export const INDUSTRIES: Industry[] = [
-  { key: "re", name: "Real estate", books: "site visits" },
-  { key: "int", name: "Interior design", books: "site measurements" },
-  { key: "salon", name: "Salon", books: "appointments" },
+  { key: "re", name: "Real estate", books: "site visits", packKey: "real-estate" },
+  { key: "int", name: "Interior design", books: "site measurements", packKey: "interiors" },
+  { key: "salon", name: "Salon", books: "appointments", packKey: "salon" },
   { key: "hotel", name: "Hotel", books: "room bookings" },
   { key: "rest", name: "Restaurant", books: "table bookings" },
   { key: "fix", name: "Plumber / Electrician", books: "technician visits" },
