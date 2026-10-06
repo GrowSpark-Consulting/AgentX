@@ -22,6 +22,8 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`.
 | `0004_kb_vector_index` | HNSW `vector_cosine_ops` on `kb_chunks.embedding` |
 | `0005_credit_functions` | `spend_credits`, `grant_credits`, `renew_plan_credits`, `credit_balance` (service_role only) |
 | `0006_trial_signup` | `create_trial_tenant` (service_role only) |
+| `0007_whatsapp_templates` | `whatsapp_templates`, `set_template_status` (service_role only) |
+| `0008_credit_refunds` | `refund_credits(tenant, ref_id)`: returns a failed send's credits to the same buckets (service_role only) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -91,7 +93,7 @@ types stay in `backend`. Shapes: `docs/shared-types.md`.
 ```ts
 type CreditReason =
   | 'plan_grant' | 'topup' | 'trial_grant' | 'ai_reply' | 'template_utility' | 'template_marketing'
-  | 'staff_alert' | 'cycle_reset' | 'admin' | 'refund';          // 'refund' is new: decision 2
+  | 'staff_alert' | 'cycle_reset' | 'admin' | 'refund';          // 'refund' written only by refund_credits
 
 type NotificationKind =               // decides toggle, template and credit cost
   | 'ai_reply' | 'consent_notice' | 'booking_confirmation' | 'reminder_24h' | 'reminder_2h'
@@ -171,7 +173,7 @@ buildLeadCard(leadId): Promise<LeadCard>                                        
    none, return `skipped / outside_window`.
 4. `spendCredits` with the kind's cost; 0-cost kinds skip it. `false` returns `skipped / insufficient_credits`.
 5. Send through Dev 1's adapter, store the `messages` row (`credits_charged`), write `audit_logs`.
-6. If the adapter fails after credits were spent, add a `refund` row for the same `ref_id`.
+6. If the adapter fails after credits were spent, call `refund_credits(tenantId, messageId)`.
 
 **`test_message` (Agreed):**
 
@@ -258,7 +260,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | # | Decision | Status | Owner |
 |---|---|---|---|
 | 1 | Template status table | **Agreed** (section 1) | Dev 1 + Dev 2 |
-| 2 | `refund` credit reason when a send fails after spending | Proposed | Dev 2 |
+| 2 | Refund when a send fails after spending | **Agreed**: `refund_credits` (0008), same buckets and expiry, once per message | Dev 2 |
 | 3 | `NotificationKind`, `SendOutcome`, `NotifyPayload` | Proposed (`test_message` Agreed) | Dev 1 + Dev 2 |
 | 4 | Event payloads: ids only, fixed ids for re-sendable events | Proposed | All |
 | 5 | Read routes vs views (screen-contracts Q1) | Proposed: routes | Dev 2 + Dev 3 |
