@@ -144,3 +144,51 @@ synthetic webhook fixtures; the parser and HMAC signature check; the webhook rou
 test-number connection seed script; adapter `sendText` and `markRead`; the pack loader in
 `backend/src/agent/packs/`. The first of these to import `@pakka/types` adds the dependency in its
 own workspace.
+
+## 9. Send-test-message, create-template and errors (delivered by PR #15)
+
+Written by Dev 3 for the two Meta App Review screens. All of it is in `packages/types/src` and is
+re-exported from the package index. Both routes (`POST /api/messages/test`, `POST /api/templates`) are
+owner or admin only, and today answer `not_available` after validating: nothing is sent or submitted yet.
+
+| Name | File | What it is |
+|---|---|---|
+| `PhoneInput` | `whatsapp.ts` | `E164` as typed into a form: trimmed, E.164 with a leading `+`, with a user-readable error |
+| `WHATSAPP_TEXT_MAX` | `whatsapp.ts` | 4096, the text body limit used by the test message (Meta's limit: unconfirmed) |
+| `SendTestMessageInput` | `whatsapp.ts` | Zod: `to` (`PhoneInput`), `body` (trimmed, 1 to 4096 characters) |
+| `SendTestMessageResult` | `whatsapp.ts` | TypeScript interface, not a schema: `{ providerMessageId, status: "sent" \| "queued" }` |
+| `TEMPLATE_CATEGORIES`, `TEMPLATE_LANGUAGES`, `TEMPLATE_BODY_MAX` | `whatsapp.ts` | `utility` or `marketing`; `en` or `ta`; 1024 |
+| `templateVariables(body)` | `whatsapp.ts` | Distinct `{{n}}` numbers in a body, sorted |
+| `CreateTemplateInput` | `whatsapp.ts` | Zod: `name` (`^[a-z][a-z0-9_]*_v[1-9]\d*$`, max 512), `category`, `language`, `body` (1 to 1024), `examples` (non-empty strings). Variables must be numbered `{{1}}`, `{{2}}`, … and `examples` needs exactly one per variable |
+| `CreateTemplateResult` | `whatsapp.ts` | TypeScript interface: `{ name, language, status: "submitted" \| "draft" }` |
+| `ERROR_CODES`, `ErrorCode` | `errors.ts` | `unauthenticated`, `forbidden`, `not_found`, `validation_failed`, `no_membership`, `whatsapp_not_connected`, `not_available`, `upstream_failed`, `internal` |
+| `ApiErrorBody` | `errors.ts` | Zod for every API error: `{ error: { code, message, fields? } }`. `fields` (messages keyed by input field) is an addition to the handover's `{ code, message }` |
+| `redactSecrets`, `containsSecret` | `errors.ts` | Strip or detect credentials (connection-string passwords, JWTs, Supabase keys, Meta `EAA…` tokens, bearer headers) before logging or showing text |
+
+**The HTTP status for each code, and `AppError`, live in `backend/src/lib/errors.ts`, not in this package.**
+Today: `unauthenticated` 401, `forbidden` and `no_membership` 403, `not_found` 404, `validation_failed` 422,
+`whatsapp_not_connected` 409, `not_available` 501, `upstream_failed` 502, `internal` 500. The status map is an
+exhaustive record, so a new code needs an entry there and a title in `frontend/lib/errors.ts`.
+
+### Proposed, not adopted yet
+Nothing below is in the code. It waits for answers from Dev 2 and Dev 3.
+
+- Error codes `outside_window` (409), `conflict` (409, duplicate template name and language) and `rate_limited` (429).
+- Optional template `header` (text), `footer` and up to 3 `buttons` (quick reply, URL, phone number).
+- A template variant of the test message, for recipients outside the 24-hour window.
+
+### Open questions
+For Dev 2: does the test message go through `notify.send`, and does it cost 0 credits? Is it logged in
+`messages`? What is the template status table, and who updates it from the template-status webhook?
+Is template creation done in the request or in a job? Which connection is used when a tenant has several
+(templates belong to the WABA)? Should the test endpoint be rate limited?
+For Dev 3: do the App Review recordings need header, footer or buttons, or the template variant of the test message?
+For Dev 1: `sendTemplate(to, name, lang, params)` in the handover has no button parameters.
+
+Meta details **unconfirmed** (not shown on the pages read): the error code for sending outside the 24-hour
+window (`131047` is from memory), Meta's error JSON shape, whether `example.body_text` is a flat list or a
+list of lists, the rules for variable placement and ratio, which button mixes and orders are allowed, the
+4096 text limit, `AUTHENTICATION` as a category, and the full list of language codes.
+Confirmed on Meta's pages: names are lowercase letters, digits and underscores (max 512), a name is unique
+per language per account (duplicate: error `100`, subcode `2388024`), body max 1024, header text max 60,
+footer max 60, button text max 25, and a URL button takes one variable at the end.
