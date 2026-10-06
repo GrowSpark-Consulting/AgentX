@@ -26,7 +26,7 @@ const serverEnvSchema = z.object({
   NEXT_PUBLIC_META_ES_CONFIG_ID: secret.optional(),
   META_GRAPH_API_VERSION: z
     .string()
-    .regex(/^v\d+\.\d+$/, "must look like v23.0")
+    .regex(/^v\d+\.\d+$/, "must look like v26.0")
     .optional(),
   META_WEBHOOK_VERIFY_TOKEN: secret.optional(),
   META_SYSTEM_USER_TOKEN: secret.optional(),

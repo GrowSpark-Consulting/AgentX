@@ -56,3 +56,5 @@ jobs:
       - run: pnpm exec supabase db reset
       # pgTAP tests in supabase/tests: tenant isolation, RLS on every table, seed contents.
       - run: pnpm exec supabase test db
+      # 50 parallel spend_credits calls on separate connections must never overdraw.
+      - run: bash scripts/db/spend-credits-concurrency.sh
