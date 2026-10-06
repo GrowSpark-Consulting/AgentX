@@ -64,9 +64,12 @@ export const SendTestMessageInput = z.object({
 });
 export type SendTestMessageInput = z.infer<typeof SendTestMessageInput>;
 
-export interface SendTestMessageResult {
-  providerMessageId: string;
-  status: "sent" | "queued";
+/**
+ * Result of POST /api/messages/test. "accepted" means Meta took the message; whether it was
+ * delivered arrives later as a StatusUpdate through the webhook.
+ */
+export interface SendTestMessageResult extends SendResult {
+  status: "accepted";
 }
 
 // Templates. Names are versioned (`reminder_24h_v1`); a change is a new version, never an edit in
@@ -81,6 +84,38 @@ export function templateVariables(body: string): number[] {
   const nums = [...body.matchAll(/\{\{(\d+)\}\}/g)].map((m) => Number(m[1]));
   return [...new Set(nums)].sort((a, b) => a - b);
 }
+
+/** Meta allows at most three buttons on a template. */
+export const TEMPLATE_BUTTONS_MAX = 3;
+/** Meta's limits for header text, footer and button text (confirmed, docs/shared-types.md section 9). */
+export const TEMPLATE_HEADER_MAX = 60;
+export const TEMPLATE_FOOTER_MAX = 60;
+export const TEMPLATE_BUTTON_TEXT_MAX = 25;
+
+const buttonText = z
+  .string()
+  .trim()
+  .min(1, "Add the button text")
+  .max(TEMPLATE_BUTTON_TEXT_MAX, `Keep it under ${TEMPLATE_BUTTON_TEXT_MAX} characters`);
+
+export const TemplateButton = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("quick_reply"), text: buttonText }),
+  z.object({
+    type: z.literal("url"),
+    text: buttonText,
+    url: z.url({ protocol: /^https?$/, error: "Enter a web address starting with https://" }),
+  }),
+  z.object({
+    type: z.literal("phone_number"),
+    text: buttonText,
+    phoneNumber: PhoneInput,
+  }),
+]);
+export type TemplateButton = z.infer<typeof TemplateButton>;
+export const TEMPLATE_BUTTON_TYPES = ["quick_reply", "url", "phone_number"] as const satisfies readonly TemplateButton["type"][];
+
+/** Meta rejects a template whose body starts or ends with a variable. */
+const EDGE_VARIABLE = /^\{\{\d+\}\}|\{\{\d+\}\}$/;
 
 export const CreateTemplateInput = z
   .object({
@@ -101,6 +136,11 @@ export const CreateTemplateInput = z
       .max(TEMPLATE_BODY_MAX, `Keep it under ${TEMPLATE_BODY_MAX} characters`),
     /** One sample value per variable, in order: examples[0] is {{1}}. */
     examples: z.array(z.string().trim().min(1, "Add a sample value")),
+    header: z.string().trim().min(1).max(TEMPLATE_HEADER_MAX, `Keep it under ${TEMPLATE_HEADER_MAX} characters`).optional(),
+    footer: z.string().trim().min(1).max(TEMPLATE_FOOTER_MAX, `Keep it under ${TEMPLATE_FOOTER_MAX} characters`).optional(),
+    buttons: z.array(TemplateButton).max(TEMPLATE_BUTTONS_MAX, `Add up to ${TEMPLATE_BUTTONS_MAX} buttons`).optional(),
+    /** Which WhatsApp number to submit it on. Omitted: the backend uses the only active connection. */
+    connectionId: z.guid().optional(),
   })
   .superRefine((t, ctx) => {
     const vars = templateVariables(t.body);
@@ -109,6 +149,9 @@ export const CreateTemplateInput = z
         ctx.addIssue({ code: "custom", path: ["body"], message: "Number variables in order: {{1}}, {{2}}, …" });
       }
     });
+    if (EDGE_VARIABLE.test(t.body)) {
+      ctx.addIssue({ code: "custom", path: ["body"], message: "Start and end the message with words, not a variable" });
+    }
     if (t.examples.length !== vars.length) {
       ctx.addIssue({ code: "custom", path: ["examples"], message: "Add one sample value for each variable" });
     }
@@ -116,7 +159,9 @@ export const CreateTemplateInput = z
 export type CreateTemplateInput = z.infer<typeof CreateTemplateInput>;
 
 export interface CreateTemplateResult {
+  id: string;
   name: string;
-  language: string;
-  status: "submitted" | "draft";
+  language: (typeof TEMPLATE_LANGUAGES)[number];
+  /** "pending": submitted to Meta and waiting for review. "draft": saved, not submitted. */
+  status: "pending" | "draft";
 }

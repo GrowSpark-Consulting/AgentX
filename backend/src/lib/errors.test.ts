@@ -10,6 +10,20 @@ describe("toErrorResponse", () => {
     expect(res.body).toEqual({ error: { code: "forbidden", message: "Only an owner or admin can do that." } });
   });
 
+  it.each([
+    ["outside_window", 409],
+    ["conflict", 409],
+    ["rate_limited", 429],
+    ["insufficient_credits", 402],
+    ["slot_taken", 409],
+    ["plan_required", 403],
+    ["seat_limit", 409],
+  ] as const)("answers %s with HTTP %i", (code, status) => {
+    const res = toErrorResponse(new AppError(code, "Safe message."));
+    expect(res.status).toBe(status);
+    expect(res.body).toEqual({ error: { code, message: "Safe message." } });
+  });
+
   it("turns a Zod error into validation_failed with one message per field", () => {
     const err = z.object({ to: z.string().min(3, "too short"), body: z.string() }).safeParse({ to: "1" }).error;
     const res = toErrorResponse(err);
