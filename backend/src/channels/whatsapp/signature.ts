@@ -1,8 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 // Meta signs every webhook POST: header `X-Hub-Signature-256: sha256=<hex>`, an HMAC-SHA256 of the
-// RAW request bytes keyed with the app secret. This format is unverified against a live Meta request
-// (the doc pages we read did not show it); re-check it once the Meta app is accessible.
+// RAW request bytes keyed with the app secret. Meta's documentation (Webhooks, payload signature)
+// confirms this format; it has not been seen on a live webhook yet, so re-check it once the Meta app
+// is accessible.
 //
 // The caller picks the secret: META_APP_SECRET, or a manual_byo connection's decrypted app secret.
 // Pass the exact bytes received (`await req.arrayBuffer()`), never re-serialised JSON, or the
