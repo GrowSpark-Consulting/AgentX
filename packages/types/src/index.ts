@@ -2,5 +2,7 @@
 // A contract change is a pull request that the owner and reviewer both see.
 export * from "./agent";
 export * from "./connection";
+export * from "./errors";
 export * from "./pack";
+export * from "./tenancy";
 export * from "./whatsapp";

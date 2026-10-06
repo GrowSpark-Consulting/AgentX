@@ -11,6 +11,11 @@ const serverEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: secret,
   SUPABASE_SERVICE_ROLE_KEY: secret,
 
+  // Development only: a signed-in account with no business sees the dashboard shell with empty
+  // states instead of the "not linked to a business" screen. Already on under `next dev`; set
+  // "true" to try it on a production build. Ignored on Vercel production (frontend/lib/dev-mode.ts).
+  DEV_DASHBOARD_WITHOUT_TENANT: z.enum(["true", "false"]).optional(),
+
   // Optional until the module that uses them lands; make each one required in
   // the same PR that first reads it.
   ANTHROPIC_API_KEY: secret.optional(),

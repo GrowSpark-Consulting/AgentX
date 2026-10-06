@@ -39,9 +39,19 @@ frontend/
 │   │   └── onboarding/page.tsx  /onboarding  → <OnboardingFlow />
 │   ├── (dashboard)/             root layout #2: dashboard.css + self-hosted Archivo
 │   │   ├── layout.tsx
-│   │   └── dashboard/page.tsx   /dashboard   → <PakkaRoot /> (reads the temporary demo URL switches)
+│   │   ├── login/page.tsx       /login       → email + password sign-in
+│   │   └── dashboard/
+│   │       ├── layout.tsx       signed-in gate: verifies the session, resolves the tenant, TenantProvider
+│   │       ├── (app)/           app shell (sidebar, business, nav, logout)
+│   │       │   ├── page.tsx              /dashboard                 → signed-in home
+│   │       │   ├── messages/test/        /dashboard/messages/test   → Send test message
+│   │       │   ├── templates/new/        /dashboard/templates/new   → Create template
+│   │       │   └── whatsapp/             /dashboard/whatsapp        → WhatsApp connection panel
+│   │       └── preview/page.tsx  /dashboard/preview → <PakkaRoot /> prototype (sample data, demo URL switches)
 │   ├── api/health/route.ts      GET /api/health
 │   ├── api/inngest/route.ts     /api/inngest (re-exports @pakka/backend/inngest/serve)
+│   ├── api/messages/test/       POST /api/messages/test → backend channels/whatsapp/test-message
+│   ├── api/templates/           POST /api/templates     → backend notify/templates
 │   ├── connect/[token]/         reserved (assisted WhatsApp connect page, not built; .gitkeep only)
 │   ├── h/[token]/               reserved (staff takeover redirect, not built; .gitkeep only)
 │   └── favicon.ico
@@ -91,14 +101,62 @@ depends on `inngest`, so there's one copy of it.
 | Route | Owner | Status |
 |---|---|---|
 | `/` | Dev 3 | Redirects to `/onboarding` (from the onboarding export). The handover's landing page will take `/` later. |
-| `/onboarding` | Dev 3 | Prototype wizard, mock behaviour only |
-| `/dashboard` | Dev 3 | Prototype dashboard, fixture data only |
+| `/onboarding` | Dev 3 | Prototype wizard, mock behaviour only (dummy WhatsApp code, nothing saved); needs a signed-in account, signed out → `/signup?next=/onboarding` |
+| `/login` | Dev 3 | Supabase email + password sign-in, or Continue with Google |
+| `/signup` | Dev 3 | New account: email + password (confirmed if the project requires it), or Continue with Google → `/onboarding` |
+| `/auth/callback` | Dev 3 | Finishes Google sign-in and email confirmation links: exchanges the code, then no business → `/onboarding`, member → `/dashboard` |
+| `/dashboard` | Dev 3 | Signed-in home: real business from `memberships` → `tenants` |
+| `/dashboard/messages/test`, `/dashboard/templates/new` | Dev 3 | Meta App Review screens (send test message, create template) |
+| `/dashboard/whatsapp` | Dev 3 | Connection panel reading `whatsapp_connections_public` |
+| `/dashboard/preview` | Dev 3 | Prototype dashboard (sample data), signed-in only |
 | `/connect/[token]`, `/h/[token]` | Dev 3 / Dev 1 | Reserved folders, no route yet |
 | `/api/health` | Dev 2 | Exists |
 | `/api/inngest` | Dev 2 | Exists (functions in `backend/src/inngest`) |
+| `POST /api/messages/test` | Dev 3 route · Dev 1 adapter | Exists; answers `whatsapp_not_connected` without an active connection, and `not_available` until the adapter lands |
+| `POST /api/templates` | Dev 3 route · Dev 2 service | Exists; answers `not_available` until a template table and Meta submission exist |
 | `/api/*` in the handover (webhooks, onboarding, conversations, bookings, features, billing, team, admin) | per handover | Not built |
 
 The `api.*` host rewrite (`frontend/next.config.ts`) is unchanged: `api.pakkaagent.in/x` → `/api/x`.
+
+## Auth and tenant context
+
+Supabase Auth with email + password and Google, through `@supabase/ssr` (cookie sessions, PKCE). No
+browser Supabase client is needed yet: sign-up, sign-in, the Google round trip, sign-out and all
+reads run on the server.
+
+A new account is told apart from an existing one by membership only: no business yet → onboarding,
+otherwise → dashboard. Onboarding has no saved progress or "completed" flag yet, and nothing creates
+a tenant or membership; that is a separate contract with Dev 1 / Dev 2.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Public config | `frontend/lib/env.ts` | Validates `NEXT_PUBLIC_SUPABASE_URL` (must be the https API URL, no credentials) and the anon key |
+| Server client | `frontend/lib/supabase/server.ts` | Per-request client acting as the user; row-level security applies |
+| Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding`; signed-in `/login` → `/dashboard`, `/signup` → `/onboarding` (optimistic) |
+| Redirect rules | `frontend/lib/auth/redirect.ts` | `safeNext()` (in-app paths only), `destinationAfterAuth()`, fixed copy for `?error=` codes |
+| OAuth / email-link callback | `frontend/app/auth/callback/route.ts` | `exchangeCodeForSession()`, then routes by membership; failures → `/login` or `/signup?error=…` |
+| Data access layer | `frontend/lib/auth/session.ts` | `getAuth()` (Supabase verifies the token), `getSessionState()`, `requireTenantContext()`, `requireApiTenant()` |
+| Tenant resolver | `backend/src/lib/tenant.ts` | memberships → tenants through the user's own client; one membership → that tenant; several → the user chooses (`pakka_tenant` cookie, honoured only if the user is a member); none → "not linked to a business" |
+| Gate | `app/(dashboard)/dashboard/layout.tsx` | Authoritative check for every `/dashboard` page; renders no markup in the normal case |
+| Client context | `components/dashboard/tenant-context.tsx` | `TenantProvider` / `useTenant()` |
+| Actions | `frontend/lib/auth/actions.ts` | `login` (validated, safe `next`), `signup` (validated; same screen whether or not the address is taken), `signInWithGoogle`, `logout`, `chooseTenant` |
+
+API routes use `tenantRoute()` (`frontend/lib/api/route.ts`): verify the session, resolve the tenant
+on the server, call the backend service, answer errors as `{ error: { code, message } }`.
+User-facing error text comes from `formatError()` (`frontend/lib/errors.ts`); credentials are
+stripped by `redactSecrets()` (`@pakka/types`) before anything is logged.
+
+### Day 1 dependencies still open
+
+| Needed | Owner | Until then |
+|---|---|---|
+| Migration 0003 applied to each database (it is in the repo since PR #5) | Dev 2 | Where `whatsapp_connections_public` is missing, the panel shows "details aren't available yet"; sending answers `whatsapp_not_connected` |
+| Connect flow: Embedded Signup + `POST /api/onboarding/whatsapp/embedded-signup` (handover module 10) | Dev 1 (server) · Dev 3 (UI) | "Connect WhatsApp" is shown switched off with the reason; nothing is connected or saved |
+| WhatsApp adapter `sendText` | Dev 1 | Even with an active connection, sending answers `not_available` (never a fake success) |
+| Template table + Meta template submission | Dev 2 (table) · Dev 1 (adapter) | Create template validates fully, then answers `not_available`; no template list yet (nothing to read) |
+| Contract PR for `PhoneInput`, `SendTestMessageInput`/`Result`, `CreateTemplateInput`/`Result`, `ApiErrorBody`/`ERROR_CODES` and the two routes | Dev 3, reviewed by Dev 1 + Dev 2 | These live in `packages/types` locally but are not in `docs/shared-types.md`; the error codes also differ from `dashboard-screen-contracts.md` |
+| 0001 applied to the hosted project, test user + membership, `frontend/.env.local` with the https API URL | Dev 2 / Raja | Login is verified end to end against the Playwright mock only |
+| Signup that creates the tenant and membership | Dev 3 + Dev 2 | Onboarding is still a prototype; finishing it signed out goes to `/login` |
 
 ## Onboarding domain
 
@@ -121,7 +179,7 @@ The `api.*` host rewrite (`frontend/next.config.ts`) is unchanged: `api.pakkaage
 
 ### Temporary prototype switches (not production architecture)
 
-`/dashboard` reads these query parameters in `app/(dashboard)/dashboard/page.tsx` (props) and on mount
+`/dashboard/preview` reads these query parameters in `app/(dashboard)/dashboard/preview/page.tsx` (props) and on mount
 in `components/dashboard/pakka-app.tsx`. They exist so the 213-state visual baseline and the
 Playwright suite can reach every state. Remove them once the dashboard reads the signed-in tenant.
 
@@ -271,4 +329,6 @@ byte for byte:
 |---|---|
 | Dashboard: 213 states (11 screens × 5 sample industries at 1440 px; 1440/820/390 for real estate, salon, hotel; account states; dialogs; sheets) | 0 of 213 differ from the validated export |
 | Onboarding: 107 states (every step, OTP, 6 trades, import, popup steps, popup cancel, Facebook checks → live, manual partner fail / wait / live, own-app fail, team edits, live; 1440/820/390) | 0 of 107 differ from the original export |
-| Playwright (`pnpm test:e2e`): 110 dashboard + 18 onboarding | 128 passed, 7 skipped (mobile-only or desktop-only by design), 0 failed |
+| Playwright (`pnpm test:e2e`): sign-in setup + 110 dashboard + 18 onboarding + 78 auth, tenant, messaging and WhatsApp, against a mock Supabase (`tests/e2e/support/mock-supabase.mjs`) | 207 passed, 7 skipped (mobile-only or desktop-only by design), 0 failed |
+
+Since Day 1 the dashboard baseline is captured at `/dashboard/preview` with a signed-in session; still 0 of 213 differ.
