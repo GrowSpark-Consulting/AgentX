@@ -1,9 +1,13 @@
 import type { TenantContext } from "@pakka/types";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTemplate } from "../../notify/templates";
 import { fakeSupabase } from "../../test-support/fake-supabase";
 import { getWhatsAppConnections, hasActiveConnection } from "./connections";
 import { sendTestMessage } from "./test-message";
+
+// notify.send's own behaviour is covered in notify/send.test.ts; here only what the route does with it.
+const send = vi.hoisted(() => vi.fn());
+vi.mock("../../notify/send", () => ({ send }));
 
 const ctx = (role: TenantContext["role"] = "owner"): TenantContext => ({
   user: { id: "u1", email: "owner@test.local" },
@@ -53,27 +57,54 @@ describe("getWhatsAppConnections", () => {
 
 describe("sendTestMessage", () => {
   const input = { to: "+919840012345", body: "Hello from Pakka" };
+  const connected = () => fakeSupabase({ whatsapp_connections_public: { data: [connection("active")], error: null } }).client;
+
+  beforeEach(() => {
+    send.mockReset().mockResolvedValue({ status: "sent", messageId: "m1", providerMsgId: "wamid.TEST", creditsCharged: 0, usedTemplate: false });
+  });
 
   it("rejects invalid input before anything else", async () => {
     const { client } = fakeSupabase({});
     await expect(sendTestMessage(client, ctx(), { to: "98400", body: "" })).rejects.toMatchObject({ name: "ZodError" });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("is limited to owners and admins", async () => {
     const { client } = fakeSupabase({});
     await expect(sendTestMessage(client, ctx("staff"), input)).rejects.toMatchObject({ code: "forbidden" });
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it("never reports a send without a connected number", async () => {
+  it("never sends without a connected number", async () => {
     for (const response of [missingView, { data: [], error: null }, { data: [connection("pending")], error: null }]) {
       const { client } = fakeSupabase({ whatsapp_connections_public: response });
       await expect(sendTestMessage(client, ctx(), input)).rejects.toMatchObject({ code: "whatsapp_not_connected" });
     }
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it("does not fake a send even with an active connection, until the adapter exists", async () => {
-    const { client } = fakeSupabase({ whatsapp_connections_public: { data: [connection("active")], error: null } });
-    await expect(sendTestMessage(client, ctx(), input)).rejects.toMatchObject({ code: "not_available" });
+  it("sends through notify.send as the signed-in member and reports Meta's id", async () => {
+    await expect(sendTestMessage(connected(), ctx(), input)).resolves.toEqual({ providerMsgId: "wamid.TEST", status: "accepted" });
+    expect(send).toHaveBeenCalledWith("t1", "test_message", { to: "+919840012345", text: "Hello from Pakka", actorId: "u1" });
+  });
+
+  it("does not fake a send while the adapter is not registered", async () => {
+    send.mockResolvedValue({ status: "failed", error: { code: "not_available", message: "Sending WhatsApp messages isn't switched on yet." } });
+    await expect(sendTestMessage(connected(), ctx(), input)).rejects.toMatchObject({ code: "not_available", status: 501 });
+  });
+
+  it("passes notify.send's errors through with their codes", async () => {
+    send.mockResolvedValue({ status: "failed", error: { code: "rate_limited", message: "Only 10 test messages an hour." } });
+    await expect(sendTestMessage(connected(), ctx(), input)).rejects.toMatchObject({ code: "rate_limited", status: 429 });
+    send.mockResolvedValue({ status: "failed", error: { code: "something_new", message: "Meta said no." } });
+    await expect(sendTestMessage(connected(), ctx(), input)).rejects.toMatchObject({ code: "upstream_failed" });
+  });
+
+  it("explains a number outside the 24-hour window or one that opted out", async () => {
+    send.mockResolvedValue({ status: "skipped", reason: "outside_window" });
+    await expect(sendTestMessage(connected(), ctx(), input)).rejects.toMatchObject({ code: "outside_window", status: 409 });
+    send.mockResolvedValue({ status: "skipped", reason: "opted_out" });
+    await expect(sendTestMessage(connected(), ctx(), input)).rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("opted out") });
   });
 });
 
