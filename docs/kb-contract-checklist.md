@@ -12,7 +12,8 @@ Each item below is Dev 1's proposed answer, not a built feature.
 | | Status |
 |---|---|
 | `kb_documents`, `kb_chunks` | 0001: members read under RLS, cannot write. HNSW index in 0004. No `status` column. |
-| KB code, embeddings client, `match_kb_chunks` | Not built (`backend/src/kb/` is empty). |
+| KB code, embeddings client | Not built (`backend/src/kb/` is empty). |
+| Schema: `status`/`error`/`body`, one FAQ per question, `kb_gaps`, Realtime, `match_kb_chunks` | Built in `0011_knowledge_base` (Shaaz); see [contracts.md](contracts.md) section 9. |
 | `EMBEDDINGS_API_KEY` | In the env schema (optional). No provider, base URL or model variable yet. Provider choice is provisional ([embeddings-evaluation.md](embeddings-evaluation.md)). |
 | Inngest | Wired on the API; only `ping` registered. |
 | `kb_gap` | A `HandoffTrigger` only; no gap table. |
