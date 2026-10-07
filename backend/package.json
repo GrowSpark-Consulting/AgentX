@@ -17,7 +17,9 @@
     "@pakka/types": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
     "inngest": "^4.21.1",
+    "mammoth": "1.13.0",
     "tsx": "^4.23.15",
+    "unpdf": "1.8.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
