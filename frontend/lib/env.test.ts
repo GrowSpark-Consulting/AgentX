@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseApiUrl, parsePublicEnv } from "./env";
+import { parseApiUrl, parseMetaSignupEnv, parsePublicEnv } from "./env";
 
 describe("parseApiUrl", () => {
   it("accepts the API's origin, with or without a trailing slash", () => {
@@ -40,5 +40,29 @@ describe("parsePublicEnv", () => {
   it("rejects URLs with credentials and missing keys", () => {
     expect(() => parsePublicEnv({ NEXT_PUBLIC_SUPABASE_URL: "https://user:pw@abcd.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon" })).toThrow(/credentials/);
     expect(() => parsePublicEnv({ NEXT_PUBLIC_SUPABASE_URL: "https://abcd.supabase.co" })).toThrow(/NEXT_PUBLIC_SUPABASE_ANON_KEY/);
+  });
+});
+
+describe("parseMetaSignupEnv", () => {
+  it("is ready with both numeric ids", () => {
+    expect(parseMetaSignupEnv({ NEXT_PUBLIC_META_APP_ID: " 1234567890 ", NEXT_PUBLIC_META_ES_CONFIG_ID: "987654321" })).toEqual({
+      status: "ready",
+      appId: "1234567890",
+      configId: "987654321",
+    });
+  });
+
+  it("stays off, naming each missing variable, when either is unset", () => {
+    expect(parseMetaSignupEnv({})).toEqual({
+      status: "off",
+      problems: ["NEXT_PUBLIC_META_APP_ID is not set", "NEXT_PUBLIC_META_ES_CONFIG_ID is not set"],
+    });
+    expect(parseMetaSignupEnv({ NEXT_PUBLIC_META_APP_ID: "1", NEXT_PUBLIC_META_ES_CONFIG_ID: "" }).status).toBe("off");
+  });
+
+  it("stays off for a malformed id without echoing it", () => {
+    const result = parseMetaSignupEnv({ NEXT_PUBLIC_META_APP_ID: "app-secret-ish", NEXT_PUBLIC_META_ES_CONFIG_ID: "2" });
+    expect(result).toEqual({ status: "off", problems: ["NEXT_PUBLIC_META_APP_ID must be a numeric id"] });
+    expect(JSON.stringify(result)).not.toContain("app-secret-ish");
   });
 });

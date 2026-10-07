@@ -372,19 +372,19 @@ export const MANUAL_MODES: { key: ManualMode; label: string }[] = [
 
 export interface CopyItem {
   label: string;
-  value: string;
+  /** Null until the real value exists; shown as not available, with nothing to copy. */
+  value: string | null;
 }
 
 export const PARTNER_COPY: CopyItem[] = [
-  { label: "Spark Agent Business Portfolio ID", value: "3141592653589793" },
+  // Spark Agent's real portfolio id isn't configured anywhere yet, so none is shown.
+  { label: "Spark Agent Business Portfolio ID", value: null },
 ];
 
 export const OWN_APP_COPY: CopyItem[] = [
-  {
-    label: "Webhook URL",
-    value: "https://api.pakkaagent.in/webhooks/wa/conn_8f2k1q7d",
-  },
-  { label: "Verify token", value: "vt_9QX2·m4Lr·7F3K·b8Zp" },
+  // Given out by our team when a manual connection is set up (handover: manual_byo is admin-only).
+  { label: "Webhook URL", value: null },
+  { label: "Verify token", value: null },
 ];
 
 export interface PopupStep {
@@ -394,7 +394,7 @@ export interface PopupStep {
   cta: string;
 }
 
-/** The mock “Facebook” Embedded Signup window, five screens. */
+/** A preview of Meta's Embedded Signup window, five screens. Not the real Facebook window. */
 export const POPUP_STEPS: PopupStep[] = [
   {
     title: "Log in to Facebook",

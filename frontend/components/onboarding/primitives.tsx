@@ -80,17 +80,25 @@ export function CopyRow({
     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-center">
       <div className="min-w-0">
         <div className="text-xs text-neutral-700">{item.label}</div>
-        <div className="font-mono font-semibold text-[13px] [overflow-wrap:anywhere]">
-          {item.value}
-        </div>
+        {item.value === null ? (
+          <div className="font-semibold text-[13px] text-neutral-700">
+            Not available yet. Our team shares it when connecting opens.
+          </div>
+        ) : (
+          <div className="font-mono font-semibold text-[13px] [overflow-wrap:anywhere]">
+            {item.value}
+          </div>
+        )}
       </div>
-      <Button
-        variant="secondary"
-        onClick={onCopy}
-        className="py-[5px] px-2.5 text-[13px]"
-      >
-        {copied ? "Copied" : "Copy"}
-      </Button>
+      {item.value === null ? null : (
+        <Button
+          variant="secondary"
+          onClick={onCopy}
+          className="py-[5px] px-2.5 text-[13px]"
+        >
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      )}
     </div>
   );
 }

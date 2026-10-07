@@ -55,6 +55,10 @@ const USERS = {
   // Inbox: inbox@ has chats (INBOX below); owner@ has none; inboxerror@'s conversation reads return bad rows.
   "inbox@test.local": { memberships: [[T.inbox, "owner"]], view: { status: 200, body: [] } },
   "inboxerror@test.local": { memberships: [[T.realty, "owner"]], view: { status: 200, body: [] }, inboxError: true },
+  "validating@test.local": { memberships: [[T.interiors, "owner"]], view: { status: 200, body: [connection(T.interiors.id, "validating")] } },
+  // Same active number, seen by an admin and by staff: what each may do differs, the data doesn't.
+  "wa-admin@test.local": { memberships: [[T.interiors, "admin"]], view: { status: 200, body: [connection(T.interiors.id, "active")] } },
+  "wa-staff@test.local": { memberships: [[T.interiors, "staff"]], view: { status: 200, body: [connection(T.interiors.id, "active")] } },
 };
 
 // Inbox rows for T.inbox (conversations, contacts, handoffs, messages), with times relative to when the

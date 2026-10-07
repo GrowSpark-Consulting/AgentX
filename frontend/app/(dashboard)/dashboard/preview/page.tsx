@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { PakkaRoot, type PakkaRootProps } from "@/components/dashboard/pakka-root";
 
 // TEMPORARY: these URL switches exist for the prototype's demo states and the Playwright visual
@@ -39,5 +40,19 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
   if (fd !== undefined) props.firstDay = fd === "1" || fd === "true";
   const pn = one("productName");
   if (pn) props.productName = pn;
-  return <PakkaRoot {...(props as PakkaRootProps)} />;
+  return (
+    <div className="app-sample">
+      {/* Everything below is fixture data. The prototype subtracts this bar's height
+          (--preview-banner-h, styles/app.css) from its 100vh frame, so the page doesn't scroll. */}
+      <div className="app-sample-banner" role="note" aria-label="Dashboard preview">
+        <span className="app-sample-text">
+          <strong>Preview</strong> · Sample data<span className="app-sample-long">, not your business</span>
+        </span>
+        <Link href="/dashboard" className="app-sample-link">
+          Back to your dashboard
+        </Link>
+      </div>
+      <PakkaRoot {...(props as PakkaRootProps)} />
+    </div>
+  );
 }

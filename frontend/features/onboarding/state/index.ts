@@ -47,8 +47,6 @@ export interface OnboardingState {
   mMode: ManualMode;
   mWaba: string;
   mPhoneId: string;
-  mToken: string;
-  mSecret: string;
   copied: string | null;
   popup: boolean;
   popStep: number;
@@ -61,7 +59,6 @@ export interface OnboardingState {
   /** Bumped on every run so a re-run restarts the timer even if values repeat. */
   chkRun: number;
   waitHi: boolean;
-  testSent: boolean;
 
   /* step 5 — team */
   staff: StaffMember[];
@@ -92,8 +89,6 @@ export const initialState: OnboardingState = {
   mMode: "partner",
   mWaba: "",
   mPhoneId: "",
-  mToken: "",
-  mSecret: "",
   copied: null,
   popup: false,
   popStep: 0,
@@ -104,7 +99,6 @@ export const initialState: OnboardingState = {
   chkPlannedFail: -1,
   chkRun: 0,
   waitHi: false,
-  testSent: false,
   staff: PROFILES.re.staff.map((p) => ({ ...p })),
   cal: false,
   feats: [true, true, true, true, true, true],
@@ -134,16 +128,14 @@ export function bizLabel(state: OnboardingState) {
   return state.biz || "your business";
 }
 
-/** Which check index fails for a given run, based on what the user typed. */
+/**
+ * Which check index fails for a given preview run, based on what the user typed. Only partner access
+ * runs checks: the own-app path takes no token or secret in the browser.
+ */
 export function plannedFailure(kind: CheckKind, s: OnboardingState): number {
   if (kind === "partner") {
     if (!s.mWaba.trim()) return 0;
     if (!s.mPhoneId.trim()) return 1;
-  }
-  if (kind === "own") {
-    if (!s.mToken.trim().startsWith("EAA")) return 0;
-    if (!s.mPhoneId.trim() || !s.mWaba.trim()) return 1;
-    if (!s.mSecret.trim()) return 3;
   }
   return -1;
 }

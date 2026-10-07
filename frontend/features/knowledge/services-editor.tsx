@@ -34,6 +34,7 @@ const TOAST_MS = 2600;
 const sectionTitle = { margin: "0", fontSize: "13px", letterSpacing: ".08em", textTransform: "uppercase" } as const;
 const rowButton = { padding: "2px 6px", whiteSpace: "nowrap" } as const;
 const visuallyHidden = { position: "absolute", width: "1px", height: "1px", overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" } as const;
+const toastStyle = { position: "fixed", left: "16px", bottom: "16px", zIndex: 60, background: "var(--color-text)", color: "var(--color-bg)", padding: "12px 16px", fontSize: "14px", fontWeight: "600", maxWidth: "calc(100vw - 32px)" } as const;
 
 export function ServicesEditor({ tenantId }: { tenantId: string }) {
   const [list, setList] = useState<ListState>({ status: "loading" });
@@ -181,14 +182,11 @@ export function ServicesEditor({ tenantId }: { tenantId: string }) {
       ) : null}
       {dialog.kind === "delete" ? <DeleteServiceDialog service={dialog.service} onDelete={() => remove(dialog.service)} onClose={close} /> : null}
 
-      {toast ? (
-        <div
-          role="status"
-          style={{ position: "fixed", left: "16px", bottom: "16px", zIndex: 60, background: "var(--color-text)", color: "var(--color-bg)", padding: "12px 16px", fontSize: "14px", fontWeight: "600", maxWidth: "calc(100vw - 32px)" }}
-        >
-          {toast}
-        </div>
-      ) : null}
+      {/* Always in the page: screen readers announce a live region's new text, not one that appears
+          with its text already in it. Empty, it takes no space. */}
+      <div role="status" aria-live="polite" style={toast ? toastStyle : visuallyHidden}>
+        {toast}
+      </div>
     </section>
   );
 }
