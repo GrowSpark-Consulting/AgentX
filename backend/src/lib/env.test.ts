@@ -105,3 +105,16 @@ describe("META_GRAPH_API_VERSION default", () => {
     );
   });
 });
+
+describe("embeddings settings", () => {
+  it("defaults to the Atlas endpoint for Voyage models and voyage-4", () => {
+    const env = parseServerEnv(base);
+    expect(env.EMBEDDINGS_BASE_URL).toBe("https://ai.mongodb.com/v1");
+    expect(env.EMBEDDINGS_MODEL).toBe("voyage-4");
+  });
+
+  it("accepts a Voyage-direct endpoint and rejects a base URL that isn't a URL", () => {
+    expect(parseServerEnv({ ...base, EMBEDDINGS_BASE_URL: "https://api.voyageai.com/v1" }).EMBEDDINGS_BASE_URL).toBe("https://api.voyageai.com/v1");
+    expect(() => parseServerEnv({ ...base, EMBEDDINGS_BASE_URL: "not a url" })).toThrow(/EMBEDDINGS_BASE_URL/);
+  });
+});

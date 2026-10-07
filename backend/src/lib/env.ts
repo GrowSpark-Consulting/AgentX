@@ -45,6 +45,10 @@ const serverEnvSchema = z.object({
   // the same PR that first reads it.
   ANTHROPIC_API_KEY: secret.optional(),
   EMBEDDINGS_API_KEY: secret.optional(),
+  // The Atlas endpoint for Voyage models (our key is an Atlas model API key). A Voyage-direct key
+  // would need https://api.voyageai.com/v1 instead. 1024 dimensions, to match kb_chunks.embedding.
+  EMBEDDINGS_BASE_URL: z.url({ protocol: /^https?$/ }).default("https://ai.mongodb.com/v1"),
+  EMBEDDINGS_MODEL: z.string().min(1).default("voyage-4"),
 
   NEXT_PUBLIC_META_APP_ID: secret.optional(),
   META_APP_SECRET: secret.optional(),
