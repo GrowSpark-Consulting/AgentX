@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, expectNoHorizontalOverflow, mainNav, SIGNED_OUT, test } from "../support/app";
+import { mockKbApi } from "../support/kb-api";
 
 // The real dashboard's main navigation as one journey, signed in through the project's storage state
 // (owner@test.local, Test Realty). auth.spec.ts checks the business name on each screen; this checks
@@ -17,14 +18,18 @@ const SECTIONS = [
 
 const exactPath = (path: string) => new RegExp(`^[^?#]*//[^/]+${path.replace(/\//g, "\\/")}$`);
 
-/** The inbox opens a Supabase Realtime socket; mock-supabase has none, so hold it open and silent. */
+/**
+ * The inbox opens a Supabase Realtime socket; mock-supabase has none, so hold it open and silent. The
+ * Knowledge base calls the knowledge-base API, which isn't built yet: support/kb-api.ts stands in.
+ */
 async function holdRealtime(page: Page) {
   await page.routeWebSocket(/\/realtime\/v1\/websocket/, () => {});
 }
 
 test.describe("dashboard navigation", () => {
-  test("offers exactly the dashboard's sections, and each opens at its own address", async ({ page }) => {
+  test("offers exactly the dashboard's sections, and each opens at its own address", async ({ page, request }) => {
     await holdRealtime(page);
+    await mockKbApi(page, request);
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { level: 1, name: "Test Realty" })).toBeVisible();
 
@@ -43,8 +48,9 @@ test.describe("dashboard navigation", () => {
     }
   });
 
-  test("Back and Forward move between sections without leaving the dashboard", async ({ page }) => {
+  test("Back and Forward move between sections without leaving the dashboard", async ({ page, request }) => {
     await holdRealtime(page);
+    await mockKbApi(page, request);
     await page.goto("/dashboard/whatsapp");
     await expect(page.getByRole("heading", { level: 1, name: "WhatsApp connection" })).toBeVisible();
     await mainNav(page).getByRole("link", { name: "Knowledge base", exact: true }).click();

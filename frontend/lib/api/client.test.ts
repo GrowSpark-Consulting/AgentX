@@ -5,7 +5,7 @@ vi.mock("@/lib/supabase/browser", () => ({ getSupabaseBrowserClient: () => ({ au
 const fetchMock = vi.fn<typeof fetch>();
 vi.stubGlobal("fetch", fetchMock);
 
-const { postJson, TENANT_HEADER } = await import("./client");
+const { patchJson, postForm, postJson, sendNoContent, TENANT_HEADER } = await import("./client");
 const { ApiError } = await import("@/lib/errors");
 
 const TENANT = "10000000-0000-0000-0000-000000000001";
@@ -55,5 +55,49 @@ describe("postJson", () => {
     vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.pakkaagent.in/api");
     await expect(postJson("/api/templates", {})).rejects.toThrow(/NEXT_PUBLIC_API_URL/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("patchJson, postForm and sendNoContent", () => {
+  it("PATCHes JSON with the same headers as postJson", async () => {
+    fetchMock.mockResolvedValue(Response.json({ id: "1" }));
+    await patchJson("/api/kb/faqs/1", { a: "Yes" }, { tenantId: TENANT });
+    const { init, headers } = sentRequest();
+    expect(init.method).toBe("PATCH");
+    expect(init.body).toBe('{"a":"Yes"}');
+    expect(headers.get("authorization")).toBe("Bearer header.payload.sig");
+    expect(headers.get(TENANT_HEADER)).toBe(TENANT);
+    expect(headers.get("content-type")).toBe("application/json");
+  });
+
+  it("sends FormData as is, without a content type, so the browser adds the multipart boundary", async () => {
+    fetchMock.mockResolvedValue(Response.json({ id: "1" }, { status: 202 }));
+    const form = new FormData();
+    form.append("file", new File(["hi"], "a.txt"));
+    await postForm("/api/kb/documents", form, { tenantId: TENANT });
+    const { init, headers } = sentRequest();
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(form);
+    expect(headers.has("content-type")).toBe(false);
+    expect(headers.get(TENANT_HEADER)).toBe(TENANT);
+  });
+
+  it("accepts 204 with no body for DELETE and POST, with no JSON content type", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    await expect(sendNoContent("/api/kb/faqs/1", "DELETE", { tenantId: TENANT })).resolves.toBeUndefined();
+    expect(sentRequest().init.method).toBe("DELETE");
+    expect(sentRequest().init.body).toBeUndefined();
+    expect(sentRequest().headers.has("content-type")).toBe(false);
+  });
+
+  it("throws ApiError from each helper on an error response", async () => {
+    fetchMock.mockImplementation(async () => Response.json({ error: { code: "conflict", message: "Exists." } }, { status: 409 }));
+    for (const call of [
+      () => patchJson("/api/kb/faqs/1", {}),
+      () => postForm("/api/kb/documents", new FormData()),
+      () => sendNoContent("/api/kb/gaps/1/dismiss", "POST"),
+    ]) {
+      await expect(call()).rejects.toMatchObject({ status: 409, body: { error: { code: "conflict" } } });
+    }
   });
 });

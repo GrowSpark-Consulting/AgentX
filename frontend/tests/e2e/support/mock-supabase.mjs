@@ -110,20 +110,32 @@ const SEED_SERVICES = [
   ["Bridal trial", 90, 2500, 5000, "stylist", true],
   ["Hair spa", 60, null, null, "chair", false],
 ];
-/** kb_documents rows (0001), read-only for members: { id, tenant_id, source_type, source_url, title, created_at }. */
+/**
+ * kb_documents rows (0001, status/body from 0011), read-only for members:
+ * { id, tenant_id, source_type, source_url, title, body, status, created_at }. FAQs are the manual rows
+ * (title = question, body = answer). Tests change rows through /__mock/kb-documents, standing in for
+ * the API and the ingest job, which write with the service role.
+ */
 const KB_DOCUMENTS = [];
 const SEED_DOCUMENTS = [
-  ["upload", null, "Bridal price list.pdf", "2026-10-01T05:30:00Z"],
-  ["website", "https://glowstudio.in/services", null, "2026-10-05T05:30:00Z"],
+  ["upload", null, "Bridal price list.pdf", "2026-10-01T05:30:00Z", "ready"],
+  ["website", "https://glowstudio.in/services", null, "2026-10-05T05:30:00Z", "ready"],
 ];
+const SEED_FAQS = [
+  ["Do you do home visits?", "Yes, within 5 km of the studio, for bookings over ₹2,000.", "2026-09-20T05:30:00Z"],
+  ["Is there parking?", "Yes, two-wheeler parking at the back of the building.", "2026-09-21T05:30:00Z"],
+];
+const kbDocument = (tenant_id, { source_type, source_url = null, title = null, body = null, status = "processing", created_at = new Date().toISOString() }) =>
+  ({ id: randomUUID(), tenant_id, source_type, source_url, title, body, status, created_at });
 /**
- * { seed?, error?, docs?, docsError? }: seed adds services and resource types; docs adds kb_documents;
- * error / docsError make that table's reads return rows the app can't parse.
+ * { seed?, error?, docs?, docsError?, faqs?, role? }: seed adds services and resource types; docs adds
+ * kb_documents; faqs adds two FAQs; role is the member's role (owner by default). error / docsError
+ * make that table's reads return rows the app can't parse.
  */
-function createServicesAccount({ seed = false, error = false, docs = false, docsError = false } = {}) {
+function createServicesAccount({ seed = false, error = false, docs = false, docsError = false, faqs = false, role = "owner" } = {}) {
   const email = `kb-${randomUUID()}@test.local`;
   const t = tenant(randomUUID(), "Glow Studio", "salon");
-  USERS[email] = { memberships: [[t, "owner"]], view: { status: 200, body: [] }, servicesError: error, kbDocumentsError: docsError };
+  USERS[email] = { memberships: [[t, role]], view: { status: 200, body: [] }, servicesError: error, kbDocumentsError: docsError };
   if (seed) {
     for (const [name, duration_min, price_min, price_max, resource_type, active] of SEED_SERVICES) {
       SERVICES.push({ id: randomUUID(), tenant_id: t.id, name, duration_min, price_min, price_max, resource_type, active });
@@ -131,8 +143,13 @@ function createServicesAccount({ seed = false, error = false, docs = false, docs
     RESOURCE_TYPES.set(t.id, ["chair", "stylist"]);
   }
   if (docs) {
-    for (const [source_type, source_url, title, created_at] of SEED_DOCUMENTS) {
-      KB_DOCUMENTS.push({ id: randomUUID(), tenant_id: t.id, source_type, source_url, title, created_at });
+    for (const [source_type, source_url, title, created_at, status] of SEED_DOCUMENTS) {
+      KB_DOCUMENTS.push(kbDocument(t.id, { source_type, source_url, title, created_at, status }));
+    }
+  }
+  if (faqs) {
+    for (const [title, body, created_at] of SEED_FAQS) {
+      KB_DOCUMENTS.push(kbDocument(t.id, { source_type: "manual", title, body, created_at, status: "ready" }));
     }
   }
   return { email, tenantId: t.id };
@@ -404,6 +421,30 @@ ${choose("Cancel", "cancel=1")}
     }
     return send(res, 200, SERVICES.filter((s) => s.tenant_id === tenantId));
   }
+  if (path === "/__mock/kb-documents") {
+    // kb_documents as stored, for one business; writes as the API and the ingest job would make them.
+    const tenantId = url.searchParams.get("tenant");
+    const docId = url.searchParams.get("id");
+    if (req.method === "POST") {
+      const { tenant_id, ...fields } = await readBody(req);
+      const doc = kbDocument(tenant_id, fields);
+      KB_DOCUMENTS.push(doc);
+      return send(res, 201, doc);
+    }
+    const doc = KB_DOCUMENTS.find((d) => d.id === docId);
+    if (req.method === "PATCH") {
+      if (!doc) return send(res, 404, { msg: "no such document" });
+      const { status, title, body, error } = await readBody(req);
+      Object.assign(doc, Object.fromEntries(Object.entries({ status, title, body, error }).filter(([, v]) => v !== undefined)));
+      return send(res, 200, doc);
+    }
+    if (req.method === "DELETE") {
+      if (!doc) return send(res, 404, { msg: "no such document" });
+      KB_DOCUMENTS.splice(KB_DOCUMENTS.indexOf(doc), 1);
+      return send(res, 200, doc);
+    }
+    return send(res, 200, KB_DOCUMENTS.filter((d) => d.tenant_id === tenantId));
+  }
   if (path === "/__mock/last-email") {
     const mail = outbox.get(String(url.searchParams.get("to") ?? "").toLowerCase());
     return mail ? send(res, 200, mail) : send(res, 404, { msg: "no email" });
@@ -464,8 +505,14 @@ ${choose("Cancel", "cancel=1")}
       if (USERS[email].kbDocumentsError) return send(res, 200, [{ id: "not-a-document", internal: "boom" }]);
       const own = new Set(USERS[email].memberships.map(([t]) => t.id));
       const tenantId = url.searchParams.get("tenant_id")?.replace(/^eq\./, "") ?? null;
-      const rows = KB_DOCUMENTS.filter((d) => own.has(d.tenant_id) && (!tenantId || d.tenant_id === tenantId));
-      return send(res, 200, [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+      // source_type=eq.manual (FAQs) or neq.manual (documents); order=created_at.asc|desc.
+      const [op, sourceType] = (url.searchParams.get("source_type") ?? "").split(/\.(.*)/);
+      const rows = KB_DOCUMENTS.filter(
+        (d) => own.has(d.tenant_id) && (!tenantId || d.tenant_id === tenantId) &&
+          (!op || (op === "eq" ? d.source_type === sourceType : d.source_type !== sourceType)),
+      );
+      const ascending = url.searchParams.get("order") === "created_at.asc";
+      return send(res, 200, [...rows].sort((a, b) => (ascending ? 1 : -1) * a.created_at.localeCompare(b.created_at)));
     }
     if (table === "services" || table === "resources") {
       // RLS as in 0001/0002: members read and write their own businesses' rows only. Filters: eq.
