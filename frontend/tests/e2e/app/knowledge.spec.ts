@@ -8,7 +8,10 @@ import { appAlert, expect, expectNoHorizontalOverflow, mainNav, MOCK_SUPABASE_UR
 type Account = { email: string; tenantId: string };
 type StoredService = { id: string; tenant_id: string; name: string; duration_min: number; price_min: number | null; price_max: number | null; resource_type: string; active: boolean };
 
-async function newAccount(request: APIRequestContext, options: { seed?: boolean; error?: boolean } = {}): Promise<Account> {
+async function newAccount(
+  request: APIRequestContext,
+  options: { seed?: boolean; error?: boolean; docs?: boolean; docsError?: boolean } = {},
+): Promise<Account> {
   return (await request.post(`${MOCK_SUPABASE_URL}/__mock/services-account`, { data: options })).json();
 }
 async function stored(request: APIRequestContext, tenantId: string): Promise<StoredService[]> {
@@ -22,7 +25,7 @@ async function openKnowledge(page: Page, account: Account) {
 const table = (page: Page) => page.getByRole("table");
 const rowFor = (page: Page, name: string) => table(page).getByRole("row").filter({ has: page.getByRole("cell", { name, exact: true }) });
 const dialog = (page: Page) => page.getByRole("dialog");
-/** The services section's Add. */
+/** The services section's Add (the FAQs section has its own, switched off). */
 const servicesAdd = (page: Page) => page.getByRole("region", { name: /^Services & prices/ }).getByRole("button", { name: "Add", exact: true });
 const toast = (page: Page, text: string) => page.getByRole("status").filter({ hasText: text });
 
@@ -67,8 +70,8 @@ test.describe("Knowledge base · services", () => {
     await expect(rows.nth(2)).toContainText("Active");
     // The table scrolls inside its own box on narrow screens; the page never scrolls sideways.
     await expectNoHorizontalOverflow(page);
-    // Only real data: none of the prototype's sample projects, and no sections that aren't built.
-    await expect(page.locator("body")).not.toContainText(/Skyline|FAQs|Documents|couldn’t answer/);
+    // Only real data: none of the prototype's sample services, FAQs, questions or documents.
+    await expect(page.locator("body")).not.toContainText(/Skyline|HD bridal package|Mehendi|Do you do home service|sent \d+ times/);
   });
 
   test("adds a service for this business only", async ({ page, request }) => {
@@ -218,5 +221,84 @@ test.describe("Knowledge base · services", () => {
     await appAlert(page).getByRole("button", { name: "Try again" }).click();
     await expect(appAlert(page)).toContainText("Couldn't load your services");
     await expectNoHorizontalOverflow(page);
+  });
+});
+
+test.describe("Knowledge base · FAQs, questions and documents", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  test("FAQs and unanswered questions say they aren't available, and offer nothing to save", async ({ page, request }) => {
+    const account = await newAccount(request, { seed: true });
+    await openKnowledge(page, account);
+
+    // The prototype's order: questions, services, FAQs, documents.
+    await expect(page.getByRole("heading", { level: 2 })).toHaveText([
+      "Questions the AI couldn’t answer",
+      "Services & prices · 3",
+      "FAQs",
+      /^Documents/,
+    ]);
+    const gaps = page.getByRole("region", { name: "Questions the AI couldn’t answer" });
+    await expect(gaps).toContainText("Not available yet");
+    await expect(gaps.getByRole("button")).toHaveCount(0);
+    await expect(gaps.getByRole("textbox")).toHaveCount(0);
+
+    const faqs = page.getByRole("region", { name: "FAQs" });
+    await expect(faqs).toContainText("Not available yet");
+    await expect(faqs.getByRole("button", { name: "Add" })).toBeDisabled();
+    await expect(faqs.getByText("Adding FAQs isn’t switched on yet.")).toBeVisible();
+    await expect(faqs.getByRole("button", { expanded: true })).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("lists the business's documents in the prototype's tiles, with upload switched off", async ({ page, request }) => {
+    const account = await newAccount(request, { docs: true });
+    await openKnowledge(page, account);
+    const docs = page.getByRole("region", { name: /^Documents/ });
+    await expect(docs.getByRole("heading")).toHaveText("Documents · 2");
+    const tiles = docs.getByRole("listitem");
+    await expect(tiles).toHaveCount(2);
+    // Newest first; the tile label comes from the file type, else from where it came from.
+    await expect(tiles.nth(0)).toContainText("WEB");
+    await expect(tiles.nth(0)).toContainText("services");
+    await expect(tiles.nth(0)).toContainText("From your website · 5 Oct 2026");
+    await expect(tiles.nth(1)).toContainText("PDF");
+    await expect(tiles.nth(1)).toContainText("Bridal price list.pdf");
+    await expect(tiles.nth(1)).toContainText("Uploaded · 1 Oct 2026");
+    // No processing state or send counts: nothing stores them.
+    await expect(docs.getByRole("list")).not.toContainText(/processing|ready|failed|sent/i);
+
+    await expect(docs.getByRole("button", { name: "Upload" })).toBeDisabled();
+    await expect(docs.getByText("Uploading documents isn’t switched on yet, so nothing is sent from here.")).toBeVisible();
+    await expect(page.locator('input[type="file"]')).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+
+    // Read only, and only the session's business.
+    const log = (await (await request.get(`${MOCK_SUPABASE_URL}/__mock/rest-log?email=${account.email}`)).json()) as { method: string; table: string; query: string }[];
+    const reads = log.filter((r) => r.table === "kb_documents");
+    expect(reads.length).toBeGreaterThan(0);
+    for (const r of reads) {
+      expect(r.method).toBe("GET");
+      expect(decodeURIComponent(r.query)).toContain(`tenant_id=eq.${account.tenantId}`);
+    }
+  });
+
+  test("a business with no documents says so", async ({ page, request }) => {
+    const account = await newAccount(request);
+    await openKnowledge(page, account);
+    const docs = page.getByRole("region", { name: /^Documents/ });
+    await expect(docs.getByRole("heading")).toHaveText("Documents · 0");
+    await expect(docs.getByText("No documents yet")).toBeVisible();
+  });
+
+  test("a failed documents read shows an error with Try again, and the rest of the page still works", async ({ page, request }) => {
+    const account = await newAccount(request, { seed: true, docsError: true });
+    await openKnowledge(page, account);
+    const docs = page.getByRole("region", { name: /^Documents/ });
+    await expect(docs.getByRole("alert")).toContainText("Couldn't load your documents");
+    await expect(docs.getByRole("alert")).not.toContainText(/boom|unexpected shape/);
+    await docs.getByRole("button", { name: "Try again" }).click();
+    await expect(docs.getByRole("alert")).toContainText("Couldn't load your documents");
+    await expect(table(page).locator("tbody tr")).toHaveCount(3);
   });
 });

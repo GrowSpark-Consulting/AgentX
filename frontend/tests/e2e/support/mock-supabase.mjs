@@ -103,16 +103,30 @@ const SEED_SERVICES = [
   ["Bridal trial", 90, 2500, 5000, "stylist", true],
   ["Hair spa", 60, null, null, "chair", false],
 ];
-/** { seed?, error? }: seed adds services and resource types; error makes service reads return rows the app can't parse. */
-function createServicesAccount({ seed = false, error = false } = {}) {
+/** kb_documents rows (0001), read-only for members: { id, tenant_id, source_type, source_url, title, created_at }. */
+const KB_DOCUMENTS = [];
+const SEED_DOCUMENTS = [
+  ["upload", null, "Bridal price list.pdf", "2026-10-01T05:30:00Z"],
+  ["website", "https://glowstudio.in/services", null, "2026-10-05T05:30:00Z"],
+];
+/**
+ * { seed?, error?, docs?, docsError? }: seed adds services and resource types; docs adds kb_documents;
+ * error / docsError make that table's reads return rows the app can't parse.
+ */
+function createServicesAccount({ seed = false, error = false, docs = false, docsError = false } = {}) {
   const email = `kb-${randomUUID()}@test.local`;
   const t = tenant(randomUUID(), "Glow Studio", "salon");
-  USERS[email] = { memberships: [[t, "owner"]], view: { status: 200, body: [] }, servicesError: error };
+  USERS[email] = { memberships: [[t, "owner"]], view: { status: 200, body: [] }, servicesError: error, kbDocumentsError: docsError };
   if (seed) {
     for (const [name, duration_min, price_min, price_max, resource_type, active] of SEED_SERVICES) {
       SERVICES.push({ id: randomUUID(), tenant_id: t.id, name, duration_min, price_min, price_max, resource_type, active });
     }
     RESOURCE_TYPES.set(t.id, ["chair", "stylist"]);
+  }
+  if (docs) {
+    for (const [source_type, source_url, title, created_at] of SEED_DOCUMENTS) {
+      KB_DOCUMENTS.push({ id: randomUUID(), tenant_id: t.id, source_type, source_url, title, created_at });
+    }
   }
   return { email, tenantId: t.id };
 }
@@ -400,6 +414,18 @@ ${choose("Cancel", "cancel=1")}
       const view = USERS[email].view;
       if (view.delay) await new Promise((r) => setTimeout(r, view.delay));
       return send(res, view.status, view.body);
+    }
+    if (table === "kb_documents") {
+      // RLS as in 0001: members read their own businesses' documents and write none.
+      if (!email) return send(res, 200, []);
+      if (req.method !== "GET") {
+        return send(res, 403, { code: "42501", details: null, hint: null, message: 'new row violates row-level security policy for table "kb_documents"' });
+      }
+      if (USERS[email].kbDocumentsError) return send(res, 200, [{ id: "not-a-document", internal: "boom" }]);
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const tenantId = url.searchParams.get("tenant_id")?.replace(/^eq\./, "") ?? null;
+      const rows = KB_DOCUMENTS.filter((d) => own.has(d.tenant_id) && (!tenantId || d.tenant_id === tenantId));
+      return send(res, 200, [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at)));
     }
     if (table === "services" || table === "resources") {
       // RLS as in 0001/0002: members read and write their own businesses' rows only. Filters: eq.
