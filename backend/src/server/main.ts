@@ -1,3 +1,5 @@
+import { createPackStore } from "../agent/packs/store";
+import { defaultPacksDir, describeStartupFailure, formatSyncReport, syncPacks } from "../agent/packs/sync";
 import { EnvError, serverEnv, type ServerEnv } from "../lib/env";
 import { bodyLimitFor, createApp } from "./app";
 import { allowedOrigins, withCors } from "./cors";
@@ -16,25 +18,40 @@ try {
   process.exit(1);
 }
 
-const origins = allowedOrigins(env);
-const server = createHttpServer(createApp({ allowedOrigins: origins }), {
-  maxBodyBytes: (pathname) => bodyLimitFor(pathname),
-  // A body over the limit is refused before the app runs; CORS lets the frontend read that 413.
-  onRejected: (request, response) => withCors(response, request, origins),
-});
-
-server.on("error", (err) => {
-  console.error(`[server] ${err.message}`);
-  process.exit(1);
-});
-
-server.listen(env.PORT, env.HOST, () => {
-  console.log(`[server] listening on http://${env.HOST}:${env.PORT}`);
-});
-
-for (const signal of ["SIGTERM", "SIGINT"] as const) {
-  process.once(signal, () => {
-    console.log(`[server] ${signal}: finishing requests in flight`);
-    void closeGracefully(server).then(() => process.exit(0));
+function start(): void {
+  const origins = allowedOrigins(env);
+  const server = createHttpServer(createApp({ allowedOrigins: origins }), {
+    maxBodyBytes: (pathname) => bodyLimitFor(pathname),
+    // A body over the limit is refused before the app runs; CORS lets the frontend read that 413.
+    onRejected: (request, response) => withCors(response, request, origins),
   });
+
+  server.on("error", (err) => {
+    console.error(`[server] ${err.message}`);
+    process.exit(1);
+  });
+
+  server.listen(env.PORT, env.HOST, () => {
+    console.log(`[server] listening on http://${env.HOST}:${env.PORT}`);
+  });
+
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => {
+      console.log(`[server] ${signal}: finishing requests in flight`);
+      void closeGracefully(server).then(() => process.exit(0));
+    });
+  }
 }
+
+// Packs (packs/*.json) are validated and stored in vertical_packs before the server listens: an invalid
+// pack, a changed published version or an unreachable database fails the deploy's healthcheck, like a bad
+// environment does. Safe when several instances start at once (see agent/packs/sync.ts).
+syncPacks({ dir: defaultPacksDir(), store: createPackStore() })
+  .then((report) => {
+    for (const line of formatSyncReport(report)) console.log(line);
+    start();
+  })
+  .catch((err: unknown) => {
+    console.error(`[server] ${describeStartupFailure(err)}`);
+    process.exit(1);
+  });
