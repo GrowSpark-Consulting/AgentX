@@ -188,6 +188,9 @@ flag yet.
 |---|---|---|
 | Public config | `frontend/lib/env.ts` | Validates `NEXT_PUBLIC_SUPABASE_URL` (must be the https API URL, no credentials), the anon key and `NEXT_PUBLIC_API_URL` (an origin, no path) |
 | Server client | `frontend/lib/supabase/server.ts` | Per-request client acting as the user; row-level security applies |
+| Browser client | `frontend/lib/supabase/browser.ts` | One client per tab from the same cookies; `ensureRealtimeAuth()` hands the member's token to Realtime before subscribing |
+| Session refresh | `frontend/components/shared/session-refresh.tsx` | Mounted in both root layouts; the browser client refreshes the access token and rewrites the session cookies (Server Components can't). There is no proxy or middleware: every redirect below happens in a page, layout, server action or route handler |
+| Root page | `app/(onboarding)/page.tsx` | `/` → `/login` for everyone; the session alone decides nothing there |
 | Browser client | `frontend/lib/supabase/browser.ts` | One client per tab from the same cookies; `ensureRealtimeAuth()` hands the member's token to Realtime before subscribing; also supplies the access token for API calls |
 | API client | `frontend/lib/api/client.ts` | `apiFetch()` / `postJson()`: `${NEXT_PUBLIC_API_URL}/api/...` with the bearer token and `X-Pakka-Tenant` |
 | Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding`; signed-in `/login` → `/dashboard`, `/signup` → `/onboarding` (optimistic) |

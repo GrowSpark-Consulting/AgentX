@@ -34,7 +34,7 @@ describe("startTrial", () => {
 
   it("turns a network failure or a non-JSON answer into a failed result with a safe message", async () => {
     apiFetch.mockRejectedValue(new TypeError("fetch failed"));
-    expect(await startTrial({ name: "Sunrise Homes", industry: "re" })).toMatchObject({ status: "failed", message: expect.stringContaining("couldn't reach Pakka") });
+    expect(await startTrial({ name: "Sunrise Homes", industry: "re" })).toMatchObject({ status: "failed", message: expect.stringContaining("couldn't reach Spark Agent") });
 
     apiFetch.mockResolvedValue(new Response("<html>Bad gateway</html>", { status: 502 }));
     expect(await startTrial({ name: "Sunrise Homes", industry: "re" })).toEqual({ status: "failed", message: "Something went wrong. Try again in a moment." });

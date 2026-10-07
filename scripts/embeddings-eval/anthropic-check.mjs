@@ -1,5 +1,5 @@
 /**
- * Pakka Agent - Dev 1 Day 0: check an Anthropic API key.
+ * Spark Agent - Dev 1 Day 0: check an Anthropic API key.
  *
  * Sends one tiny request to each model we use (Haiku 4.5 for extraction, Sonnet 5.5 for replies)
  * and prints: whether the call worked, the reply, tokens used, and your rate limits

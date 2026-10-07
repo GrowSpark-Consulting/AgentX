@@ -4,10 +4,11 @@ import { appAlert, asUser, PASSWORD, SIGNED_OUT, expect, expectNoHorizontalOverf
 test.describe("signed out", () => {
   test.use({ storageState: SIGNED_OUT });
 
-  test("protected pages redirect to sign-in and remember where you were going", async ({ page }) => {
+  test("protected pages redirect to sign-in, then back to the dashboard", async ({ page }) => {
+    // The dashboard layout does the redirect and can't read the URL, so every page asks for /dashboard.
     for (const path of ["/dashboard", "/dashboard/messages/test", "/dashboard/templates/new", "/dashboard/whatsapp", "/dashboard/preview"]) {
       await page.goto(path);
-      await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodeURIComponent(path)}$`));
+      await expect(page).toHaveURL(/\/login\?next=%2Fdashboard$/);
     }
     await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
@@ -99,8 +100,8 @@ test.describe("signed out", () => {
     await expect(second.getByRole("heading", { level: 1, name: "Create a message template" })).toBeVisible();
     await second.close();
 
-    // Opening /login with a session never redirects: the real sign-in page renders (both through the
-    // proxy and as a server response). Only /signup sends a signed-in member to the app.
+    // Opening /login with a session never redirects: the real sign-in page renders. Only /signup sends
+    // a signed-in member to the app.
     const res = await page.request.get("/login", { maxRedirects: 0 });
     expect(res.status()).toBe(200);
     await page.goto("/login");

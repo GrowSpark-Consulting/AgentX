@@ -56,7 +56,7 @@ describe("getWhatsAppConnections", () => {
 });
 
 describe("sendTestMessage", () => {
-  const input = { to: "+919840012345", body: "Hello from Pakka" };
+  const input = { to: "+919840012345", body: "Hello from Spark Agent" };
   const connected = () => fakeSupabase({ whatsapp_connections_public: { data: [connection("active")], error: null } }).client;
 
   beforeEach(() => {
@@ -85,7 +85,7 @@ describe("sendTestMessage", () => {
 
   it("sends through notify.send as the signed-in member and reports Meta's id", async () => {
     await expect(sendTestMessage(connected(), ctx(), input)).resolves.toEqual({ providerMsgId: "wamid.TEST", status: "accepted" });
-    expect(send).toHaveBeenCalledWith("t1", "test_message", { to: "+919840012345", text: "Hello from Pakka", actorId: "u1" });
+    expect(send).toHaveBeenCalledWith("t1", "test_message", { to: "+919840012345", text: "Hello from Spark Agent", actorId: "u1" });
   });
 
   it("does not fake a send while the adapter is not registered", async () => {

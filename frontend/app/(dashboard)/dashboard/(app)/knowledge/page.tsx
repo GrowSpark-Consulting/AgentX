@@ -3,7 +3,7 @@ import { NoBusinessPage } from "@/components/dashboard/no-business";
 import { KnowledgeScreen } from "@/features/knowledge/knowledge-screen";
 import { requireDashboardView } from "@/lib/auth/session";
 
-export const metadata: Metadata = { title: "Knowledge base · Pakka" };
+export const metadata: Metadata = { title: "Knowledge base · Spark Agent" };
 
 // /dashboard/knowledge. The tenant comes from the session; the browser reads and writes services, and
 // reads kb_documents, as the signed-in member under row-level security.

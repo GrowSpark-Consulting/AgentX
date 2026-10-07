@@ -1,5 +1,5 @@
 /**
- * Pakka Agent - Dev 1 Day 0: compare embedding models on Tanglish, Tamil and English.
+ * Spark Agent - Dev 1 Day 0: compare embedding models on Tanglish, Tamil and English.
  *
  * What it does:
  *  1. Embeds the FAQ lines in data.json as "documents".

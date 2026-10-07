@@ -7,7 +7,7 @@ import { authLinkErrorMessage } from "@/lib/auth/redirect";
 import { redirectIfSignedIn } from "@/lib/auth/session";
 import "@/styles/app.css";
 
-export const metadata: Metadata = { title: "Sign up · Pakka" };
+export const metadata: Metadata = { title: "Sign up · Spark Agent" };
 
 // New accounts, which continue to onboarding. A visitor who is already signed in goes where their
 // account belongs instead: the dashboard for a member, onboarding while it has no business yet.
@@ -22,11 +22,11 @@ export default async function SignupPage({ searchParams }: { searchParams: Promi
       <div className="app-auth-card">
         <Link href="/login" className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
-          <span className="app-brand-name">Pakka</span>
+          <span className="app-brand-name">Spark Agent</span>
         </Link>
         <div>
           <h1 className="app-h1" style={{ fontSize: 34 }}>Sign up</h1>
-          <p className="app-lede" style={{ fontSize: 15 }}>Create the account you&apos;ll use to sign in to Pakka.</p>
+          <p className="app-lede" style={{ fontSize: 15 }}>Create the account you&apos;ll use to sign in to Spark Agent.</p>
         </div>
         {linkError ? <ErrorState compact title="Couldn't sign you up" description={linkError} /> : null}
         <SignupForm />

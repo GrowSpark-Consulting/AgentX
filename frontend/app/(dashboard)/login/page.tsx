@@ -6,7 +6,7 @@ import { ErrorState } from "@/components/shared/states";
 import { authLinkErrorMessage } from "@/lib/auth/redirect";
 import "@/styles/app.css";
 
-export const metadata: Metadata = { title: "Sign in · Pakka" };
+export const metadata: Metadata = { title: "Sign in · Spark Agent" };
 
 // Existing accounts. Opening this page never decides where anyone belongs, even with a session
 // already in place: signing in (password or Google) does, in lib/auth/actions.ts and
@@ -19,7 +19,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       <div className="app-auth-card">
         <Link href="/onboarding" className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
-          <span className="app-brand-name">Pakka</span>
+          <span className="app-brand-name">Spark Agent</span>
         </Link>
         <div>
           <h1 className="app-h1" style={{ fontSize: 34 }}>Sign in</h1>

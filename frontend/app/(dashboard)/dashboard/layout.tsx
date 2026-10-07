@@ -11,9 +11,10 @@ import { formatError } from "@/lib/errors";
 import "@/styles/app.css";
 
 // Everything under /dashboard requires a signed-in member of a business (in development, also a
-// signed-in account with no business yet: see lib/dev-mode.ts). The proxy already
-// redirected signed-out visitors; this is the authoritative check (Supabase verifies the token and
-// row-level security decides which memberships are visible). In the normal case it renders no
+// signed-in account with no business yet: see lib/dev-mode.ts). Signed-out visitors are sent to
+// /login (Supabase verifies the token and row-level security decides which memberships are visible);
+// each page checks again through requireDashboardView(), since a layout doesn't stop its pages from
+// rendering. In the normal case it renders no
 // markup of its own, so the prototype at /dashboard/preview keeps its exact output.
 export default async function DashboardGate({ children }: { children: ReactNode }) {
   let state: SessionState;
@@ -31,7 +32,8 @@ export default async function DashboardGate({ children }: { children: ReactNode 
     );
   }
 
-  if (state.status === "signed_out") redirect("/login?next=/dashboard");
+  // A layout can't read the URL, so every signed-out /dashboard page comes back to the dashboard home.
+  if (state.status === "signed_out") redirect(`/login?next=${encodeURIComponent("/dashboard")}`);
 
   if (state.status === "no_membership") {
     // Development only: the shell renders with empty states. No TenantProvider, so nothing below can
@@ -89,7 +91,7 @@ function Gate({ children }: { children: ReactNode }) {
       <div className="app-auth-card" style={{ width: "min(720px, 100%)" }}>
         <span className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
-          <span className="app-brand-name">Pakka</span>
+          <span className="app-brand-name">Spark Agent</span>
         </span>
         {children}
       </div>

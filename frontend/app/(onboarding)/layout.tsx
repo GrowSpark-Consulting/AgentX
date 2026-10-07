@@ -3,6 +3,7 @@
 // is a full page load. Carried over from the pakka-onboarding export.
 import type { Metadata } from "next";
 import { Archivo } from "next/font/google";
+import { SessionRefresh } from "@/components/shared/session-refresh";
 import "@/styles/onboarding.css";
 
 const archivo = Archivo({
@@ -13,7 +14,7 @@ const archivo = Archivo({
 });
 
 export const metadata: Metadata = {
-  title: "Pakka — Start your free trial",
+  title: "Spark Agent — Start your free trial",
   description: "Set up your WhatsApp assistant in a few minutes.",
 };
 
@@ -24,6 +25,7 @@ export default function RootLayout({
     <html lang="en" className={archivo.variable}>
       <body className="bg-background text-foreground font-sans antialiased">
         {children}
+        <SessionRefresh />
       </body>
     </html>
   );

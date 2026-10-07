@@ -83,7 +83,7 @@ export function formatError(err: unknown): FormattedError {
 
   // fetch() itself failed: offline, DNS, server down.
   if (err instanceof TypeError && /fetch|network/i.test(err.message)) {
-    return { code: "network", title: "You're offline", message: "We couldn't reach Pakka. Check your connection and try again.", retryable: true };
+    return { code: "network", title: "You're offline", message: "We couldn't reach Spark Agent. Check your connection and try again.", retryable: true };
   }
 
   if (isRecord(err)) {

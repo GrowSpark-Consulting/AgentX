@@ -7,9 +7,9 @@
 --   select 'd0000000-0000-0000-0000-0000000000a1', id, 'owner' from auth.users where email = '<email>';
 
 insert into public.tenants (id, name, vertical, status, plan_key) values
-  ('d0000000-0000-0000-0000-000000000001', 'Pakka Demo — Real Estate', 'real-estate', 'active', 'pro'),
-  ('d0000000-0000-0000-0000-000000000002', 'Pakka Demo — Interiors',   'interiors',   'active', 'pro'),
-  ('d0000000-0000-0000-0000-000000000003', 'Pakka Demo — Salon',       'salon',       'active', 'pro'),
+  ('d0000000-0000-0000-0000-000000000001', 'Spark Agent Demo — Real Estate', 'real-estate', 'active', 'pro'),
+  ('d0000000-0000-0000-0000-000000000002', 'Spark Agent Demo — Interiors',   'interiors',   'active', 'pro'),
+  ('d0000000-0000-0000-0000-000000000003', 'Spark Agent Demo — Salon',       'salon',       'active', 'pro'),
   ('d0000000-0000-0000-0000-0000000000a1', 'Isolation Test A',         'real-estate', 'trial',  'trial'),
   ('d0000000-0000-0000-0000-0000000000b1', 'Isolation Test B',         'real-estate', 'trial',  'trial')
 on conflict (id) do nothing;

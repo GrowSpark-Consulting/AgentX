@@ -25,7 +25,7 @@ function focusFirstInvalid(fields: Record<string, string>) {
 export function SendTestMessageForm({ connection, businessName }: { connection: ConnectionHint; businessName: string }) {
   const { role, tenant } = useTenant();
   const [to, setTo] = useState("");
-  const [body, setBody] = useState(`Hello from ${businessName}! This is a test message sent with Pakka.`);
+  const [body, setBody] = useState(`Hello from ${businessName}! This is a test message sent with Spark Agent.`);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const canSend = role === "owner" || role === "admin";

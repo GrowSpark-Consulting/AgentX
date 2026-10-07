@@ -1,4 +1,4 @@
-/* Mock data for the Pakka onboarding prototype. Content is copied verbatim
+/* Mock data for the Spark Agent onboarding prototype. Content is copied verbatim
    from the original design; only the shape changed (tuples → typed objects). */
 
 import { TRIAL_PACKS, type IndustryKey } from "@pakka/types";
@@ -346,7 +346,7 @@ export const WA_METHODS: {
     name: "Manual connection",
     tag: "Advanced",
     description:
-      "Give Pakka partner access, or paste the details from your own Meta app.",
+      "Give Spark Agent partner access, or paste the details from your own Meta app.",
   },
 ];
 
@@ -376,7 +376,7 @@ export interface CopyItem {
 }
 
 export const PARTNER_COPY: CopyItem[] = [
-  { label: "Pakka Business Portfolio ID", value: "3141592653589793" },
+  { label: "Spark Agent Business Portfolio ID", value: "3141592653589793" },
 ];
 
 export const OWN_APP_COPY: CopyItem[] = [
@@ -422,7 +422,7 @@ export const POPUP_STEPS: PopupStep[] = [
   },
   {
     title: "Review access",
-    body: "Pakka will be able to manage your WhatsApp account and send messages for you. You can remove this any time in Business Settings.",
+    body: "Spark Agent will be able to manage your WhatsApp account and send messages for you. You can remove this any time in Business Settings.",
     options: null,
     cta: "Finish",
   },
@@ -440,7 +440,7 @@ export interface ConnectionCheck {
 export const CHECKS: Record<CheckKind, ConnectionCheck[]> = {
   meta: [
     { title: "Secure code exchanged for a business token" },
-    { title: "Pakka subscribed to your WhatsApp account" },
+    { title: "Spark Agent subscribed to your WhatsApp account" },
     { title: "Number registered with a secure PIN" },
     { title: "Display name and quality fetched" },
   ],
@@ -453,7 +453,7 @@ export const CHECKS: Record<CheckKind, ConnectionCheck[]> = {
       title: "Phone number belongs to that account",
       error: "That phone number ID isn’t in this account.",
     },
-    { title: "Pakka subscribed to your account" },
+    { title: "Spark Agent subscribed to your account" },
     { title: "Number registered" },
     { title: "Webhook reachable" },
   ],

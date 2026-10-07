@@ -43,12 +43,12 @@ beforeEach(() => {
 });
 
 describe("test_message", () => {
-  const payload = { to: "+919840012345", text: "Hello from Pakka", actorId: STAFF };
+  const payload = { to: "+919840012345", text: "Hello from Spark Agent", actorId: STAFF };
 
   it("sends free text inside the window for 0 credits and records it in messages and audit_logs", async () => {
     const outcome = await send(TENANT, "test_message", payload);
     expect(outcome).toMatchObject({ status: "sent", providerMsgId: "wamid.text", creditsCharged: 0, usedTemplate: false });
-    expect(sender.sendText).toHaveBeenCalledWith("+919840012345", "Hello from Pakka");
+    expect(sender.sendText).toHaveBeenCalledWith("+919840012345", "Hello from Spark Agent");
     expect(calls("spend_credits")).toHaveLength(0);
     expect(calls("notify_record")[0]).toMatchObject({ p_sender: "staff", p_actor: STAFF, p_kind: "test_message", p_credits: 0 });
   });

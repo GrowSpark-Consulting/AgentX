@@ -1,4 +1,4 @@
-# Contracts — Pakka Agent
+# Contracts — Spark Agent
 
 The contracts between the three areas: schema, shared types, function signatures, events, API
 routes and error codes (9-day plan, section 3). Each item is marked:
