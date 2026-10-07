@@ -7,8 +7,14 @@ import { redactSecrets } from "@pakka/types";
 // Node's http server on the outside, Web Request/Response on the inside: every route (and Inngest's
 // edge adapter) takes a Request and returns a Response, so routes are tested without a socket.
 
-/** Larger bodies are refused before any route runs (413). JSON forms and webhooks are far smaller. */
+/**
+ * The default body limit: larger bodies are refused before any route runs (413). JSON forms and
+ * webhooks are far smaller; a route that takes uploads sets its own `maxBodyBytes`.
+ */
 export const MAX_BODY_BYTES = 1024 * 1024;
+
+/** A body limit in bytes, fixed or chosen by request path (the API passes its routes' limits). */
+export type BodyLimit = number | ((pathname: string) => number);
 
 export type FetchHandler = (request: Request) => Promise<Response>;
 
@@ -33,9 +39,10 @@ async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
 
 /**
  * The request as a Web Request. Behind Railway's proxy the scheme comes from x-forwarded-proto. The
- * path is appended to the origin as text, so a request line like `//evil.example` stays a path.
+ * path is appended to the origin as text, so a request line like `//evil.example` stays a path. A
+ * per-path limit is chosen from the parsed path, the same one the app routes on.
  */
-export async function toWebRequest(req: IncomingMessage, maxBodyBytes = MAX_BODY_BYTES): Promise<Request> {
+export async function toWebRequest(req: IncomingMessage, maxBodyBytes: BodyLimit = MAX_BODY_BYTES): Promise<Request> {
   const forwarded = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
   const proto = forwarded === "https" || forwarded === "http" ? forwarded : "http";
   const url = new URL(`${proto}://${req.headers.host ?? "localhost"}${req.url ?? "/"}`);
@@ -46,7 +53,8 @@ export async function toWebRequest(req: IncomingMessage, maxBodyBytes = MAX_BODY
     else if (value !== undefined) headers.set(name, value);
   }
   const method = req.method ?? "GET";
-  const body = method === "GET" || method === "HEAD" ? undefined : await readBody(req, maxBodyBytes);
+  const limit = typeof maxBodyBytes === "function" ? maxBodyBytes(url.pathname) : maxBodyBytes;
+  const body = method === "GET" || method === "HEAD" ? undefined : await readBody(req, limit);
   return new Request(url, { method, headers, body });
 }
 
@@ -67,7 +75,7 @@ export async function sendWebResponse(res: ServerResponse, response: Response): 
 const errorBody = (code: "validation_failed" | "internal", message: string) => ({ error: { code, message } });
 
 interface ServerOptions {
-  maxBodyBytes?: number;
+  maxBodyBytes?: BodyLimit;
   log?: (line: string) => void;
 }
 

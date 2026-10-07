@@ -70,10 +70,11 @@ discarded.
 | **Raja** | The Documents section meaning, who may answer gaps, write roles. |
 | **Dhatri** | Review of the routes and shapes; the UI switch-on. |
 
-**Router and upload-limit changes** are a separate small PR between the migration and the FAQ routes:
-`:param` path matching in `app.ts`, `PATCH` and `DELETE` in `Method` and the preflight, and a per-route body
-limit (`MAX_BODY_BYTES` is 1 MB today). `backend/src/server/` was written by **Shaaz**: ask Shaaz before
-changing it.
+**Router and upload-limit changes: built** (Shaaz). `:name` path segments reach handlers as `params`,
+`PATCH` and `DELETE` are supported (preflight included), and a route's `maxBodyBytes` replaces the 1 MB
+default before the body is read. `tenantRoute(handler, { status })` passes `params` and answers 204 when the
+service returns nothing. See [contracts.md](contracts.md) section 9. `backend/src/server/` is Shaaz's: ask
+before changing it.
 
 ## Build order
 

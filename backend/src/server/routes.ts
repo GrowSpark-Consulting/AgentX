@@ -16,14 +16,22 @@ export interface RouteDeps {
   inngest: (request: Request) => Promise<Response>;
 }
 
-export type RouteHandler = (request: Request, deps: RouteDeps) => Promise<Response> | Response;
-export type Method = "GET" | "POST" | "PUT";
+/** The values of a route's `:name` segments, decoded. */
+export type RouteParams = Readonly<Record<string, string>>;
+export type RouteHandler = (request: Request, deps: RouteDeps, params: RouteParams) => Promise<Response> | Response;
+export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export interface Route {
+  /**
+   * A fixed path, or a pattern with `:name` segments (`/api/kb/faqs/:id`) that match one non-empty
+   * segment each. A fixed path wins over a pattern; otherwise the first matching route wins.
+   */
   path: string;
   methods: Partial<Record<Method, RouteHandler>>;
   /** Called from the browser: CORS applies, and only allowed origins may call it. */
   browser?: boolean;
+  /** The largest body accepted, in bytes; bigger requests get 413 before the route runs. Default 1 MB. */
+  maxBodyBytes?: number;
 }
 
 // Liveness for Railway's healthcheck. Reads nothing else, so it answers even when Supabase or Inngest
