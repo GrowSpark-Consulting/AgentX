@@ -74,9 +74,10 @@ v1: the file is read, chunked and discarded.
 
 **Router and upload-limit changes: built** (Shaaz). `:name` path segments reach handlers as `params`,
 `PATCH` and `DELETE` are supported (preflight included), and a route's `maxBodyBytes` replaces the 1 MB
-default before the body is read. `tenantRoute(handler, { status })` passes `params` and answers 204 when the
-service returns nothing. See [contracts.md](contracts.md) section 9. `backend/src/server/` is Shaaz's: ask
-before changing it.
+default before the body is read. The upload route sets 6 MB, room for a 5 MB file plus its multipart
+wrapping, and checks the 5 MB limit itself so the answer has `fields.file`. `tenantRoute(handler, { status })`
+passes `params` and answers 204 when the service returns nothing. See [contracts.md](contracts.md) section 9.
+`backend/src/server/` is Shaaz's: ask before changing it.
 
 ## Build order
 

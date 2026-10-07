@@ -148,6 +148,37 @@ describe("CORS", () => {
   });
 });
 
+describe("errors the frontend can read", () => {
+  const preflight = (origin: string, method: string, path: string) =>
+    app(new Request(`http://localhost:4000${path}`, { method: "OPTIONS", headers: { origin, "access-control-request-method": method } }));
+
+  it("lets the frontend preflight a missing route, so its 404 reads as not_found instead of a network error", async () => {
+    const pre = await preflight(FRONTEND, "GET", "/api/kb/gaps");
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get("access-control-allow-origin")).toBe(FRONTEND);
+    expect(pre.headers.get("access-control-allow-methods")).toContain("GET");
+    const res = await app(new Request("http://localhost:4000/api/kb/gaps", { headers: { origin: FRONTEND } }));
+    expect(res.status).toBe(404);
+    expect(res.headers.get("access-control-allow-origin")).toBe(FRONTEND);
+    expect(await errorOf(res)).toEqual({ code: "not_found", message: "Not found." });
+  });
+
+  it("still gives other origins nothing on a missing route", async () => {
+    const pre = await preflight("https://evil.example", "GET", "/api/kb/gaps");
+    expect(pre.status).toBe(403);
+    expect(pre.headers.get("access-control-allow-origin")).toBeNull();
+    const res = await app(new Request("http://localhost:4000/api/kb/gaps", { headers: { origin: "https://evil.example" } }));
+    expect(res.status).toBe(404);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("adds CORS to a 405 on a browser route", async () => {
+    const res = await app(new Request("http://localhost:4000/api/templates", { headers: { origin: FRONTEND } }));
+    expect(res.status).toBe(405);
+    expect(res.headers.get("access-control-allow-origin")).toBe(FRONTEND);
+  });
+});
+
 describe("authentication", () => {
   it.each([
     ["no Authorization header", {}],

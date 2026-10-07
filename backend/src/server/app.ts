@@ -11,6 +11,8 @@ export interface AppDeps extends RouteDeps {
 
 const notFound = () => Response.json({ error: { code: "not_found", message: "Not found." } }, { status: 404 });
 
+const ANY_METHOD: readonly Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
 const isPattern = (path: string) => path.includes("/:");
 
 function matchPattern(pattern: string, pathname: string): RouteParams | null {
@@ -69,14 +71,23 @@ export function createApp(overrides: Partial<AppDeps> = {}, routes: readonly Rou
 
   return async function handle(request: Request): Promise<Response> {
     const match = matchRoute(new URL(request.url).pathname, routes);
-    if (!match) return notFound();
+    if (!match) {
+      // The frontend's origins can read a missing route as not_found rather than as a network error: the
+      // preflight passes, and the 404 carries CORS headers. Other origins still get neither.
+      return request.method === "OPTIONS"
+        ? preflight(request, deps.allowedOrigins, ANY_METHOD)
+        : withCors(notFound(), request, deps.allowedOrigins);
+    }
     const { route, params } = match;
 
     if (request.method === "OPTIONS" && route.browser) {
       return preflight(request, deps.allowedOrigins, Object.keys(route.methods));
     }
     const handler = route.methods[request.method as Method];
-    if (!handler) return methodNotAllowed(route);
+    if (!handler) {
+      const notAllowed = methodNotAllowed(route);
+      return route.browser ? withCors(notAllowed, request, deps.allowedOrigins) : notAllowed;
+    }
 
     if (route.browser && !originAllowed(request, deps.allowedOrigins)) {
       // The browser would hide the answer anyway; refusing here means the route never runs.

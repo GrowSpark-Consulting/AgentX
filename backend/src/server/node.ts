@@ -19,7 +19,8 @@ export type BodyLimit = number | ((pathname: string) => number);
 export type FetchHandler = (request: Request) => Promise<Response>;
 
 export class BodyTooLargeError extends Error {
-  constructor() {
+  /** `request`: the refused request without its body, so its 413 can still get CORS headers. */
+  constructor(readonly request?: Request) {
     super("request body too large");
     this.name = "BodyTooLargeError";
   }
@@ -54,7 +55,12 @@ export async function toWebRequest(req: IncomingMessage, maxBodyBytes: BodyLimit
   }
   const method = req.method ?? "GET";
   const limit = typeof maxBodyBytes === "function" ? maxBodyBytes(url.pathname) : maxBodyBytes;
-  const body = method === "GET" || method === "HEAD" ? undefined : await readBody(req, limit);
+  let body: Buffer | undefined;
+  try {
+    body = method === "GET" || method === "HEAD" ? undefined : await readBody(req, limit);
+  } catch (err) {
+    throw err instanceof BodyTooLargeError ? new BodyTooLargeError(new Request(url, { method, headers })) : err;
+  }
   return new Request(url, { method, headers, body });
 }
 
@@ -76,6 +82,8 @@ const errorBody = (code: "validation_failed" | "internal", message: string) => (
 
 interface ServerOptions {
   maxBodyBytes?: BodyLimit;
+  /** Finishes a 413 sent before the app ran (the API adds its CORS headers, so browsers can read it). */
+  onRejected?: (request: Request, response: Response) => Response;
   log?: (line: string) => void;
 }
 
@@ -85,7 +93,8 @@ async function respond(req: IncomingMessage, handle: FetchHandler, options: Requ
     request = await toWebRequest(req, options.maxBodyBytes);
   } catch (err) {
     if (err instanceof BodyTooLargeError) {
-      return Response.json(errorBody("validation_failed", "That request is too large."), { status: 413, headers: { connection: "close" } });
+      const tooLarge = Response.json(errorBody("validation_failed", "That request is too large."), { status: 413, headers: { connection: "close" } });
+      return err.request ? options.onRejected(err.request, tooLarge) : tooLarge;
     }
     // An unparseable Host header or URL.
     return Response.json(errorBody("validation_failed", "Bad request."), { status: 400 });
@@ -103,7 +112,11 @@ async function respond(req: IncomingMessage, handle: FetchHandler, options: Requ
  * (never the query string: Meta's verify token travels in it), status and time.
  */
 export function createHttpServer(handle: FetchHandler, options: ServerOptions = {}): Server {
-  const resolved = { maxBodyBytes: options.maxBodyBytes ?? MAX_BODY_BYTES, log: options.log ?? console.log };
+  const resolved = {
+    maxBodyBytes: options.maxBodyBytes ?? MAX_BODY_BYTES,
+    onRejected: options.onRejected ?? ((_request: Request, response: Response) => response),
+    log: options.log ?? console.log,
+  };
   return createServer((req, res) => {
     const started = Date.now();
     const path = (req.url ?? "/").split("?")[0];
