@@ -20,7 +20,7 @@ vi.mock("@/lib/supabase/server", () => ({ createSupabaseServerClient: async () =
 vi.mock("@pakka/backend/lib/tenant", () => ({ resolveTenant: (...args: unknown[]) => resolveTenant(...args) }));
 vi.mock("@/lib/dev-mode", () => ({ dashboardWithoutTenant: () => devShell() }));
 
-const { requireApiTenant, requireDashboardView, requireTenantContext } = await import("./session");
+const { redirectIfSignedIn, requireApiTenant, requireDashboardView, requireTenantContext } = await import("./session");
 
 const user = { id: "u-1", email: "new@example.com" };
 const context = {
@@ -86,5 +86,39 @@ describe("tenant-scoped access is unchanged by the development view", () => {
 
   it("API routes still answer no_membership", async () => {
     await expect(requireApiTenant()).rejects.toMatchObject({ code: "no_membership" });
+  });
+});
+
+describe("redirectIfSignedIn (/login and /signup)", () => {
+  beforeEach(() => {
+    getUser.mockReset().mockResolvedValue({ data: { user } });
+    resolveTenant.mockReset();
+  });
+
+  it("lets a signed-out visitor see the page, without looking up any business", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+    await expect(redirectIfSignedIn()).resolves.toBeUndefined();
+    await expect(redirectIfSignedIn("/dashboard/whatsapp")).resolves.toBeUndefined();
+    expect(resolveTenant).not.toHaveBeenCalled();
+  });
+
+  it("sends a signed-in member to the dashboard (or the page they asked for), never onboarding", async () => {
+    resolveTenant.mockResolvedValue({ status: "ok", context, memberships: [] });
+    expect(await redirectOf(redirectIfSignedIn())).toBe("/dashboard");
+    expect(await redirectOf(redirectIfSignedIn("/dashboard/whatsapp"))).toBe("/dashboard/whatsapp");
+    expect(await redirectOf(redirectIfSignedIn("/onboarding"))).toBe("/dashboard");
+    resolveTenant.mockResolvedValue({ status: "choose", memberships: [] });
+    expect(await redirectOf(redirectIfSignedIn())).toBe("/dashboard");
+  });
+
+  it("sends a signed-in account with no business yet to onboarding", async () => {
+    resolveTenant.mockResolvedValue({ status: "no_membership" });
+    expect(await redirectOf(redirectIfSignedIn())).toBe("/onboarding");
+    expect(await redirectOf(redirectIfSignedIn("/dashboard"))).toBe("/onboarding");
+  });
+
+  it("sends a signed-in account to the dashboard's error state if its business can't be loaded", async () => {
+    resolveTenant.mockRejectedValue(new Error("db down"));
+    expect(await redirectOf(redirectIfSignedIn())).toBe("/dashboard");
   });
 });

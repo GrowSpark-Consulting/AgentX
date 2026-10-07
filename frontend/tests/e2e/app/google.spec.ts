@@ -63,6 +63,15 @@ test.describe("Continue with Google", () => {
     await continueWithGoogle(page);
     await page.getByRole("link", { name: "Use a new Google account" }).click();
     await expect(page).toHaveURL(/\/onboarding$/);
+
+    // Signed in without a business yet: /signup leads back to onboarding, not a blank form, while
+    // /login stays the real sign-in page.
+    await page.goto("/signup");
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(page.getByRole("heading", { name: "Start your free trial" })).toBeVisible();
+    await page.goto("/login");
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   });
 
   test("cancelling at Google gives a safe message on the page you started from", async ({ page }) => {

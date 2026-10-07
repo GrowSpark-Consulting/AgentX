@@ -5,6 +5,7 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
+import { destinationForUser } from "@/lib/auth/destination";
 import { dashboardWithoutTenant } from "@/lib/dev-mode";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -31,6 +32,16 @@ export const getSessionState = cache(async (): Promise<SessionState> => {
   const preferred = (await cookies()).get(TENANT_COOKIE)?.value ?? null;
   return resolveTenant(supabase, user, preferred);
 });
+
+/**
+ * For /login and /signup: a visitor who is already signed in goes where their account belongs (the
+ * dashboard, or onboarding while it has no business) instead of seeing the form again. A signed-out
+ * visitor gets the page as normal.
+ */
+export async function redirectIfSignedIn(next?: unknown): Promise<void> {
+  const { supabase, user } = await getAuth();
+  if (user) redirect(await destinationForUser(supabase, user, next));
+}
 
 /** For pages inside the signed-in app; the dashboard layout has already handled other states. */
 export async function requireTenantContext(): Promise<TenantContext> {

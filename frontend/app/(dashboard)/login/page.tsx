@@ -8,6 +8,9 @@ import "@/styles/app.css";
 
 export const metadata: Metadata = { title: "Sign in · Pakka" };
 
+// Existing accounts. Opening this page never decides where anyone belongs, even with a session
+// already in place: signing in (password or Google) does, in lib/auth/actions.ts and
+// app/auth/callback/route.ts.
 export default async function LoginPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { next, error } = await searchParams;
   const linkError = authLinkErrorMessage(error);
@@ -24,10 +27,13 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         </div>
         {linkError ? <ErrorState compact title="Couldn't sign you in" description={linkError} /> : null}
         <LoginForm next={typeof next === "string" ? next : undefined} />
+        <p className="app-hint" style={{ fontSize: 14, margin: 0 }}>
+          <Link href="/forgot-password">Forgot password?</Link>
+        </p>
         <p className="app-hint" style={{ fontSize: 14, margin: 0 }}>Or</p>
         <GoogleButton next={typeof next === "string" ? next : undefined} />
         <p className="app-hint" style={{ fontSize: 14 }}>
-          New to Pakka? <Link href="/signup">Start your free trial</Link>
+          Don&apos;t have an account? <Link href="/signup">Sign up</Link>
         </p>
       </div>
     </div>

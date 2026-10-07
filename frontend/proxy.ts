@@ -36,12 +36,9 @@ export async function proxy(request: NextRequest) {
     signup.searchParams.set("next", "/onboarding");
     return redirectKeepingCookies(signup, response);
   }
-  if (user && pathname === "/login") {
-    return redirectKeepingCookies(new URL("/dashboard", request.url), response);
-  }
-  if (user && pathname === "/signup") {
-    return redirectKeepingCookies(new URL("/onboarding", request.url), response);
-  }
+  // A signed-in visitor on /login or /signup is sent on by the page itself, which knows whether the
+  // account has a business yet (lib/auth/session.ts: redirectIfSignedIn). Signed-out visitors always
+  // get the real page.
   return response;
 }
 
@@ -53,5 +50,5 @@ function redirectKeepingCookies(to: URL, from: NextResponse) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/login", "/signup", "/onboarding"],
+  matcher: ["/dashboard/:path*", "/login", "/signup", "/onboarding", "/reset-password"],
 };
