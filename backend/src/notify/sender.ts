@@ -4,9 +4,21 @@ import type { SendResult } from "@pakka/types";
 // bound to one tenant's connection, and never sees the token. Until a factory is registered, sends
 // answer not_available before any credits are spent.
 
+// Both methods throw when WhatsApp does not accept the message.
 export interface MessageSender {
   sendText(to: string, text: string): Promise<SendResult>;
   sendTemplate(to: string, name: string, language: string, params: string[]): Promise<SendResult>;
+}
+
+/**
+ * Thrown by sendText when WhatsApp refuses free text because the 24-hour window has closed (Meta
+ * error 131047, the adapter's `outside_window`). notify.send then sends the approved template instead.
+ */
+export class OutsideWindowError extends Error {
+  constructor(message = "WhatsApp only allows an approved template outside the 24-hour window.") {
+    super(message);
+    this.name = "OutsideWindowError";
+  }
 }
 
 export type SenderFactory = (connection: { tenantId: string; connectionId: string }) => Promise<MessageSender>;

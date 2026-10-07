@@ -8,7 +8,7 @@ vi.mock("../lib/supabase-admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock("../features/is-enabled", () => ({ isEnabled }));
 
 const { send, TEST_MESSAGES_PER_HOUR } = await import("./send");
-const { registerSender } = await import("./sender");
+const { OutsideWindowError, registerSender } = await import("./sender");
 
 const TENANT = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 const CONVERSATION = "3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f601";
@@ -116,6 +116,41 @@ describe("customer messages", () => {
     const spent = calls("spend_credits")[0];
     expect(calls("refund_credits")[0]).toMatchObject({ p_tenant_id: TENANT, p_ref_id: spent.p_ref_id });
     expect(calls("notify_record")).toHaveLength(0);
+  });
+
+  it("skips and refunds an AI reply when WhatsApp says the window has closed", async () => {
+    sender.sendText.mockRejectedValue(new OutsideWindowError());
+    await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, text: "Hi" })).resolves.toEqual({
+      status: "skipped",
+      reason: "outside_window",
+    });
+    expect(calls("refund_credits")).toHaveLength(1);
+    expect(calls("notify_record")).toHaveLength(0);
+  });
+
+  it("sends the template instead when the window closes during a free-text send", async () => {
+    sender.sendText.mockRejectedValue(new OutsideWindowError());
+    rpcHandlers.notify_template = () => ok([{ name: "booking_confirmed_v1", language: "en", category: "utility" }]);
+    const outcome = await send(TENANT, "booking_confirmation", {
+      conversationId: CONVERSATION,
+      text: "See you at 4 pm.",
+      templateParams: ["4 pm"],
+    });
+    expect(outcome).toMatchObject({ status: "sent", usedTemplate: true, creditsCharged: 1 });
+    expect(sender.sendTemplate).toHaveBeenCalledWith("+919840012345", "booking_confirmed_v1", "en", ["4 pm"]);
+    const [first, second] = calls("spend_credits");
+    expect(calls("refund_credits")).toEqual([expect.objectContaining({ p_ref_id: first.p_ref_id })]);
+    expect(calls("notify_record")).toEqual([
+      expect.objectContaining({ p_message_id: second.p_ref_id, p_template_name: "booking_confirmed_v1", p_body: null }),
+    ]);
+  });
+
+  it("does not retry when a template send is refused", async () => {
+    sender.sendTemplate.mockRejectedValue(new OutsideWindowError());
+    const outcome = await send(TENANT, "reminder_24h", { conversationId: CONVERSATION, templateParams: ["4 pm"] });
+    expect(outcome).toMatchObject({ status: "failed", error: { code: "upstream_failed" } });
+    expect(sender.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(calls("refund_credits")).toHaveLength(1);
   });
 
   it("sends the approved template outside the window and charges by its category", async () => {
