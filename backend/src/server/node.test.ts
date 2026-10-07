@@ -64,6 +64,33 @@ describe("createHttpServer", () => {
     expect(paths).toEqual(["/api/kb/documents", "/api/templates"]);
   });
 
+  it("hands an over-size request to onRejected, so the API can add CORS to its 413", async () => {
+    let ran = false;
+    let seen: Request | undefined;
+    const { url } = await start(
+      async () => {
+        ran = true;
+        return new Response("ok");
+      },
+      {
+        maxBodyBytes: 16,
+        onRejected: (request, response) => {
+          seen = request;
+          const headers = new Headers(response.headers);
+          headers.set("access-control-allow-origin", request.headers.get("origin") ?? "");
+          return new Response(response.body, { status: response.status, headers });
+        },
+      },
+    );
+    const res = await fetch(`${url}/api/kb/documents?x=1`, { method: "POST", headers: { origin: "https://app.example" }, body: "x".repeat(64) });
+    expect(res.status).toBe(413);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://app.example");
+    expect(await res.json()).toEqual({ error: { code: "validation_failed", message: "That request is too large." } });
+    expect(ran).toBe(false);
+    expect(seen?.method).toBe("POST");
+    expect(new URL(seen?.url ?? "http://unset").pathname).toBe("/api/kb/documents");
+  });
+
   it("answers 500 in the envelope if the handler throws, and logs no credentials", async () => {
     const lines: string[] = [];
     const { url } = await start(

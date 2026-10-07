@@ -264,6 +264,11 @@ from allowed origins only (CORS). New route: `POST /api/onboarding/trial` `{ nam
 | `upstream_failed` | 502 | | |
 | `internal` | 500 | | |
 
+Every answer to the frontend's origins carries CORS headers, so the browser can read the error
+instead of reporting a network failure: a missing route (404; its preflight passes), a method a browser
+route doesn't have (405) and a body over the limit (413, sent before the route runs). Requests from
+other origins get no CORS headers.
+
 **Meta App Review routes (#15; shapes Fixed in #23):**
 
 - `POST /api/messages/test` `{ to, body }` → `{ providerMsgId, status: "accepted" }`; owner or admin.
@@ -389,9 +394,13 @@ answer_kb_gap(p_tenant_id, p_gap_id, p_answer, p_answered_by, p_question default
 - **Router and upload-limit changes: built.** Paths take `:name` segments (`/api/kb/faqs/:id`; a fixed
   path wins over a pattern) and handlers get them as `params`; `PATCH` and `DELETE` are methods, and
   the preflight lists whatever a route has; a route sets `maxBodyBytes` (default 1 MB), applied
-  before the body is read, so the upload route sets `5 * 1024 * 1024`. `tenantRoute(handler,
-  { status })` passes `params`, reads JSON only for POST, PUT and PATCH, and answers 204 when the
-  service returns nothing. `backend/src/server/` is Shaaz's (Dev 2): ask before changing it.
+  before the body is read. `tenantRoute(handler, { status })` passes `params`, reads JSON only for
+  POST, PUT and PATCH, and answers 204 when the service returns nothing. `backend/src/server/` is
+  Shaaz's (Dev 2): ask before changing it.
+- **Upload size:** a 5 MB file plus its multipart wrapping is more than 5 MB, so the upload route sets
+  `maxBodyBytes: 6 * 1024 * 1024` and checks the file itself: over `5 * 1024 * 1024` bytes (the
+  frontend's `UPLOAD_MAX_BYTES`) is `validation_failed` with `fields.file`. A body over 6 MB is refused
+  before the route runs: 413 `validation_failed`, readable by the frontend but without `fields`.
 - **Build order:** migration, then `backend/src/kb` and the embeddings client (mocked provider), then the
   router PR, then upload and the ingest job, then FAQ routes, then gaps. **FAQ routes and gaps may slip to
   Day 3.**
