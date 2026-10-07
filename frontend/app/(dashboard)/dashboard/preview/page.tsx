@@ -13,7 +13,7 @@ const DEFAULTS: Required<PakkaRootProps> = {
   credits: "healthy",
   plan: "growth",
   firstDay: false,
-  productName: "Pakka",
+  productName: "Spark Agent",
 };
 
 const OPTIONS = {

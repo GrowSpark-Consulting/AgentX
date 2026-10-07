@@ -1,4 +1,4 @@
-# Pakka Agent
+# Spark Agent
 
 A business connects its WhatsApp number and an AI assistant answers enquiries, qualifies leads,
 books visits, sends reminders and hands chats to staff — billed in monthly credits.

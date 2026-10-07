@@ -234,10 +234,14 @@ function verifierMatches(verifier, challenge, method) {
   return expected === challenge;
 }
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+// Every token is new, like the real API's: two sign-ins in the same second must not share a token
+// (logout revokes by token, which would otherwise sign the second one out too).
+let issued = 0;
 function session(email) {
   const now = Math.floor(Date.now() / 1000);
-  const access_token = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub: idOf(email), email, role: "authenticated", aud: "authenticated", iat: now, exp: now + 3600, session_id: `s-${now}` })}.mock`;
-  return { access_token, token_type: "bearer", expires_in: 3600, expires_at: now + 3600, refresh_token: `refresh:${email}:${now}`, user: userJson(email) };
+  const id = `${now}-${++issued}`;
+  const access_token = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub: idOf(email), email, role: "authenticated", aud: "authenticated", iat: now, exp: now + 3600, session_id: `s-${id}` })}.mock`;
+  return { access_token, token_type: "bearer", expires_in: 3600, expires_at: now + 3600, refresh_token: `refresh:${email}:${id}`, user: userJson(email) };
 }
 function emailFromToken(auth) {
   const token = (auth ?? "").replace(/^Bearer\s+/i, "");

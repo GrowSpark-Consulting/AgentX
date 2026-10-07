@@ -45,7 +45,7 @@ export function MetaPopup({
         <div className="flex items-center gap-2 px-3 py-2 bg-meta-chrome border-b border-meta-line text-xs text-meta-muted">
           <span className="size-2.5 rounded-full bg-meta-dot" />
           <span className="flex-1 overflow-hidden whitespace-nowrap text-ellipsis">
-            facebook.com · WhatsApp setup for Pakka
+            facebook.com · WhatsApp setup for Spark Agent
           </span>
           <button
             type="button"

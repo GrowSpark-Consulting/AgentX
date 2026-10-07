@@ -5,7 +5,7 @@ import { ErrorState } from "@/components/shared/states";
 import { authLinkErrorMessage } from "@/lib/auth/redirect";
 import "@/styles/app.css";
 
-export const metadata: Metadata = { title: "Forgot password · Pakka" };
+export const metadata: Metadata = { title: "Forgot password · Spark Agent" };
 
 // Asks Supabase to email a reset link. The link comes back through /auth/callback to /reset-password.
 export default async function ForgotPasswordPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -17,7 +17,7 @@ export default async function ForgotPasswordPage({ searchParams }: { searchParam
       <div className="app-auth-card">
         <Link href="/login" className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
-          <span className="app-brand-name">Pakka</span>
+          <span className="app-brand-name">Spark Agent</span>
         </Link>
         <div>
           <h1 className="app-h1" style={{ fontSize: 34 }}>Forgot password</h1>

@@ -7,7 +7,7 @@ import { LoadingState } from "@/components/shared/states";
 import { requireDashboardView } from "@/lib/auth/session";
 import { packLabel } from "@/lib/format";
 
-export const metadata: Metadata = { title: "Home · Pakka" };
+export const metadata: Metadata = { title: "Home · Spark Agent" };
 
 const STATUS_LABEL = { trial: "Free trial", active: "Active", paused: "Paused", cancelled: "Cancelled" } as const;
 const ROLE_LABEL = { owner: "Owner", admin: "Admin", staff: "Staff" } as const;

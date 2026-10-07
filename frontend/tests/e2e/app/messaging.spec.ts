@@ -72,7 +72,7 @@ test.describe("send test message", () => {
     await page.unroute("**/api/messages/test");
     await page.route("**/api/messages/test", (route) => route.abort("internetdisconnected"));
     await appAlert(page).getByRole("button", { name: "Try again" }).click();
-    await expect(appAlert(page)).toContainText("We couldn't reach Pakka");
+    await expect(appAlert(page)).toContainText("We couldn't reach Spark Agent");
   });
 });
 

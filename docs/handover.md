@@ -1,13 +1,17 @@
-# Developer Handover — Pakka Agent (v1.0)
+# Developer Handover — Spark Agent (v1.0)
 
 Oct 4, 2026 · @Raja · pakkaagent.in
 
 > Markdown copy of `Pakka_Agent_Developer_Handover_v1.0.pdf`. This file is the source of truth in the repo;
 > change it through a pull request when a contract changes.
+>
+> The product was renamed from Pakka Agent to **Spark Agent** (Oct 2026). The domain (`pakkaagent.in`), the
+> repository and package names (`pakka-agent`, `@pakka/*`) and other infrastructure identifiers keep the
+> old name until they are migrated; history below keeps the name used at the time.
 
 ## What we are building
 
-Pakka Agent is a self-serve SaaS where a business connects its WhatsApp number and an AI assistant answers its enquiries, qualifies leads, books visits, sends reminders, collects feedback and hands chats to staff — billed in monthly credits, with a 7-day free trial. Product reasoning, pricing and compliance live in the *Pakka Agent — Production Blueprint*; this document is how we build it.
+Spark Agent is a self-serve SaaS where a business connects its WhatsApp number and an AI assistant answers its enquiries, qualifies leads, books visits, sends reminders, collects feedback and hands chats to staff — billed in monthly credits, with a 7-day free trial. Product reasoning, pricing and compliance live in the *Pakka Agent — Production Blueprint*; this document is how we build it.
 
 ### In v1
 
@@ -27,7 +31,7 @@ Pakka Agent is a self-serve SaaS where a business connects its WhatsApp number a
 
 ### What changed in v1.0 (read this first)
 
-- **Name:** the product is Pakka Agent (pakkaagent.in). Repo name `pakka-agent`; WhatsApp webhook at `https://api.pakkaagent.in/webhooks/whatsapp`.
+- **Name:** the product is Spark Agent (formerly Pakka Agent; domain still pakkaagent.in). Repo name `pakka-agent`; WhatsApp webhook at `https://api.pakkaagent.in/webhooks/whatsapp`.
 - **No BSP.** We call Meta's WhatsApp Cloud API directly through our own Meta app, registered as a Tech Provider. Each client keeps its own WhatsApp Business Account and pays Meta's fees to Meta. All BSP tasks, env vars and endpoints are gone.
 - **New module 10: WhatsApp connection.** Three paths (Embedded Signup with coexistence, an assisted connect link, manual credentials) into one `whatsapp_connections` table, plus `consent_logs` for DPDP. Migration 0003.
 - **Pricing changed:** Starter ₹2,499 / 1,500 credits, Growth ₹5,999 / 5,000, Pro ₹12,999 / 15,000. Only automated outbound messages cost credits (1 each); staff alerts, lead cards and staff replies are free. One-month rollover, top-ups at ₹1.20 a credit, 300 trial credits, optional ₹4,999 setup fee.

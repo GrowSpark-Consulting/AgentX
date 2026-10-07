@@ -3,7 +3,7 @@ import { CreateTemplateForm } from "@/components/dashboard/create-template-form"
 import { NoBusinessPage } from "@/components/dashboard/no-business";
 import { requireDashboardView } from "@/lib/auth/session";
 
-export const metadata: Metadata = { title: "Create a template · Pakka" };
+export const metadata: Metadata = { title: "Create a template · Spark Agent" };
 
 export default async function CreateTemplatePage() {
   const view = await requireDashboardView();

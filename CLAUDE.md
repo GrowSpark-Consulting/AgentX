@@ -1,4 +1,4 @@
-# Pakka Agent
+# Spark Agent
 
 Multi-tenant SaaS. A business connects WhatsApp; an AI assistant answers, qualifies, books,
 reminds and hands off to staff. Billing in credits. Full specs: docs/handover.md.

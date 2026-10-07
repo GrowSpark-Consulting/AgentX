@@ -40,7 +40,7 @@ export function AppShell({ identity, children }: { identity: ShellIdentity; chil
       <aside className="app-side">
         <Link href="/dashboard" className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
-          <span className="app-brand-name">Pakka</span>
+          <span className="app-brand-name">Spark Agent</span>
         </Link>
         <div className="app-biz" data-testid="tenant-identity">
           {business ? (

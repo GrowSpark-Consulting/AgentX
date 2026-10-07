@@ -4,7 +4,7 @@ import { NoBusinessPage } from "@/components/dashboard/no-business";
 import { InboxScreen } from "@/features/inbox/inbox-screen";
 import { requireDashboardView } from "@/lib/auth/session";
 
-export const metadata: Metadata = { title: "Inbox · Pakka" };
+export const metadata: Metadata = { title: "Inbox · Spark Agent" };
 
 // /dashboard/inbox[?chat=<conversation id>]. The tenant comes from the session (never the URL); the
 // chat id only picks which of the member's own conversations opens first.

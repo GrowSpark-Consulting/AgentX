@@ -180,7 +180,7 @@ export function OnboardingFlow() {
           className="flex items-center gap-2.5 text-foreground no-underline mr-auto hover:text-foreground"
         >
           <span aria-hidden className="block size-[18px] bg-primary" />
-          <span className="font-extrabold text-lg">Pakka</span>
+          <span className="font-extrabold text-lg">Spark Agent</span>
         </Link>
         {inSteps && (
           <span className="text-[13px] font-semibold">

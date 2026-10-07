@@ -5,7 +5,7 @@ import { ResetPasswordForm } from "@/components/dashboard/reset-password-form";
 import { getAuth } from "@/lib/auth/session";
 import "@/styles/app.css";
 
-export const metadata: Metadata = { title: "Choose a new password · Pakka" };
+export const metadata: Metadata = { title: "Choose a new password · Spark Agent" };
 
 // Where a reset link lands: /auth/callback has already signed the account in from the link. Without
 // that session there is nothing to change, so the visitor asks for a new link.
@@ -17,7 +17,7 @@ export default async function ResetPasswordPage() {
       <div className="app-auth-card">
         <Link href="/login" className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
-          <span className="app-brand-name">Pakka</span>
+          <span className="app-brand-name">Spark Agent</span>
         </Link>
         <div>
           <h1 className="app-h1" style={{ fontSize: 34 }}>Choose a new password</h1>

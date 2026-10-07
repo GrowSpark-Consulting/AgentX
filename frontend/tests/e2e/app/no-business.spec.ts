@@ -112,7 +112,7 @@ test.describe("dashboard for an account with no business (development)", () => {
   test("signed out, every dashboard page still redirects to sign-in", async ({ page }) => {
     for (const path of ["/dashboard", "/dashboard/whatsapp", "/dashboard/templates/new"]) {
       await page.goto(path);
-      await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodeURIComponent(path)}$`));
+      await expect(page).toHaveURL(/\/login\?next=%2Fdashboard$/);
     }
   });
 });

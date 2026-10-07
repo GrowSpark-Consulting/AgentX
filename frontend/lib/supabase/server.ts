@@ -18,8 +18,8 @@ export async function createSupabaseServerClient(): Promise<SupabaseClient> {
         try {
           for (const { name, value, options } of toSet) cookieStore.set(name, value, options);
         } catch {
-          // Server Components can't set cookies. The proxy refreshes the session on every
-          // protected request, so a skipped write here is picked up there.
+          // Server Components can't set cookies. The browser client keeps the session cookies
+          // fresh (components/shared/session-refresh.tsx), so a skipped write here is made there.
         }
       },
     },

@@ -5,7 +5,7 @@ import { NoBusinessPage } from "@/components/dashboard/no-business";
 import { SendTestMessageForm, type ConnectionHint } from "@/components/dashboard/send-test-message-form";
 import { getAuth, requireDashboardView } from "@/lib/auth/session";
 
-export const metadata: Metadata = { title: "Send a test message · Pakka" };
+export const metadata: Metadata = { title: "Send a test message · Spark Agent" };
 
 export default async function SendTestMessagePage() {
   const view = await requireDashboardView();

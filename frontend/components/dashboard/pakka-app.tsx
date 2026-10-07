@@ -171,7 +171,7 @@ class PakkaAppLogic extends DCLogic {
     const pad=isMobile?'20px 16px 32px':'32px 40px 48px';
     const showChat=!isMobile||s.mobileChat;
     return{
-      productName:P.productName||'Pakka',biz,indKey:s.indKey,onIndustry:e=>{const v=e.target.value;this.urlInd=null;this.setState({indPick:v,screen:s.screen});},
+      productName:P.productName||'Spark Agent',biz,indKey:s.indKey,onIndustry:e=>{const v=e.target.value;this.urlInd=null;this.setState({indPick:v,screen:s.screen});},
       themeClass:dark?'pk-dark':'pk-light',
       outerBg:phone?'var(--color-neutral-300)':'var(--color-bg)',outerPad:phone?'32px 16px':'0',
       appRef:this.appRef,msgsRef:this.msgsRef,

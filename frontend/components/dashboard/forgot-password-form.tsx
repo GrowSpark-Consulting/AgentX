@@ -13,7 +13,7 @@ export function ForgotPasswordForm() {
     return (
       <EmptyState
         title="Check your email"
-        description="If this address has a Pakka account, we've sent a link to choose a new password. Open it on this device to continue."
+        description="If this address has a Spark Agent account, we've sent a link to choose a new password. Open it on this device to continue."
         action={
           <Link className="btn btn-secondary" href="/login">
             Back to sign in

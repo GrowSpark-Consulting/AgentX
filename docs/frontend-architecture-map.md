@@ -179,8 +179,8 @@ has no saved progress or "completed" flag yet.
 | Public config | `frontend/lib/env.ts` | Validates `NEXT_PUBLIC_SUPABASE_URL` (must be the https API URL, no credentials) and the anon key |
 | Server client | `frontend/lib/supabase/server.ts` | Per-request client acting as the user; row-level security applies |
 | Browser client | `frontend/lib/supabase/browser.ts` | One client per tab from the same cookies; `ensureRealtimeAuth()` hands the member's token to Realtime before subscribing |
-| Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding`; signed-in `/login` → `/dashboard`, `/signup` → `/onboarding` (optimistic) |
-| Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding` (optimistic). Signed-out `/login` and `/signup` always render the page |
+| Session refresh | `frontend/components/shared/session-refresh.tsx` | Mounted in both root layouts; the browser client refreshes the access token and rewrites the session cookies (Server Components can't). There is no proxy or middleware: every redirect below happens in a page, layout, server action or route handler |
+| Root page | `app/(onboarding)/page.tsx` | `/` → `/login` for everyone; the session alone decides nothing there |
 | Redirect rules | `frontend/lib/auth/redirect.ts` | `safeNext()` (in-app paths only), `destinationAfterAuth()`, fixed copy for `?error=` codes |
 | Post-sign-in destination | `frontend/lib/auth/destination.ts` | `destinationForUser()`: resolves the account's memberships and applies `destinationAfterAuth()`. Used by the callback, the password login, the new-password form and `redirectIfSignedIn()` |
 | OAuth / email-link callback | `frontend/app/auth/callback/route.ts` | `exchangeCodeForSession()`, then routes by membership (or to `/reset-password` for a reset link); failures → `/login`, `/signup` or `/forgot-password?error=…` |

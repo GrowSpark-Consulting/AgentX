@@ -5,7 +5,7 @@ import { WhatsAppConnectionPanel } from "@/components/dashboard/whatsapp-connect
 import { LoadingState } from "@/components/shared/states";
 import { requireDashboardView } from "@/lib/auth/session";
 
-export const metadata: Metadata = { title: "WhatsApp · Pakka" };
+export const metadata: Metadata = { title: "WhatsApp · Spark Agent" };
 
 export default async function WhatsAppPage() {
   const view = await requireDashboardView();
