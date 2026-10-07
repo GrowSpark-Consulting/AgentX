@@ -8,7 +8,8 @@ routes and error codes (9-day plan, section 3). Each item is marked:
 - **Proposed:** to be decided in the freeze meeting.
 
 Shapes of shared types are documented in `docs/shared-types.md`; specs in `docs/handover.md`;
-screen-level contracts in `docs/dashboard-screen-contracts.md`.
+screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connection routes in
+[whatsapp-connection-contract.md](whatsapp-connection-contract.md) (Proposed, decision 15).
 
 ## 1. Schema
 
@@ -27,6 +28,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`.
 | `0009_notify_functions` | `notify_target`, `notify_template`, `notify_record`: the database side of `notify.send` (service_role only) |
 | `0010_inbox_realtime` | `messages`, `conversations`, `handoffs` in the Realtime publication; `conversations.last_message_at` kept by a trigger |
 | `0011_knowledge_base` | `kb_documents.status`/`error`/`body`, one FAQ per question, `kb_gaps`, `kb_documents` in Realtime, `match_kb_chunks` (section 9) |
+| `0012_kb_gap_functions` | `kb_gaps.summary`/`answered_by`/`answered_at`, `record_kb_gap`, `answer_kb_gap` (service_role only, section 9) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -310,13 +312,15 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 11 | Test message and template routes | **Agreed**; types Fixed in #23, `notify.send` built | Dev 1 + Dev 2 + Dev 3 |
 | 12 | `isEnabled` also checks business status (paused, cancelled, trial ended) | Built in #18; confirm | Dev 1 + Dev 2 |
 | 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
-| 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**; schema and router built (Shaaz); pending Dhatri and Raja | Dev 1 |
+| 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**; schema, router and gap functions built (Shaaz); any team member can answer gaps (Raja); pending Dhatri, and Raja on the rest | Dev 1 |
+| 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed (next migration); `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. Roles on recheck and disconnect: Raja | Dev 1 |
 
 ## 9. Knowledge base (PROPOSED, not agreed)
 
-> **PROPOSED.** Shaaz has reviewed his part and built it: the schema (0011) and the router. **Still
-> pending Raja** (Documents section meaning, who may answer gaps, write roles) **and Dhatri's review of the
-> routes and shapes.** Detail, open questions and the PR order:
+> **PROPOSED.** Shaaz has reviewed his part and built it: the schema (0011), the router and the gap
+> functions (0012). Raja has confirmed that any team member can answer a gap. **Still pending Raja**
+> (Documents section meaning, FAQ and document write roles) **and Dhatri's review of the routes and
+> shapes.** Detail, open questions and the PR order:
 > [kb-contract-checklist.md](kb-contract-checklist.md). Owner: Dev 1 (Nithisha).
 
 **Where it runs:** the routes are on the Railway API (`backend/src/server/routes.ts`), at
@@ -332,9 +336,32 @@ duplicate is a `23505` the FAQ route maps to `conflict`. A new `kb_gaps` table (
 read, only the server writes; unique `(tenant_id, question_norm)`, `question`, `asked_count >= 1`,
 `last_contact_id`, `last_asked_at`, `status open|answered|dismissed`, `answered_faq_id`; deleting the
 contact or the FAQ clears the link). `kb_documents` joins the Realtime publication. `match_kb_chunks` as in
-section 1. Not in 0011, for Dev 1 when building the routes: counting a repeat question
-(`asked_count + 1`) and answering a gap in one transaction need SQL functions, since PostgREST can't do
-either atomically.
+section 1. `0012_kb_gap_functions` adds `kb_gaps.summary` (the latest chat summary, <= 500 characters),
+`answered_by` (deleting the user clears it) and `answered_at`.
+
+**Gap functions (built in `0012_kb_gap_functions`, service_role only):**
+
+```sql
+record_kb_gap(p_tenant_id, p_question, p_question_norm, p_summary, p_contact_id default null)
+  -> (gap_id, asked_count, status, created)
+answer_kb_gap(p_tenant_id, p_gap_id, p_answer, p_answered_by, p_question default null)
+  -> (faq_id, question, answer)
+```
+
+- `record_kb_gap` (agent pipeline): one upsert on `(tenant_id, question_norm)`. The first ask inserts
+  (`created`); a repeat adds 1 to `asked_count`, sets `last_asked_at`, and replaces `summary` and the last
+  contact when the call gives them. `question` keeps the first wording (trimmed); the app owns the
+  normaliser. An answered gap asked again goes back to `open` (the earlier answer's fields stay); a
+  dismissed one stays dismissed. The `kb_gap` handoff uses the returned `asked_count`.
+- `answer_kb_gap` (the answer route): locks the gap, then in one transaction writes the FAQ
+  (`manual`, `processing`) and closes the gap with `answered_faq_id`, `answered_by` and `answered_at`.
+  `p_question` rewords the FAQ's question (null or blank keeps the gap's). A dismissed gap can still be
+  answered. The app then embeds the FAQ and sets it `ready`.
+- **Errors:** `PA404` → `not_found` (unknown business, or a gap that isn't the business's); `PA409` →
+  `conflict` (already answered); `23505` → `conflict` (the question duplicates an FAQ; nothing changes and
+  the gap stays open); `P0001` → `validation_failed` (question empty or over 300 characters, empty
+  `question_norm`, summary over 500, answer empty or over 2000, a contact from another business, an
+  unknown user).
 
 | Route | Request | Response |
 |---|---|---|
@@ -357,7 +384,8 @@ either atomically.
   Realtime, polling while a row is `processing`.
 - **Gaps:** pipeline step 5 records one when retrieval is below the threshold, the same event that feeds the
   `kb_gap` handoff after two misses.
-- **Roles:** owner and admin write; staff answering gaps is to confirm with Raja.
+- **Roles:** owner and admin write FAQs and documents; owner, admin and staff can answer gaps (Raja
+  confirmed, 7 Oct).
 - **Router and upload-limit changes: built.** Paths take `:name` segments (`/api/kb/faqs/:id`; a fixed
   path wins over a pattern) and handlers get them as `params`; `PATCH` and `DELETE` are methods, and
   the preflight lists whatever a route has; a route sets `maxBodyBytes` (default 1 MB), applied

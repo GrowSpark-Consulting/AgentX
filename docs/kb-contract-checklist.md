@@ -14,6 +14,7 @@ Each item below is Dev 1's proposed answer, not a built feature.
 | `kb_documents`, `kb_chunks` | 0001: members read under RLS, cannot write. HNSW index in 0004. No `status` column. |
 | KB code, embeddings client | Not built (`backend/src/kb/` is empty). |
 | Schema: `status`/`error`/`body`, one FAQ per question, `kb_gaps`, Realtime, `match_kb_chunks` | Built in `0011_knowledge_base` (Shaaz); see [contracts.md](contracts.md) section 9. |
+| Gap functions: `record_kb_gap`, `answer_kb_gap`; `kb_gaps.summary`/`answered_by`/`answered_at` | Built in `0012_kb_gap_functions` (Shaaz, to Dev 1's shapes); see [contracts.md](contracts.md) section 9. |
 | `EMBEDDINGS_API_KEY` | In the env schema (optional). No provider, base URL or model variable yet. Provider choice is provisional ([embeddings-evaluation.md](embeddings-evaluation.md)). |
 | Inngest | Wired on the API; only `ping` registered. |
 | `kb_gap` | A `HandoffTrigger` only; no gap table. |
@@ -59,16 +60,16 @@ On the Railway API (`backend/src/server/routes.ts`), not in `frontend/app/api` (
    (`kb_documents`); "documents Maya can send" are customer-facing files, a different feature, deferred
    (**Raja decides**).
 
-Also proposed: `DELETE /api/kb/documents/:id` (chunks cascade). Roles: owner and admin write; staff answering
-gaps is **to confirm with Raja**. Replace and file storage (bucket) are out of v1: the file is read, chunked and
-discarded.
+Also proposed: `DELETE /api/kb/documents/:id` (chunks cascade). Roles: owner and admin write FAQs and documents;
+owner, admin and staff can answer gaps (**Raja confirmed, 7 Oct**). Replace and file storage (bucket) are out of
+v1: the file is read, chunked and discarded.
 
 ## Who decides
 
 | | |
 |---|---|
 | **Shaaz** | The migration (columns, `kb_gaps`, Realtime, `match_kb_chunks`); and `backend/src/server/` (below). |
-| **Raja** | The Documents section meaning, who may answer gaps, write roles. |
+| **Raja** | The Documents section meaning, FAQ and document write roles. (Who may answer gaps: any team member, confirmed.) |
 | **Dhatri** | Review of the routes and shapes; the UI switch-on. |
 
 **Router and upload-limit changes: built** (Shaaz). `:name` path segments reach handlers as `params`,
