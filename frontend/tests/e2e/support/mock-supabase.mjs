@@ -11,6 +11,9 @@
 //   * GET /auth/v1/authorize?provider=google shows a stand-in Google account chooser; picking an
 //     account (or Cancel) redirects to the app's /auth/callback like Supabase does.
 //   * POST /auth/v1/token?grant_type=pkce checks the code verifier against the stored challenge.
+//   * POST /auth/v1/recover "sends" a password reset link (only for existing accounts, but answers the
+//     same either way); opening it signs the account in through /auth/callback, and PUT /auth/v1/user
+//     sets the new password.
 // GET /__mock/rest-log?email=… lists the PostgREST requests made with that user's token, so tests can
 // check that nothing was written and no tenant-scoped table was read.
 // POST /rest/v1/rpc/create_trial_tenant (service role only) gives a user a trial business, membership,
@@ -163,6 +166,8 @@ const authCodes = new Map();
 const oauthFlows = new Map();
 /** Unconfirmed signups: token → { email, password, redirectTo, challenge, method }. */
 const pendingSignups = new Map();
+/** Password reset links not yet opened: token → { email, redirectTo, challenge, method }. */
+const pendingRecoveries = new Map();
 /** Last email "sent" to each address: { link }. */
 const outbox = new Map();
 /** Every PostgREST request: { email, method, table, query }; read back with /__mock/rest-log?email=. */
@@ -312,6 +317,24 @@ createServer(async (req, res) => {
     addUser(email, body.password);
     return send(res, 200, session(email));
   }
+  if (path === "/auth/v1/recover" && req.method === "POST") {
+    const body = await readBody(req);
+    const email = String(body.email ?? "").toLowerCase();
+    const redirectTo = url.searchParams.get("redirect_to");
+    if (USERS[email]) {
+      const token = random();
+      pendingRecoveries.set(token, { email, redirectTo, challenge: body.code_challenge, method: body.code_challenge_method });
+      outbox.set(email, { link: `http://127.0.0.1:${PORT}/auth/v1/verify?token=${token}&type=recovery&redirect_to=${encodeURIComponent(redirectTo ?? "")}` });
+    }
+    return send(res, 200, {});
+  }
+  if (path === "/auth/v1/verify" && req.method === "GET" && url.searchParams.get("type") === "recovery") {
+    const pending = pendingRecoveries.get(url.searchParams.get("token"));
+    const redirectTo = url.searchParams.get("redirect_to");
+    if (!pending) return redirect(res, withParams(redirectTo, { error: "access_denied", error_code: "otp_expired", error_description: "Email link is invalid or has expired" }));
+    pendingRecoveries.delete(url.searchParams.get("token"));
+    return redirect(res, withParams(pending.redirectTo, { code: issueCode(pending.email, pending.challenge, pending.method) }));
+  }
   if (path === "/auth/v1/verify" && req.method === "GET") {
     const pending = pendingSignups.get(url.searchParams.get("token"));
     const redirectTo = url.searchParams.get("redirect_to");
@@ -379,7 +402,16 @@ ${choose("Cancel", "cancel=1")}
   }
   if (path === "/auth/v1/user") {
     const email = emailFromToken(req.headers.authorization);
-    return email ? send(res, 200, userJson(email)) : send(res, 401, { code: 401, error_code: "bad_jwt", msg: "invalid JWT" });
+    if (!email) return send(res, 401, { code: 401, error_code: "bad_jwt", msg: "invalid JWT" });
+    if (req.method === "PUT") {
+      const { password } = await readBody(req);
+      if (typeof password === "string") {
+        if (password.length < 6) return send(res, 422, { code: 422, error_code: "weak_password", msg: "Password should be at least 6 characters.", weak_password: { reasons: ["length"] } });
+        if (password === passwordOf(email)) return send(res, 422, { code: 422, error_code: "same_password", msg: "New password should be different from the old password." });
+        USERS[email].password = password;
+      }
+    }
+    return send(res, 200, userJson(email));
   }
   if (path === "/auth/v1/logout") {
     revoked.add((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));

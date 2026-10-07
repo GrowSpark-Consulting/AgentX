@@ -136,9 +136,11 @@ depends on `inngest`, so there's one copy of it.
 |---|---|---|
 | `/` | Dev 3 | Redirects to `/onboarding` (from the onboarding export). The handover's landing page will take `/` later. |
 | `/onboarding` | Dev 3 | Prototype wizard: the Business step creates the account's trial business; every other step is mock behaviour (dummy WhatsApp code, nothing saved). Needs a signed-in account, signed out → `/signup?next=/onboarding` |
-| `/login` | Dev 3 | Supabase email + password sign-in, or Continue with Google |
-| `/signup` | Dev 3 | New account: email + password (confirmed if the project requires it), or Continue with Google → `/onboarding` |
-| `/auth/callback` | Dev 3 | Finishes Google sign-in and email confirmation links: exchanges the code, then no business → `/onboarding`, member → `/dashboard` |
+| `/login` | Dev 3 | Existing accounts: email + password sign-in, or Continue with Google; "Forgot password?". A member → `/dashboard` (or the `next` page), an account with no business yet → `/onboarding`. Signed-in visitors are sent on the same way |
+| `/signup` | Dev 3 | New accounts: email + password (confirmed if the project requires it), or Continue with Google → `/onboarding`. An existing Google account still lands on `/dashboard` (the callback decides). Signed-in visitors are sent on like `/login` |
+| `/forgot-password` | Dev 3 | Emails a Supabase reset link (same answer whether or not the address has an account) |
+| `/reset-password` | Dev 3 | Opened by the reset link through `/auth/callback`; sets the new password, then routes like sign-in. Without the link's session → `/forgot-password?error=link_expired` |
+| `/auth/callback` | Dev 3 | Finishes Google sign-in, email confirmation and reset links: exchanges the code, then a reset link (PKCE verifier marked as recovery) → `/reset-password`, no business → `/onboarding`, member → `/dashboard` |
 | `/dashboard` | Dev 3 | Signed-in home: real business from `memberships` → `tenants` |
 | `/dashboard/messages/test`, `/dashboard/templates/new` | Dev 3 | Meta App Review screens (send test message, create template) |
 | `/dashboard/whatsapp` | Dev 3 | Connection panel reading `whatsapp_connections_public` |
@@ -163,7 +165,9 @@ the signed-in member: RLS applies, every query also filters by the session's ten
 resolves on the server and passes down.
 
 A new account is told apart from an existing one by membership only: no business yet → onboarding,
-otherwise → dashboard. Signing up (email or Google) creates only the account. The business is created
+otherwise → dashboard. This is decided from the account's state after sign-in, never from the page it
+started on: an existing member using "Continue with Google" on `/signup` still lands on the dashboard,
+and an existing account that never set up a business is sent back to onboarding when it signs in. Signing up (email or Google) creates only the account. The business is created
 on onboarding's Business step, once the user has typed its name and picked a trade: the `startTrial`
 server action (`lib/onboarding/actions.ts`) calls Dev 2's `createTrialTenant` with the session's user
 id and the trade's pack key, mapped on the server (`INDUSTRIES[].packKey`; trades without a pack can't
@@ -176,9 +180,11 @@ has no saved progress or "completed" flag yet.
 | Server client | `frontend/lib/supabase/server.ts` | Per-request client acting as the user; row-level security applies |
 | Browser client | `frontend/lib/supabase/browser.ts` | One client per tab from the same cookies; `ensureRealtimeAuth()` hands the member's token to Realtime before subscribing |
 | Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding`; signed-in `/login` → `/dashboard`, `/signup` → `/onboarding` (optimistic) |
+| Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding` (optimistic). Signed-out `/login` and `/signup` always render the page |
 | Redirect rules | `frontend/lib/auth/redirect.ts` | `safeNext()` (in-app paths only), `destinationAfterAuth()`, fixed copy for `?error=` codes |
-| OAuth / email-link callback | `frontend/app/auth/callback/route.ts` | `exchangeCodeForSession()`, then routes by membership; failures → `/login` or `/signup?error=…` |
-| Data access layer | `frontend/lib/auth/session.ts` | `getAuth()` (Supabase verifies the token), `getSessionState()`, `requireTenantContext()`, `requireApiTenant()` |
+| Post-sign-in destination | `frontend/lib/auth/destination.ts` | `destinationForUser()`: resolves the account's memberships and applies `destinationAfterAuth()`. Used by the callback, the password login, the new-password form and `redirectIfSignedIn()` |
+| OAuth / email-link callback | `frontend/app/auth/callback/route.ts` | `exchangeCodeForSession()`, then routes by membership (or to `/reset-password` for a reset link); failures → `/login`, `/signup` or `/forgot-password?error=…` |
+| Data access layer | `frontend/lib/auth/session.ts` | `getAuth()` (Supabase verifies the token), `getSessionState()`, `redirectIfSignedIn()` (for `/login` and `/signup`), `requireTenantContext()`, `requireApiTenant()` |
 | Tenant resolver | `backend/src/lib/tenant.ts` | memberships → tenants through the user's own client; one membership → that tenant; several → the user chooses (`pakka_tenant` cookie, honoured only if the user is a member); none → "not linked to a business" |
 | Gate | `app/(dashboard)/dashboard/layout.tsx` | Authoritative check for every `/dashboard` page; renders no markup in the normal case |
 | Client context | `components/dashboard/tenant-context.tsx` | `TenantProvider` / `useTenant()` |

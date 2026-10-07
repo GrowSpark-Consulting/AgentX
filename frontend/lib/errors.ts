@@ -54,6 +54,7 @@ const AUTH_MESSAGES: Record<string, string> = {
   over_request_rate_limit: "Too many attempts. Wait a minute and try again.",
   over_email_send_rate_limit: "Too many attempts. Wait a minute and try again.",
   weak_password: "Choose a stronger password: longer, and not one you use elsewhere.",
+  same_password: "Choose a password you haven't used for this account before.",
   email_address_invalid: "Use a different email address.",
   signup_disabled: "New accounts can't be created right now. Try again later.",
 };

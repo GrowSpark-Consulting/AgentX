@@ -3,7 +3,8 @@
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { safeNext } from "@/lib/auth/redirect";
+import { destinationForUser } from "@/lib/auth/destination";
+import { RESET_PASSWORD_PATH, safeNext } from "@/lib/auth/redirect";
 import { getAuth, getSessionState, TENANT_COOKIE } from "@/lib/auth/session";
 import { formatError } from "@/lib/errors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -32,10 +33,11 @@ export async function login(_prev: LoginState, form: FormData): Promise<LoginSta
   }
 
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword(parsed.data);
-  if (error) return { error: formatError(error).message, email };
+  const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
+  if (error || !data.user) return { error: formatError(error).message, email };
 
-  redirect(safeNext(form.get("next")));
+  // An existing account: the dashboard, unless it still has no business (then onboarding).
+  redirect(await destinationForUser(supabase, data.user, form.get("next")));
 }
 
 export interface SignupState {
@@ -46,14 +48,13 @@ export interface SignupState {
   sent?: boolean;
 }
 
+// Supabase hashes passwords with bcrypt, which reads at most 72 bytes.
+const NewPassword = z.string().min(8, "Use at least 8 characters").max(72, "Use 72 characters or fewer");
+const passwordsMatch = { path: ["confirmPassword"], message: "Passwords don't match" };
+
 const SignupInput = z
-  .object({
-    email: z.email("Enter a valid email address"),
-    // Supabase hashes passwords with bcrypt, which reads at most 72 bytes.
-    password: z.string().min(8, "Use at least 8 characters").max(72, "Use 72 characters or fewer"),
-    confirmPassword: z.string(),
-  })
-  .refine((v) => v.password === v.confirmPassword, { path: ["confirmPassword"], message: "Passwords don't match" });
+  .object({ email: z.email("Enter a valid email address"), password: NewPassword, confirmPassword: z.string() })
+  .refine((v) => v.password === v.confirmPassword, passwordsMatch);
 
 /**
  * The address this request came in on, for links Supabase sends people back to. Supabase only
@@ -120,6 +121,56 @@ export async function signInWithGoogle(_prev: OAuthState, form: FormData): Promi
   });
   if (error || !data.url) return { error: formatError(error).message };
   redirect(data.url);
+}
+
+export interface ResetRequestState {
+  error?: string;
+  fields?: { email?: string };
+  email?: string;
+  /** Shown instead of the form: "check your email", whether or not the address has an account. */
+  sent?: boolean;
+}
+
+/** "Forgot password": Supabase emails a reset link that comes back through /auth/callback. */
+export async function requestPasswordReset(_prev: ResetRequestState, form: FormData): Promise<ResetRequestState> {
+  const email = String(form.get("email") ?? "").trim();
+  const parsed = z.email("Enter a valid email address").safeParse(email);
+  if (!parsed.success) return { fields: { email: parsed.error.issues[0]?.message }, email };
+
+  const supabase = await createSupabaseServerClient();
+  // Stores a PKCE code verifier marked as a recovery; /auth/callback needs it to exchange the code.
+  // Supabase answers the same way for addresses without an account, so this reveals nothing.
+  const { error } = await supabase.auth.resetPasswordForEmail(parsed.data, { redirectTo: await callbackUrl(RESET_PASSWORD_PATH) });
+  if (error) return { error: formatError(error).message, email };
+  return { sent: true, email };
+}
+
+export interface NewPasswordState {
+  error?: string;
+  fields?: { password?: string; confirmPassword?: string };
+}
+
+const NewPasswordInput = z
+  .object({ password: NewPassword, confirmPassword: z.string() })
+  .refine((v) => v.password === v.confirmPassword, passwordsMatch);
+
+/** The form a reset link opens: sets the signed-in account's new password, then into the app. */
+export async function updatePassword(_prev: NewPasswordState, form: FormData): Promise<NewPasswordState> {
+  const parsed = NewPasswordInput.safeParse({ password: form.get("password") ?? "", confirmPassword: form.get("confirmPassword") ?? "" });
+  if (!parsed.success) {
+    const fields: NewPasswordState["fields"] = {};
+    for (const issue of parsed.error.issues) {
+      const key = issue.path[0] as keyof NonNullable<NewPasswordState["fields"]>;
+      fields[key] ??= issue.message;
+    }
+    return { fields };
+  }
+
+  const { supabase, user } = await getAuth();
+  if (!user) redirect("/forgot-password?error=link_expired");
+  const { error } = await supabase.auth.updateUser({ password: parsed.data.password });
+  if (error) return { error: formatError(error).message };
+  redirect(await destinationForUser(supabase, user, null));
 }
 
 export async function logout(): Promise<void> {

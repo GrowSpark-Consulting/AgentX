@@ -1,13 +1,14 @@
-import { resolveTenant } from "@pakka/backend/lib/tenant";
 import { redactSecrets } from "@pakka/types";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { authErrorPath, authLinkErrorFrom, destinationAfterAuth } from "@/lib/auth/redirect";
+import { destinationForUser } from "@/lib/auth/destination";
+import { authErrorPath, authLinkErrorFrom, RESET_PASSWORD_PATH } from "@/lib/auth/redirect";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-// GET /auth/callback?code=…&next=… — where Supabase sends the browser after Google sign-in and after
-// an email confirmation link. Exchanges the one-time code for a session cookie, then sends a new
-// account (no business yet) to onboarding and everyone else to the dashboard.
+// GET /auth/callback?code=…&next=… — where Supabase sends the browser after Google sign-in, an email
+// confirmation link and a password reset link. Exchanges the one-time code for a session cookie, then
+// sends the account where its real state says: no business yet → onboarding, a member → the
+// dashboard (whichever page Google sign-in was started from), a reset link → the new-password form.
 
 const Params = z.object({
   code: z.string().min(1).max(512).optional(),
@@ -37,12 +38,11 @@ export async function GET(request: NextRequest) {
     return to(authErrorPath("signin_failed", params.next));
   }
 
+  // A reset link: the code verifier this browser stored when it asked for the email is marked as a
+  // recovery (the URL's `next` can't make a code count as one).
+  // auth-js returns `redirectType` at runtime but leaves it out of the declared type.
+  if ((data as { redirectType?: unknown }).redirectType === "recovery") return to(RESET_PASSWORD_PATH);
+
   // The same client now holds the new session, so row-level security sees this user's memberships.
-  let hasBusiness = true;
-  try {
-    hasBusiness = (await resolveTenant(supabase, data.user)).status !== "no_membership";
-  } catch {
-    // Signed in, but the business couldn't be loaded: the dashboard gate shows that error properly.
-  }
-  return to(destinationAfterAuth(hasBusiness, params.next));
+  return to(await destinationForUser(supabase, data.user, params.next));
 }

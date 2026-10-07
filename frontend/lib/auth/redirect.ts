@@ -20,6 +20,12 @@ export function destinationAfterAuth(hasBusiness: boolean, next: unknown): strin
   return safe.startsWith("/dashboard") ? safe : "/dashboard";
 }
 
+/**
+ * Where a password reset link lands once /auth/callback has signed the person in. The callback only
+ * sends people here when the code was issued for a recovery (see app/auth/callback/route.ts).
+ */
+export const RESET_PASSWORD_PATH = "/reset-password";
+
 /** Why a sign-in link or Google round trip didn't finish. Shown as fixed copy, never raw provider text. */
 export const AUTH_LINK_ERRORS = {
   signin_cancelled: "Sign-in was cancelled. Try again, or use your email and password.",
@@ -41,8 +47,11 @@ export function authLinkErrorFrom(error: string | null, errorCode: string | null
   return "signin_failed";
 }
 
-/** Back to the page the person started from: signup if they were heading to onboarding, else login. */
+/**
+ * Back to the page the person started from: "forgot password" for a reset link, signup if they were
+ * heading to onboarding, else login.
+ */
 export function authErrorPath(reason: AuthLinkError, next: unknown): string {
-  const page = safeNext(next).startsWith("/onboarding") ? "/signup" : "/login";
+  const page = next === RESET_PASSWORD_PATH ? "/forgot-password" : safeNext(next).startsWith("/onboarding") ? "/signup" : "/login";
   return `${page}?error=${reason}`;
 }

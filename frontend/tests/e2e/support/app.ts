@@ -51,7 +51,7 @@ export async function signUp(page: Page, email: string, password = PASSWORD, con
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByLabel("Confirm password").fill(confirm);
-  await page.getByRole("button", { name: "Create account" }).click();
+  await page.getByRole("button", { name: "Sign up", exact: true }).click();
 }
 
 export async function expectNoHorizontalOverflow(page: Page) {
