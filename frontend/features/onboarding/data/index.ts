@@ -1,6 +1,8 @@
 /* Mock data for the Pakka onboarding prototype. Content is copied verbatim
    from the original design; only the shape changed (tuples → typed objects). */
 
+import { TRIAL_PACKS, type IndustryKey } from "@pakka/types";
+
 export const TRIAL_CODE = "TRIAL-7F3K";
 
 /** The WhatsApp test chat, with a trial code as the first message. */
@@ -21,27 +23,33 @@ export const STEP_LABELS = [
   "Team & go live",
 ] as const;
 
-export type IndustryKey = "re" | "int" | "salon" | "hotel" | "rest" | "fix";
+/** The trade keys and their packs are shared with the API (@pakka/types, onboarding.ts). */
+export type { IndustryKey };
 
 export interface Industry {
   key: IndustryKey;
   name: string;
   books: string;
   /**
-   * The vertical pack a trial business in this trade runs on. Trades without one can't start a
-   * trial yet. Only the server maps a trade to its pack (lib/onboarding/start-trial.ts).
+   * The vertical pack a trial business in this trade runs on (TRIAL_PACKS). Trades without one can't
+   * start a trial yet. Shown here only to open the button; the API maps the trade to its pack.
    */
   packKey?: string;
 }
 
-export const INDUSTRIES: Industry[] = [
-  { key: "re", name: "Real estate", books: "site visits", packKey: "real-estate" },
-  { key: "int", name: "Interior design", books: "site measurements", packKey: "interiors" },
-  { key: "salon", name: "Salon", books: "appointments", packKey: "salon" },
+const TRADES: Omit<Industry, "packKey">[] = [
+  { key: "re", name: "Real estate", books: "site visits" },
+  { key: "int", name: "Interior design", books: "site measurements" },
+  { key: "salon", name: "Salon", books: "appointments" },
   { key: "hotel", name: "Hotel", books: "room bookings" },
   { key: "rest", name: "Restaurant", books: "table bookings" },
   { key: "fix", name: "Plumber / Electrician", books: "technician visits" },
 ];
+
+export const INDUSTRIES: Industry[] = TRADES.map((t) => {
+  const packKey = TRIAL_PACKS[t.key];
+  return packKey ? { ...t, packKey } : t;
+});
 
 export interface Service {
   name: string;

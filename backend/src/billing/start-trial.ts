@@ -1,31 +1,14 @@
-import type { Balance } from "@pakka/backend/billing/credits";
-import type { TrialSignup } from "@pakka/backend/billing/trial";
-import { redactSecrets } from "@pakka/types";
+import { INDUSTRY_KEYS, redactSecrets, TRIAL_PACKS, type IndustryKey, type StartTrialResult } from "@pakka/types";
 import { z } from "zod";
-import { INDUSTRIES, type IndustryKey } from "@/features/onboarding/data";
-import type { SessionState } from "@/lib/auth/session";
+import type { TenantResolution } from "../lib/tenant";
+import type { Balance } from "./credits";
+import type { TrialSignup } from "./trial";
 
-// The onboarding Business step: creates the signed-in account's trial business through Dev 2's
-// createTrialTenant. The browser sends only the name and the trade it picked. The user comes from the
-// verified session and the pack key from the trade, both on the server.
+// The onboarding Business step (POST /api/onboarding/trial): creates the signed-in account's trial
+// business through createTrialTenant. The browser sends only the name and the trade it picked. The
+// user comes from the verified access token and the pack key from the trade, both on the server.
 
-/** What the wizard shows once the trial exists. */
-export interface TrialInfo {
-  routeCode: string;
-  /** Whole days left in the trial, counted on the server. */
-  trialDays: number;
-  /** The live credit balance; null if it couldn't be read (the trial itself exists). */
-  credits: number | null;
-}
-
-export type StartTrialResult =
-  | { status: "ready"; trial: TrialInfo }
-  /** The account already belongs to a business (any role): nothing was created. */
-  | { status: "has_business" }
-  /** The trade has no pack yet: nothing was created. */
-  | { status: "unavailable" }
-  | { status: "invalid"; fields: { name?: string; industry?: string } }
-  | { status: "failed"; message: string };
+export type SessionState = { status: "signed_out" } | TenantResolution;
 
 export interface StartTrialDeps {
   currentUser: () => Promise<{ id: string } | null>;
@@ -34,8 +17,6 @@ export interface StartTrialDeps {
   getBalance: (tenantId: string) => Promise<Balance>;
   now?: () => number;
 }
-
-const INDUSTRY_KEYS = INDUSTRIES.map((i) => i.key) as [IndustryKey, ...IndustryKey[]];
 
 const Input = z.object({
   // Same limit as createTrialTenant.
@@ -49,7 +30,7 @@ const TRY_AGAIN = "We couldn't set up your trial. Try again in a moment.";
 
 /** The pack a trade's trial runs on, or null while that trade has none. */
 export function trialPackKey(industry: IndustryKey): string | null {
-  return INDUSTRIES.find((i) => i.key === industry)?.packKey ?? null;
+  return TRIAL_PACKS[industry] ?? null;
 }
 
 const errorText = (e: unknown) => redactSecrets(e instanceof Error ? e.message : String(e));

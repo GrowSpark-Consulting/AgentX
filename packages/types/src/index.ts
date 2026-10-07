@@ -3,6 +3,7 @@
 export * from "./agent";
 export * from "./connection";
 export * from "./errors";
+export * from "./onboarding";
 export * from "./pack";
 export * from "./tenancy";
 export * from "./whatsapp";

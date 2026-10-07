@@ -1,5 +1,5 @@
-import { FLAG_OFF_URL } from "../../../playwright.config";
-import { appAlert, PASSWORD, SIGNED_OUT, expect, expectNoHorizontalOverflow, mainNav, signIn, test } from "../support/app";
+import { API_URL, FLAG_OFF_URL } from "../../../playwright.config";
+import { appAlert, asUser, PASSWORD, SIGNED_OUT, expect, expectNoHorizontalOverflow, mainNav, signIn, test } from "../support/app";
 
 test.describe("signed out", () => {
   test.use({ storageState: SIGNED_OUT });
@@ -14,7 +14,7 @@ test.describe("signed out", () => {
   });
 
   test("API routes refuse signed-out callers", async ({ request }) => {
-    const res = await request.post("/api/messages/test", { data: { to: "+919840012345", body: "hi" } });
+    const res = await request.post(`${API_URL}/api/messages/test`, { data: { to: "+919840012345", body: "hi" } });
     expect(res.status()).toBe(401);
     expect(await res.json()).toEqual({ error: { code: "unauthenticated", message: "Your session has ended. Sign in again." } });
   });
@@ -138,7 +138,7 @@ test.describe("tenant context", () => {
     await expect(page.getByText("Your account isn't linked to a business yet")).toBeVisible();
     await expect(page.getByRole("link", { name: "Start a free trial" })).toBeVisible();
     await expect(mainNav(page)).toHaveCount(0);
-    const res = await page.request.post(`${FLAG_OFF_URL}/api/templates`, { data: {} });
+    const res = await page.request.post(`${API_URL}/api/templates`, { data: {}, headers: await asUser(page) });
     expect(res.status()).toBe(403);
     expect((await res.json()).error.code).toBe("no_membership");
     await page.getByRole("button", { name: "Log out" }).click();

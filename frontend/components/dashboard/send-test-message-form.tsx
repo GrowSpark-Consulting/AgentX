@@ -4,7 +4,8 @@ import { SendTestMessageInput, WHATSAPP_TEXT_MAX, type SendTestMessageResult } f
 import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { ErrorState, LoadingState } from "@/components/shared/states";
-import { formatError, postJson, type FormattedError } from "@/lib/errors";
+import { postJson } from "@/lib/api/client";
+import { formatError, type FormattedError } from "@/lib/errors";
 import { useTenant } from "./tenant-context";
 
 export type ConnectionHint = "connected" | "not_connected" | "unknown";
@@ -22,7 +23,7 @@ function focusFirstInvalid(fields: Record<string, string>) {
 }
 
 export function SendTestMessageForm({ connection, businessName }: { connection: ConnectionHint; businessName: string }) {
-  const { role } = useTenant();
+  const { role, tenant } = useTenant();
   const [to, setTo] = useState("");
   const [body, setBody] = useState(`Hello from ${businessName}! This is a test message sent with Pakka.`);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -42,7 +43,7 @@ export function SendTestMessageForm({ connection, businessName }: { connection: 
     setFields({});
     setStatus({ kind: "sending" });
     try {
-      const result = await postJson<SendTestMessageResult>("/api/messages/test", parsed.data);
+      const result = await postJson<SendTestMessageResult>("/api/messages/test", parsed.data, { tenantId: tenant.id });
       setStatus({ kind: "sent", result, to: parsed.data.to });
     } catch (err) {
       const error = formatError(err);

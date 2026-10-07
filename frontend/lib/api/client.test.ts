@@ -1,0 +1,59 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const getSession = vi.fn();
+vi.mock("@/lib/supabase/browser", () => ({ getSupabaseBrowserClient: () => ({ auth: { getSession } }) }));
+const fetchMock = vi.fn<typeof fetch>();
+vi.stubGlobal("fetch", fetchMock);
+
+const { postJson, TENANT_HEADER } = await import("./client");
+const { ApiError } = await import("@/lib/errors");
+
+const TENANT = "10000000-0000-0000-0000-000000000001";
+const sentRequest = () => {
+  const [url, init] = fetchMock.mock.calls[0];
+  return { url: String(url), init: init!, headers: new Headers(init!.headers) };
+};
+
+beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.pakkaagent.in");
+  getSession.mockReset().mockResolvedValue({ data: { session: { access_token: "header.payload.sig" } } });
+  fetchMock.mockReset().mockResolvedValue(Response.json({ providerMsgId: "wamid.1", status: "accepted" }));
+});
+
+describe("postJson", () => {
+  it("POSTs JSON to the API with the user's token and the business", async () => {
+    const result = await postJson("/api/messages/test", { to: "+919840012345", body: "hi" }, { tenantId: TENANT });
+    expect(result).toEqual({ providerMsgId: "wamid.1", status: "accepted" });
+    const { url, init, headers } = sentRequest();
+    expect(url).toBe("https://api.pakkaagent.in/api/messages/test");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe('{"to":"+919840012345","body":"hi"}');
+    expect(headers.get("authorization")).toBe("Bearer header.payload.sig");
+    expect(headers.get(TENANT_HEADER)).toBe(TENANT);
+    expect(headers.get("content-type")).toBe("application/json");
+    // Bearer token, not cookies: nothing asks the browser to send credentials cross-site.
+    expect(init.credentials).toBeUndefined();
+  });
+
+  it("sends no Authorization header when signed out, so the API answers 401", async () => {
+    getSession.mockResolvedValue({ data: { session: null } });
+    await postJson("/api/templates", {});
+    expect(sentRequest().headers.has("authorization")).toBe(false);
+    expect(sentRequest().headers.has(TENANT_HEADER)).toBe(false);
+  });
+
+  it("throws ApiError with the API's envelope on an error response", async () => {
+    fetchMock.mockResolvedValue(Response.json({ error: { code: "forbidden", message: "Only an owner or admin can create a template." } }, { status: 403 }));
+    const err = await postJson("/api/templates", {}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 403, body: { error: { code: "forbidden" } } });
+  });
+
+  it("refuses to call anything when NEXT_PUBLIC_API_URL is missing or has a path", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "");
+    await expect(postJson("/api/templates", {})).rejects.toThrow(/NEXT_PUBLIC_API_URL/);
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.pakkaagent.in/api");
+    await expect(postJson("/api/templates", {})).rejects.toThrow(/NEXT_PUBLIC_API_URL/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

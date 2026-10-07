@@ -10,7 +10,7 @@ import {
   INDUSTRIES,
   TRIAL_CODE,
 } from "@/features/onboarding/data";
-import type { TrialInfo } from "@/lib/onboarding/start-trial";
+import type { TrialInfo } from "@pakka/types";
 
 export type ImportState = "idle" | "run" | "done";
 /** `pending` is kept from the prototype's state model (“Waiting for Meta approval”). */
