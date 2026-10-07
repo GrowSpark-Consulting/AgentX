@@ -1,5 +1,5 @@
 import { EnvError, serverEnv, type ServerEnv } from "../lib/env";
-import { createApp } from "./app";
+import { bodyLimitFor, createApp } from "./app";
 import { closeGracefully, createHttpServer } from "./node";
 
 // The API service. Railway runs `pnpm --filter @pakka/backend start`; `pnpm dev` runs it locally on
@@ -15,7 +15,7 @@ try {
   process.exit(1);
 }
 
-const server = createHttpServer(createApp());
+const server = createHttpServer(createApp(), { maxBodyBytes: (pathname) => bodyLimitFor(pathname) });
 
 server.on("error", (err) => {
   console.error(`[server] ${err.message}`);

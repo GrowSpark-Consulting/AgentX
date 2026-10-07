@@ -49,6 +49,21 @@ describe("createHttpServer", () => {
     expect(ran).toBe(false);
   });
 
+  it("applies a per-path body limit, chosen from the parsed path", async () => {
+    const paths: string[] = [];
+    const { url } = await start(async (req) => new Response(String((await req.text()).length)), {
+      maxBodyBytes: (path) => {
+        paths.push(path);
+        return path === "/api/kb/documents" ? 64 : 16;
+      },
+    });
+    const upload = await fetch(`${url}/api/kb/documents?x=1`, { method: "POST", body: "x".repeat(48) });
+    expect(upload.status).toBe(200);
+    expect(await upload.text()).toBe("48");
+    expect((await fetch(`${url}/api/templates`, { method: "POST", body: "x".repeat(48) })).status).toBe(413);
+    expect(paths).toEqual(["/api/kb/documents", "/api/templates"]);
+  });
+
   it("answers 500 in the envelope if the handler throws, and logs no credentials", async () => {
     const lines: string[] = [];
     const { url } = await start(
