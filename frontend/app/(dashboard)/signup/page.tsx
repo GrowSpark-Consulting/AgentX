@@ -4,13 +4,19 @@ import { GoogleButton } from "@/components/dashboard/google-button";
 import { SignupForm } from "@/components/dashboard/signup-form";
 import { ErrorState } from "@/components/shared/states";
 import { authLinkErrorMessage } from "@/lib/auth/redirect";
+import { redirectIfSignedIn } from "@/lib/auth/session";
 import "@/styles/app.css";
 
 export const metadata: Metadata = { title: "Sign up · Pakka" };
 
-// New accounts. Signed-in visitors never see this page: the proxy sends them to /onboarding.
+// New accounts, which continue to onboarding. A visitor who is already signed in goes where their
+// account belongs instead: the dashboard for a member, onboarding while it has no business yet.
+// "Continue with Google" asks for onboarding, but /auth/callback sends an existing member to the
+// dashboard.
 export default async function SignupPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const linkError = authLinkErrorMessage((await searchParams).error);
+  const { error } = await searchParams;
+  await redirectIfSignedIn();
+  const linkError = authLinkErrorMessage(error);
   return (
     <div className="app-auth">
       <div className="app-auth-card">

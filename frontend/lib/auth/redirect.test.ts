@@ -52,4 +52,9 @@ describe("auth link errors", () => {
     expect(authErrorPath("signin_failed", "/dashboard")).toBe("/login?error=signin_failed");
     expect(authErrorPath("signin_failed", "https://evil.example.com")).toBe("/login?error=signin_failed");
   });
+
+  it("returns a broken reset link to 'forgot password', where a new one can be requested", () => {
+    expect(authErrorPath("link_expired", "/reset-password")).toBe("/forgot-password?error=link_expired");
+    expect(authErrorPath("signin_failed", "/reset-password/x")).toBe("/login?error=signin_failed");
+  });
 });

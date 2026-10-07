@@ -72,7 +72,7 @@ export function SignupForm() {
       {state.error ? <ErrorState compact title="Couldn't create your account" description={state.error} /> : null}
       <div className="app-actions">
         <button type="submit" className="btn btn-primary" disabled={pending}>
-          {pending ? "Creating account…" : "Create account"}
+          {pending ? "Signing up…" : "Sign up"}
         </button>
       </div>
     </form>

@@ -19,6 +19,20 @@ test.describe("signed out", () => {
     expect(await res.json()).toEqual({ error: { code: "unauthenticated", message: "Your session has ended. Sign in again." } });
   });
 
+  test("a signed-out visitor gets the real sign-in page", async ({ page }) => {
+    await page.goto("/login");
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await expect(page.getByLabel("Email")).toBeVisible();
+    await expect(page.getByLabel("Password")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue with Google" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Forgot password?" })).toHaveAttribute("href", "/forgot-password");
+    await page.getByRole("link", { name: "Sign up" }).click();
+    await expect(page).toHaveURL(/\/signup$/);
+    await expect(page.getByRole("heading", { name: "Sign up" })).toBeVisible();
+  });
+
   test("shows field errors and a safe message for wrong credentials", async ({ page }) => {
     await page.goto("/login");
     await page.getByRole("button", { name: "Sign in" }).click();
@@ -61,9 +75,14 @@ test.describe("signed out", () => {
     await expect(second.getByRole("heading", { level: 1, name: "Create a message template" })).toBeVisible();
     await second.close();
 
-    // A signed-in visitor going to /login is sent to the app.
+    // A signed-in member going to /login or /signup is sent to the app, never into onboarding.
     await page.goto("/login");
     await expect(page).toHaveURL(/\/dashboard$/);
+    await page.goto("/login?next=%2Fdashboard%2Fwhatsapp");
+    await expect(page).toHaveURL(/\/dashboard\/whatsapp$/);
+    await page.goto("/signup");
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Test Realty" })).toBeVisible();
 
     await page.getByRole("button", { name: "Log out" }).click();
     await expect(page).toHaveURL(/\/login$/);
@@ -82,6 +101,10 @@ test.describe("tenant context", () => {
     await page.getByLabel("Email").fill("nomember@test.local");
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Sign in" }).click();
+    // An existing account with no business is sent to set one up...
+    await expect(page).toHaveURL(/:3101\/onboarding$/);
+    // ...and the dashboard still refuses it a business that isn't its own.
+    await page.goto(`${FLAG_OFF_URL}/dashboard`);
     await expect(page.getByText("Your account isn't linked to a business yet")).toBeVisible();
     await expect(page.getByRole("link", { name: "Start a free trial" })).toBeVisible();
     await expect(mainNav(page)).toHaveCount(0);

@@ -116,6 +116,16 @@ test.describe("trial signup from onboarding", () => {
     await next(page, "Continue").click();
     await expect(page.getByRole("heading", { name: "Teach your assistant" })).toBeVisible();
     expect(await business(page, email)).toEqual(first);
+
+    // Onboarded now: signing in again, or opening /signup, goes straight to the dashboard.
+    await page.goto("/dashboard");
+    await page.getByRole("button", { name: "Log out" }).click();
+    await expect(page).toHaveURL(/\/login$/);
+    await signIn(page, email);
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Sunrise Homes" })).toBeVisible();
+    await page.goto("/signup");
+    await expect(page).toHaveURL(/\/dashboard$/);
   });
 
   test("a trade without a pack can't start a trial", async ({ page }) => {

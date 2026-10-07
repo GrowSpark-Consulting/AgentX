@@ -44,6 +44,35 @@ describe("GET /auth/callback", () => {
     expect(await call("?code=abc")).toBe("/dashboard");
   });
 
+  it("sends an existing member to the dashboard even when Google sign-in started on /signup", async () => {
+    // GoogleButton on /signup asks for /onboarding; the account's real state decides.
+    exchangeCodeForSession.mockResolvedValue({ data: { user, session: {} }, error: null });
+    resolveTenant.mockResolvedValue({ status: "ok" });
+    expect(await call("?code=abc&next=%2Fonboarding")).toBe("/dashboard");
+    resolveTenant.mockResolvedValue({ status: "no_membership" });
+    expect(await call("?code=abc&next=%2Fonboarding")).toBe("/onboarding");
+    expect(await call("?code=abc")).toBe("/onboarding");
+  });
+
+  it("opens the new-password form for a reset link, whatever the account's state or next", async () => {
+    exchangeCodeForSession.mockResolvedValue({ data: { user, session: {}, redirectType: "recovery" }, error: null });
+    resolveTenant.mockResolvedValue({ status: "ok" });
+    expect(await call("?code=abc&next=%2Freset-password")).toBe("/reset-password");
+    expect(await call("?code=abc&next=%2Fdashboard")).toBe("/reset-password");
+    expect(resolveTenant).not.toHaveBeenCalled();
+  });
+
+  it("never treats a normal sign-in as a reset just because next says so", async () => {
+    exchangeCodeForSession.mockResolvedValue({ data: { user, session: {}, redirectType: null }, error: null });
+    resolveTenant.mockResolvedValue({ status: "ok" });
+    expect(await call("?code=abc&next=%2Freset-password")).toBe("/dashboard");
+  });
+
+  it("sends an expired reset link back to 'forgot password'", async () => {
+    expect(await call("?error=access_denied&error_code=otp_expired&next=%2Freset-password")).toBe("/forgot-password?error=link_expired");
+    expect(exchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
   it("passes Supabase's flow id through to the exchange", async () => {
     exchangeCodeForSession.mockResolvedValue({ data: { user, session: {} }, error: null });
     resolveTenant.mockResolvedValue({ status: "ok" });
