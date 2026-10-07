@@ -331,7 +331,7 @@ UI: services & prices table, FAQs (expand/edit/add), documents (upload), website
   ↓ API: RLS READ kb_documents, services / catalog_items
         POST /api/kb/documents            HANDOVER · Dev 1
         POST /api/onboarding/import-site  HANDOVER · Dev 1
-        POST|PATCH /api/kb/faqs           PROPOSED · Dev 1
+        POST|PATCH|DELETE /api/kb/faqs    PROPOSED · Dev 1 (contracts.md section 9)
         GET  /api/kb/gaps                 PROPOSED · Dev 1 (needs a table for unanswered questions)
   ↓ loading: upload/embedding progress · empty: first day (built) · error: upload failed
   ↓ permission: owner, admin (+ staff answering gaps, to confirm)

@@ -305,3 +305,53 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 11 | Test message and template routes | **Agreed**; types Fixed in #23, `notify.send` built | Dev 1 + Dev 2 + Dev 3 |
 | 12 | `isEnabled` also checks business status (paused, cancelled, trial ended) | Built in #18; confirm | Dev 1 + Dev 2 |
 | 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
+| 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**, pending Shaaz, Dhatri and Raja | Dev 1 |
+
+## 9. Knowledge base (PROPOSED, not agreed)
+
+> **PROPOSED, pending Shaaz** (migration, new table and columns, Realtime, `match_kb_chunks`) **and Raja**
+> (Documents section meaning, who may answer gaps, write roles). **It needs Shaaz's and Dhatri's review
+> before it counts as agreed.** Nothing here is built. Detail, open questions and the PR order:
+> [kb-contract-checklist.md](kb-contract-checklist.md). Owner: Dev 1 (Nithisha).
+
+**Where it runs:** the routes are on the Railway API (`backend/src/server/routes.ts`), at
+`${NEXT_PUBLIC_API_URL}/api/kb/...`, `browser: true`, bearer token plus `X-Pakka-Tenant`. The tenant comes
+from the token and that header, never the body. Lists are direct RLS reads. The ingest job registers in
+`backend/src/inngest/functions.ts` (the one Inngest endpoint is the API's `/api/inngest`).
+
+**Schema** (one migration; its number is the next free one at merge time, as 0010 is taken by inbox
+Realtime): `kb_documents` gains `status text check in ('processing','ready','failed')`, `error text` and
+`body text` (a FAQ's answer). A new `kb_gaps` table (`tenant_id`, RLS, unique `(tenant_id, question_norm)`,
+`asked_count`, `last_contact_id`, `last_asked_at`, `status open|answered|dismissed`, `answered_faq_id`).
+`kb_documents` joins the Realtime publication. `match_kb_chunks(p_tenant_id, p_query vector(1024), p_k)` as
+in section 1.
+
+| Route | Request | Response |
+|---|---|---|
+| `POST /api/kb/faqs` | `{ q, a }` (q <= 300, a <= 2000 chars) | 201 `{ id, q, a }`; `conflict` on a duplicate question |
+| `PATCH /api/kb/faqs/:id` | `{ q?, a? }` | `{ id, q, a }` |
+| `DELETE /api/kb/faqs/:id` | | 204 |
+| `POST /api/kb/documents` | multipart: `file` (+ optional `title`); pdf, docx, txt or md, <= 5 MB | 202 `{ id, title, sourceType: 'upload', status: 'processing', createdAt }` |
+| `DELETE /api/kb/documents/:id` | | 204 (chunks cascade) |
+| `GET /api/kb/gaps` | | `[{ id, question, askedCount, lastAskedBy }]`, open only, `askedCount` desc; `lastAskedBy` is a contact name or a masked number |
+| `POST /api/kb/gaps/:id/answer` | `{ a }` | `{ faq: { id, q, a } }`, gap closed in one transaction |
+| `POST /api/kb/gaps/:id/dismiss` | | 204 |
+
+- **Reads:** the FAQ list is `kb_documents` where `source_type = 'manual'` (`title` = question, `body` =
+  answer). The documents list is `id, title, source_type, status, created_at`.
+- **Errors:** the usual envelope. A too-large or unsupported file is `validation_failed` with
+  `fields.file`. No new error codes.
+- **Timing:** FAQ saves and gap answers embed inline, so replies see them at once (an embed failure is
+  `upstream_failed` and the row is `failed`). Uploads go to an idempotent Inngest job (`kb/document.uploaded`,
+  keyed on the document id, chunks deleted before re-insert). The dashboard watches `kb_documents` through
+  Realtime, polling while a row is `processing`.
+- **Gaps:** pipeline step 5 records one when retrieval is below the threshold, the same event that feeds the
+  `kb_gap` handoff after two misses.
+- **Roles:** owner and admin write; staff answering gaps is to confirm with Raja.
+- **Router and upload-limit changes** (a separate small PR between the migration and the FAQ routes):
+  `:param` path matching in `app.ts` (routes match exactly today), `PATCH` and `DELETE` in `Method` and the
+  preflight, and a per-route body limit (`MAX_BODY_BYTES` is 1 MB; uploads need 5 MB). `backend/src/server/`
+  was written by Shaaz (Dev 2): **ask Shaaz before changing it.**
+- **Build order:** migration, then `backend/src/kb` and the embeddings client (mocked provider), then the
+  router PR, then upload and the ingest job, then FAQ routes, then gaps. **FAQ routes and gaps may slip to
+  Day 3.**

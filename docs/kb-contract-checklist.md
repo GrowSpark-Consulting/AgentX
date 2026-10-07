@@ -1,77 +1,92 @@
 # Knowledge base: contracts Dev 3 needs from Dev 1
 
-Owner: Dev 3. For: Dev 1 (Nithisha). Status on 7 Oct 2026: **open**. Nothing below is decided. Each
-answer becomes a contract through a pull request, as for [contracts.md](contracts.md).
+Owner: Dev 3 (questions), Dev 1 (answers). Status on 7 Oct 2026: **PROPOSED, pending Shaaz** (migration, new
+table and columns, Realtime, `match_kb_chunks`) **and Raja** (Documents section meaning, who may answer gaps,
+write roles). Nothing is agreed until Shaaz and Dhatri have reviewed it. The agreed form goes into
+[contracts.md](contracts.md) section 9.
 
-The real Knowledge base page (`/dashboard/knowledge`, code in `frontend/features/knowledge/`) already
-has its services editor and a read-only documents list. The FAQ, unanswered-question and upload parts
-are built in the UI but switched off, because no storage, API or shape exists for them. This list is
-what's needed to switch them on.
+Each item below is Dev 1's proposed answer, not a built feature.
 
-## What exists today
+## What exists today (origin/main)
 
-| | Status | Where |
-|---|---|---|
-| `kb_documents` | Table; members read under RLS, cannot write | 0001: `id, tenant_id, source_type, source_url, title, created_at` (no status column) |
-| `kb_chunks` | Table; members read under RLS, cannot write | 0001, HNSW index in 0004 |
-| `POST /api/kb/documents` | HANDOVER, not built: "upload a document, chunk and embed it" | handover.md, API table |
-| `POST /api/onboarding/import-site` | HANDOVER, not built (also "Sync website again") | handover.md, API table |
-| FAQs | PROPOSED only: `POST\|PATCH /api/kb/faqs`, shape `{ id, q, a }` | dashboard-screen-contracts.md |
-| Unanswered questions | PROPOSED only: `GET /api/kb/gaps`, shape `{ id, question, askedCount, lastAskedBy }`; open question 3 ("no table") | dashboard-screen-contracts.md |
-| `kb_gap` | Agreed handoff trigger | `@pakka/types` `HandoffTrigger` |
+| | Status |
+|---|---|
+| `kb_documents`, `kb_chunks` | 0001: members read under RLS, cannot write. HNSW index in 0004. No `status` column. |
+| KB code, embeddings client, `match_kb_chunks` | Not built (`backend/src/kb/` is empty). |
+| `EMBEDDINGS_API_KEY` | In the env schema (optional). No provider, base URL or model variable yet. Provider choice is provisional ([embeddings-evaluation.md](embeddings-evaluation.md)). |
+| Inngest | Wired on the API; only `ping` registered. |
+| `kb_gap` | A `HandoffTrigger` only; no gap table. |
 
-**Conflicts to settle:**
+## Where the routes live
 
-- The PROPOSED `documents.status` (`processing | ready | failed`) has no column in `kb_documents`.
-- The prototype's "Documents Maya can send" (files sent to customers, with send counts) aren't the same
-  thing as `kb_documents` (sources the AI learns from). Which one is the dashboard's Documents section?
+On the Railway API (`backend/src/server/routes.ts`), not in `frontend/app/api` (removed in #37), at
+`${NEXT_PUBLIC_API_URL}/api/kb/...`. Authorization: `Bearer <Supabase access token>`; the business is named by
+`X-Pakka-Tenant`, honoured only for one of the caller's memberships.
 
-## FAQs
+**For Dhatri (Dev 3):**
+- The tenant comes from the token and the `X-Pakka-Tenant` header, **never the body**.
+- Your Playwright mock must mock the **API on port 4000** for the KB routes, as well as Supabase for the RLS
+  reads.
+- Errors use the `{ error: { code, message, fields? } }` envelope. Too-large and unsupported files are
+  `validation_failed` with `fields.file` (limit 5 MB; pdf, docx, txt, md). No new error codes.
+- Call routes through `frontend/lib/api/client.ts`.
 
-- [ ] Storage model: a new table, `kb_documents` (`source_type = 'manual'`) with chunks, or something else
-- [ ] List / read: direct RLS read or an API route; ordering; paging
-- [ ] Create: route, request shape, response shape
-- [ ] Update: route, request shape, response shape
-- [ ] Delete: route and response
-- [ ] Validation: required fields, length limits, duplicate questions
-- [ ] Tenant behaviour: tenant from the session only; who may write (owner, admin, staff?)
-- [ ] Re-embedding: does a save affect AI replies immediately, or after an async job? How does the UI
-      know it's done?
-- [ ] Error codes the UI should expect (from `ERROR_CODES`)
+## Proposed answers
 
-## Unanswered questions (gaps)
+1. **FAQ storage:** `kb_documents` with `source_type = 'manual'`, one row per FAQ (`title` = question, new
+   `body` column = answer) plus one chunk. Routes: `POST /api/kb/faqs`, `PATCH|DELETE /api/kb/faqs/:id`,
+   `{ q, a }` -> `{ id, q, a }`, q <= 300 and a <= 2000 chars, duplicate question = `conflict`. The list is a
+   direct RLS read of `kb_documents`.
+2. **Gaps:** new table `kb_gaps` (RLS, unique `(tenant_id, question_norm)`, `asked_count`, `last_asked_at`,
+   `last_contact_id`, `status open|answered|dismissed`, `answered_faq_id`). Pipeline step 5 upserts a gap when
+   retrieval is below the threshold, the same event that feeds the `kb_gap` handoff after two misses.
+   `GET /api/kb/gaps` -> `[{ id, question, askedCount, lastAskedBy }]`, open only, `askedCount` desc,
+   `lastAskedBy` = contact name or masked number. `POST /api/kb/gaps/:id/answer { a }` creates the FAQ and
+   closes the gap in one transaction; `POST /api/kb/gaps/:id/dismiss` closes it without an answer.
+3. **Upload:** `POST /api/kb/documents`, multipart `file` (+ optional `title`), pdf, docx, txt or md, <= 5 MB.
+   Response `202 { id, title, sourceType: 'upload', status: 'processing', createdAt }`.
+4. **Statuses:** `kb_documents.status` in `processing | ready | failed`, with `error text`. New columns, so a
+   migration. FAQs are `ready` on save.
+5. **Document list:** keep the direct RLS read: `id, title, source_type, status, created_at`.
+6. **Effect on replies:** FAQ saves and gap answers embed inline, so replies see them at once; an embed
+   failure leaves the row `failed` and the route answers `upstream_failed`. Uploads are live when `ready`.
+7. **Processing:** uploads run in an idempotent Inngest job (`kb/document.uploaded`, keyed on the document id,
+   chunks deleted before re-insert). FAQ saves are synchronous.
+8. **Refresh:** Realtime on `kb_documents` (added to the publication in the migration), with polling while a
+   row is `processing`.
+9. **Conflicts:** `status` gets a column (answer 4). The Documents section means knowledge sources
+   (`kb_documents`); "documents Maya can send" are customer-facing files, a different feature, deferred
+   (**Raja decides**).
 
-- [ ] Storage: table and columns
-- [ ] Creation: which pipeline step records a gap, when, and how repeats are counted
-- [ ] List: `GET /api/kb/gaps` or a direct RLS read; filters (open only?), ordering, paging
-- [ ] Response shape: confirm or replace `{ id, question, askedCount, lastAskedBy }`; what `lastAskedBy`
-      holds (a contact name? masked number?)
-- [ ] Answer operation: route, request and response
-- [ ] Does answering create an FAQ? Does it close the gap? Is there a "dismiss" without answering?
-- [ ] Tenant behaviour and roles (screen inventory proposes staff may answer gaps: to confirm with Raja)
-- [ ] Relation to the `kb_gap` handoff trigger, if any
+Also proposed: `DELETE /api/kb/documents/:id` (chunks cascade). Roles: owner and admin write; staff answering
+gaps is **to confirm with Raja**. Replace and file storage (bucket) are out of v1: the file is read, chunked and
+discarded.
 
-## Documents and upload
+## Who decides
 
-- [ ] `POST /api/kb/documents`: request (multipart field names, any other fields such as a title)
-- [ ] Accepted file types and maximum size
-- [ ] Response shape
-- [ ] Processing states and where they live (new column, separate table, job status)
-- [ ] Synchronous or asynchronous processing (an Inngest job?)
-- [ ] How the UI learns a document is ready or failed: Realtime on a table, polling, or the response
-- [ ] Document list: keep the direct RLS read of `kb_documents`, or a route; which fields
-- [ ] Delete or replace a document: in scope for v1?
-- [ ] Storage: bucket name and access rules, if the file itself is kept
+| | |
+|---|---|
+| **Shaaz** | The migration (columns, `kb_gaps`, Realtime, `match_kb_chunks`); and `backend/src/server/` (below). |
+| **Raja** | The Documents section meaning, who may answer gaps, write roles. |
+| **Dhatri** | Review of the routes and shapes; the UI switch-on. |
 
-## What Dev 3 does once these are answered
+**Router and upload-limit changes** are a separate small PR between the migration and the FAQ routes:
+`:param` path matching in `app.ts`, `PATCH` and `DELETE` in `Method` and the preflight, and a per-route body
+limit (`MAX_BODY_BYTES` is 1 MB today). `backend/src/server/` was written by **Shaaz**: ask Shaaz before
+changing it.
 
-1. Add typed reads and writes in `frontend/features/knowledge/kb-content.ts` (Zod-parsed, tenant from
-   the session, the same pattern as `data.ts` for services).
-2. In `knowledge-screen.tsx`, replace the `unavailable` sources for FAQs and gaps with loaded data and
-   pass `onAdd` / `onAnswer`. `FaqList` and `GapsList` already render ready lists and switch their
-   buttons on when given a handler; `Documents` gets an upload action and, if agreed, a status.
-3. Extend `frontend/tests/e2e/support/mock-supabase.mjs` with the agreed tables or routes, per test
-   account (`POST /__mock/services-account`), and add Playwright tests in
-   `frontend/tests/e2e/app/knowledge.spec.ts`: FAQ create, edit, delete; answer a gap; upload with its
-   states.
-4. Add pgTAP tests for any new table's RLS, and run `pnpm db:test` on a machine with Docker.
+## Build order
+
+1. This contract. 2. Migration (next free number at merge time; 0010 is taken by inbox Realtime). 3.
+`backend/src/kb` and the embeddings client with a mocked provider. 4. Router and body-limit PR. 5. Upload and the
+Inngest job. 6. FAQ routes. 7. Gaps. **6 and 7 may slip to Day 3.**
+
+## What Dev 3 does once these are agreed
+
+1. Add typed reads and writes in `frontend/features/knowledge/kb-content.ts` (Zod-parsed; API calls through
+   `lib/api/client.ts`).
+2. In `knowledge-screen.tsx`, replace the `unavailable` sources for FAQs and gaps with loaded data and pass
+   `onAdd` / `onAnswer`; give `Documents` an upload action and the status.
+3. Extend the Playwright mock for the API (port 4000) and `frontend/tests/e2e/support/mock-supabase.mjs` for the
+   RLS reads; add tests: FAQ create, edit, delete; answer a gap; upload and its states.
+4. Add pgTAP tests for the new table's RLS and run `pnpm db:test` on a machine with Docker.
