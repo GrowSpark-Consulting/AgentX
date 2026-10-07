@@ -25,6 +25,8 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`.
 | `0007_whatsapp_templates` | `whatsapp_templates`, `set_template_status` (service_role only) |
 | `0008_credit_refunds` | `refund_credits(tenant, ref_id)`: returns a failed send's credits to the same buckets (service_role only) |
 | `0009_notify_functions` | `notify_target`, `notify_template`, `notify_record`: the database side of `notify.send` (service_role only) |
+| `0010_inbox_realtime` | `messages`, `conversations`, `handoffs` in the Realtime publication; `conversations.last_message_at` kept by a trigger |
+| `0011_knowledge_base` | `kb_documents.status`/`error`/`body`, one FAQ per question, `kb_gaps`, `kb_documents` in Realtime, `match_kb_chunks` (section 9) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -67,9 +69,12 @@ create table public.whatsapp_templates (
 - Dev 1's webhook, on `message_template_status_update`, calls Dev 2's
   `set_template_status(meta_template_id, status, reason)`. It never writes the table directly.
 
-**Proposed:** `match_kb_chunks(p_tenant_id, p_query vector(1024), p_k)` (Dev 1): security invoker,
-`search_path = ''`, `hnsw.iterative_scan = relaxed_order`, executable by `service_role` only.
-Migration numbers go to whoever merges first.
+**Built in 0011:** `match_kb_chunks(p_tenant_id, p_query vector(1024), p_k default 5)` →
+`(chunk_id, document_id, title, content, similarity)`, most similar first, `similarity = 1 - cosine
+distance`. Only the business's `ready` documents; `k` is clamped to 1–50. Security invoker,
+`search_path = ''`, `hnsw.iterative_scan = relaxed_order` (re-sorted after the scan), executable by
+`service_role` only. The similarity threshold is the caller's. Migration numbers go to whoever
+merges first.
 
 ## 2. Shared types (`@pakka/types`)
 
@@ -305,13 +310,13 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 11 | Test message and template routes | **Agreed**; types Fixed in #23, `notify.send` built | Dev 1 + Dev 2 + Dev 3 |
 | 12 | `isEnabled` also checks business status (paused, cancelled, trial ended) | Built in #18; confirm | Dev 1 + Dev 2 |
 | 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
-| 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**, pending Shaaz, Dhatri and Raja | Dev 1 |
+| 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**; schema and router built (Shaaz); pending Dhatri and Raja | Dev 1 |
 
 ## 9. Knowledge base (PROPOSED, not agreed)
 
-> **PROPOSED, pending Shaaz** (migration, new table and columns, Realtime, `match_kb_chunks`) **and Raja**
-> (Documents section meaning, who may answer gaps, write roles). **It needs Shaaz's and Dhatri's review
-> before it counts as agreed.** Nothing here is built. Detail, open questions and the PR order:
+> **PROPOSED.** Shaaz has reviewed his part and built it: the schema (0011) and the router. **Still
+> pending Raja** (Documents section meaning, who may answer gaps, write roles) **and Dhatri's review of the
+> routes and shapes.** Detail, open questions and the PR order:
 > [kb-contract-checklist.md](kb-contract-checklist.md). Owner: Dev 1 (Nithisha).
 
 **Where it runs:** the routes are on the Railway API (`backend/src/server/routes.ts`), at
@@ -319,12 +324,17 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 from the token and that header, never the body. Lists are direct RLS reads. The ingest job registers in
 `backend/src/inngest/functions.ts` (the one Inngest endpoint is the API's `/api/inngest`).
 
-**Schema** (one migration; its number is the next free one at merge time, as 0010 is taken by inbox
-Realtime): `kb_documents` gains `status text check in ('processing','ready','failed')`, `error text` and
-`body text` (a FAQ's answer). A new `kb_gaps` table (`tenant_id`, RLS, unique `(tenant_id, question_norm)`,
-`asked_count`, `last_contact_id`, `last_asked_at`, `status open|answered|dismissed`, `answered_faq_id`).
-`kb_documents` joins the Realtime publication. `match_kb_chunks(p_tenant_id, p_query vector(1024), p_k)` as
-in section 1.
+**Schema (built in `0011_knowledge_base`):** `kb_documents` gains `status text check in
+('processing','ready','failed')`, `error text` and `body text` (a FAQ's answer). New rows default to
+`processing`, so the FAQ route and the ingest job set `ready` once the chunks are stored. A business can
+have each FAQ question once (`lower(btrim(title))` among `source_type = 'manual'` rows, unique), so a
+duplicate is a `23505` the FAQ route maps to `conflict`. A new `kb_gaps` table (`tenant_id`, RLS: members
+read, only the server writes; unique `(tenant_id, question_norm)`, `question`, `asked_count >= 1`,
+`last_contact_id`, `last_asked_at`, `status open|answered|dismissed`, `answered_faq_id`; deleting the
+contact or the FAQ clears the link). `kb_documents` joins the Realtime publication. `match_kb_chunks` as in
+section 1. Not in 0011, for Dev 1 when building the routes: counting a repeat question
+(`asked_count + 1`) and answering a gap in one transaction need SQL functions, since PostgREST can't do
+either atomically.
 
 | Route | Request | Response |
 |---|---|---|
