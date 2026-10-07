@@ -157,7 +157,14 @@ getFeatureStates(tenantId, { fresh? }): Promise<FeatureState[]>
 invalidateFeatureCache(tenantId?): void
 // backend/src/billing/trial.ts (#18)
 createTrialTenant({ userId, name, vertical, timezone? }): Promise<{ tenantId, routeCode, trialEndsAt, created }>
+// backend/src/lib/audit.ts
+writeAudit({ tenantId, actor, action, entity?, entityId?, diff? }): Promise<void>
 ```
+
+- `writeAudit` is for every traceable action other than sent messages (`notify_record` writes
+  those). `actor` is a user id, `ai`, `system` or `admin:<user id>`; `action` is
+  `<entity>.<verb>` (`feature.toggled`); `tenantId` is null only for platform actions. Phone
+  numbers in `diff` are masked. It throws if the row is not written.
 
 - `isEnabled` is on only when the business is live (active, or in a trial whose end date has not
   passed), the plan includes the feature and the toggle is on (`default_on` when unset). The
