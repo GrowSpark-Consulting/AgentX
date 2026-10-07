@@ -1,21 +1,7 @@
-import { test as base, expect, type Page } from "@playwright/test";
-import { PASSWORD, SIGNED_OUT, signUp, uniqueEmail } from "../support/app";
-
-/** Any console error or uncaught page error fails the test. */
-const test = base.extend<{ consoleErrors: string[] }>({
-  consoleErrors: [
-    async ({ page }, use) => {
-      const errors: string[] = [];
-      page.on("console", (m) => {
-        if (m.type() === "error") errors.push(m.text());
-      });
-      page.on("pageerror", (e) => errors.push(String(e)));
-      await use(errors);
-      expect(errors, "console errors").toEqual([]);
-    },
-    { auto: true },
-  ],
-});
+import type { Page } from "@playwright/test";
+// `test` fails on any console or page error, except the browser's own line for an API answer that
+// isn't 2xx: the owner's Business step gets 409 has_business from POST /api/onboarding/trial.
+import { PASSWORD, SIGNED_OUT, expect, signUp, test, uniqueEmail } from "../support/app";
 
 /** The wizard's footer button that moves to the next step (label changes per step). */
 const next = (page: Page, label: string | RegExp) => page.getByRole("button", { name: label });

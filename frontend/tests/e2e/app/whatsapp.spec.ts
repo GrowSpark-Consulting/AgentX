@@ -1,4 +1,5 @@
-import { appAlert, SIGNED_OUT, expect, expectNoHorizontalOverflow, signIn, test } from "../support/app";
+import { API_URL } from "../../../playwright.config";
+import { appAlert, asUser, SIGNED_OUT, expect, expectNoHorizontalOverflow, signIn, test } from "../support/app";
 
 // Each account in mock-supabase.mjs returns a different answer from whatsapp_connections_public.
 test.describe("WhatsApp connection panel", () => {
@@ -28,7 +29,7 @@ test.describe("WhatsApp connection panel", () => {
     await signIn(page, "disconnected@test.local", "/dashboard/whatsapp");
     await expect(page.getByRole("listitem")).toContainText("Disconnected");
     // Sending is refused on the server, not just hidden.
-    const res = await page.request.post("/api/messages/test", { data: { to: "+919840012345", body: "hi" } });
+    const res = await page.request.post(`${API_URL}/api/messages/test`, { data: { to: "+919840012345", body: "hi" }, headers: await asUser(page) });
     expect(res.status()).toBe(409);
     expect((await res.json()).error.code).toBe("whatsapp_not_connected");
   });
@@ -36,7 +37,7 @@ test.describe("WhatsApp connection panel", () => {
   test("connecting", async ({ page }) => {
     await signIn(page, "pending@test.local", "/dashboard/whatsapp");
     await expect(page.getByRole("listitem")).toContainText("Connecting");
-    const res = await page.request.post("/api/messages/test", { data: { to: "+919840012345", body: "hi" } });
+    const res = await page.request.post(`${API_URL}/api/messages/test`, { data: { to: "+919840012345", body: "hi" }, headers: await asUser(page) });
     expect((await res.json()).error.code).toBe("whatsapp_not_connected");
   });
 

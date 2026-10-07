@@ -35,7 +35,7 @@ export function verifyWebhookChallenge(
 const forbidden = () => new Response(null, { status: 403, headers: { "cache-control": "no-store" } });
 
 /**
- * The whole GET handler, so the route file stays thin. `env` is for tests; by default the token is
+ * The whole GET handler, so the route stays one line (server/routes.ts). `env` is for tests; by default the token is
  * read through serverEnv(). If serverEnv() throws (some variable is invalid) we refuse, and log one
  * fixed line with no values so a misconfiguration can be told from a wrong token.
  */

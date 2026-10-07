@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionState } from "@/lib/auth/session";
-import { startTrialFor, trialPackKey, type StartTrialDeps } from "./start-trial";
+import { startTrialFor, trialPackKey, type SessionState, type StartTrialDeps } from "./start-trial";
 
 const USER = { id: "e0000000-0000-0000-0000-000000000001" };
 const TENANT = "d0000000-0000-0000-0000-0000000000c1";

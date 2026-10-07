@@ -5,16 +5,41 @@ import { z } from "zod";
 
 const secret = z.string().min(1);
 
+/**
+ * "https://app.example.com, http://localhost:3000" → each entry's origin. Null when any entry is
+ * not a bare http(s) origin (a path, credentials or a wildcard), so a typo can't widen CORS.
+ */
+export function parseOrigins(list: string): string[] | null {
+  const origins: string[] = [];
+  for (const raw of list.split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (raw.includes("*") || !URL.canParse(raw)) return null;
+    const url = new URL(raw);
+    const bare = /^https?:$/.test(url.protocol) && !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash;
+    if (!bare || raw.replace(/\/$/, "") !== url.origin) return null;
+    origins.push(url.origin);
+  }
+  return origins;
+}
+
 const serverEnvSchema = z.object({
+  // The frontend's address (Vercel). The API accepts browser requests from it (CORS).
   NEXT_PUBLIC_APP_URL: z.url(),
-  NEXT_PUBLIC_SUPABASE_URL: z.url(),
+  // The Supabase project URL and anon/publishable key: the API verifies the caller's access token
+  // and reads as that user (row-level security), like the frontend does. Same names on both hosts.
+  NEXT_PUBLIC_SUPABASE_URL: z.url({ protocol: /^https?$/, error: "must be the project's https API URL, e.g. https://<ref>.supabase.co" }),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: secret,
   SUPABASE_SERVICE_ROLE_KEY: secret,
 
-  // Development only: a signed-in account with no business sees the dashboard shell with empty
-  // states instead of the "not linked to a business" screen. Already on under `next dev`; set
-  // "true" to try it on a production build. Ignored on Vercel production (frontend/lib/dev-mode.ts).
-  DEV_DASHBOARD_WITHOUT_TENANT: z.enum(["true", "false"]).optional(),
+  // The API server (backend/src/server). Railway sets PORT; locally the API runs on 4000.
+  PORT: z.coerce.number().int().min(1).max(65535).default(4000),
+  HOST: z.string().min(1).default("0.0.0.0"),
+  // Browser origins allowed besides NEXT_PUBLIC_APP_URL, comma-separated (e.g. the staging frontend
+  // or http://localhost:3000). Exact origins only: never "*".
+  CORS_ALLOWED_ORIGINS: z
+    .string()
+    .refine((v) => parseOrigins(v) !== null, "must be comma-separated origins such as https://staging.pakkaagent.in")
+    .transform((v) => parseOrigins(v) ?? [])
+    .optional(),
 
   // Optional until the module that uses them lands; make each one required in
   // the same PR that first reads it.
@@ -47,6 +72,9 @@ const serverEnvSchema = z.object({
 
   INNGEST_EVENT_KEY: secret.optional(),
   INNGEST_SIGNING_KEY: secret.optional(),
+  // Read by the Inngest SDK: the API's public origin, so the URL Inngest syncs never comes from a
+  // request's Host header (e.g. https://api.pakkaagent.in).
+  INNGEST_SERVE_ORIGIN: z.url().optional(),
 
   RESEND_API_KEY: secret.optional(),
   SENTRY_DSN: z.url().optional(),

@@ -6,6 +6,8 @@
     "./*": "./src/*.ts"
   },
   "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env.local src/server/main.ts",
+    "start": "tsx src/server/main.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -15,6 +17,7 @@
     "@pakka/types": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
     "inngest": "^4.21.1",
+    "tsx": "^4.23.15",
     "zod": "^4.6.5"
   },
   "devDependencies": {

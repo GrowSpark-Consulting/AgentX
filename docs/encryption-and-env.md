@@ -87,20 +87,22 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 | File | Holds | In git? |
 |---|---|---|
-| `.env.example` (repo root) | Variable names, comments and safe defaults only | Yes |
-| `frontend/.env.local` | Your real local values | No. The `.env*` rule in `.gitignore` ignores it (only `.env.example` is allowed) |
+| `backend/.env.example`, `frontend/.env.example` | Variable names, comments and safe defaults only | Yes |
+| `backend/.env.local` | Your real local server values, including secrets | No. The `.env*` rule in `.gitignore` ignores it (only `.env.example` is allowed) |
+| `frontend/.env.local` | Your real local public values (`NEXT_PUBLIC_*`) | No, same rule |
 
 | Reader | Env source |
 |---|---|
-| Frontend (Next.js) | `frontend/.env.local`. Next does not read the repo root. |
-| Backend modules | No file of their own: `serverEnv()` reads `process.env` |
+| Frontend (Next.js) | `frontend/.env.local` locally, Vercel's variables when deployed. Next does not read the repo root. Public values only. |
+| API (backend/) | `serverEnv()` reads `process.env`: `backend/.env.local` loaded by `pnpm dev`, Railway's variables when deployed |
 | Vitest | Loads no env file; tests pass values in explicitly |
-| CLI scripts | Nothing loads a file by default. Node 22.18+ can run `node --env-file=frontend/.env.local <script>`. The embeddings-eval scripts read their own `scripts/embeddings-eval/.env.local`. |
+| CLI scripts | Nothing loads a file by default. Node 22.18+ can run `node --env-file=backend/.env.local <script>`. The embeddings-eval scripts read their own `scripts/embeddings-eval/.env.local`. |
 
-New variables go in the `serverEnv()` schema and in `.env.example` in the same PR.
+New server variables go in the `serverEnv()` schema and in `backend/.env.example` in the same PR;
+browser-safe ones in `frontend/lib/env.ts` and `frontend/.env.example`.
 
 **`META_GRAPH_API_VERSION=v26.0`.** The handover pins the Graph API version in one env variable and says to
-upgrade deliberately, because Meta changes these flows often. `.env.example` sets `v26.0`; the schema requires
+upgrade deliberately, because Meta changes these flows often. `backend/.env.example` sets `v26.0`; the schema requires
 the form `v<number>.<number>` and **defaults to `v26.0` when the variable is unset or empty**, so code never
 builds a `/undefined/` URL. Changing the version is a deliberate PR, not a drive-by edit.
 
@@ -110,7 +112,7 @@ builds a `/undefined/` URL. Changing the version is a deliberate PR, not a drive
 |---|---|---|
 | Everyone | Build contexts only with `connectionSecretContext` (the types enforce it). Use `decryptSecret` right before the call that needs the token, and keep the result in a local variable. | Log, return or send a secret to the browser. Cast a string to `SecretContext` outside tests. Change the context format, column list or stored format without re-encrypting every stored value. |
 | Dev 1 | Encrypt the connection token and app secret in the seed script, the manual-connect route and the Embedded Signup exchange, with a row id created first. Decrypt per call in the adapter. | Cache a decrypted token beyond one call. Put it in an error message or log line. |
-| Dev 2 | Keep staging and production keys in the password manager and Vercel. Any new code that stores an external credential uses this helper. | Write secrets into migrations, seed SQL or `.env.example`. |
+| Dev 2 | Keep staging and production keys in the password manager and Railway (server secrets live only there; Vercel gets public values). Any new code that stores an external credential uses this helper. | Write secrets into migrations, seed SQL or an `.env.example`. |
 | Dev 3 | Read connections only through `whatsapp_connections_public`. Post `ManualConnectInput` once. | Keep a token or app secret in client state, `localStorage` or UI after submit. |
 
 ## 6. Known limits

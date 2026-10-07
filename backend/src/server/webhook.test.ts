@@ -7,15 +7,17 @@ vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "synthetic-anon-key");
 vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "synthetic-service-key");
 vi.stubEnv("META_WEBHOOK_VERIFY_TOKEN", "synthetic-route-token");
 
-const route = await import("./route");
+const { createApp } = await import("./app");
+const app = createApp();
 
-const call = (query: string) =>
-  route.GET(new Request(`http://localhost:3000/api/webhooks/whatsapp${query}`));
+const call = (query: string, init?: RequestInit) =>
+  app(new Request(`http://localhost:4000/api/webhooks/whatsapp${query}`, init));
 
 describe("/api/webhooks/whatsapp", () => {
-  it("exports GET only: message handling is not part of this route yet", () => {
-    expect(typeof route.GET).toBe("function");
-    expect("POST" in route).toBe(false);
+  it("answers GET only: message handling is not part of this route yet", async () => {
+    const res = await call("", { method: "POST", body: "{}" });
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET");
   });
 
   it("answers Meta's verification with the challenge as plain text", async () => {
@@ -29,5 +31,13 @@ describe("/api/webhooks/whatsapp", () => {
     const res = await call("?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=424242");
     expect(res.status).toBe(403);
     expect(await res.text()).toBe("");
+  });
+
+  it("sends no CORS headers: Meta calls it server to server", async () => {
+    const res = await call("?hub.mode=subscribe&hub.verify_token=synthetic-route-token&hub.challenge=1", {
+      headers: { origin: "http://localhost:3000" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });
 });

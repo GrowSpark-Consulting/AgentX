@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { parsePublicEnv } from "./env";
+import { parseApiUrl, parsePublicEnv } from "./env";
+
+describe("parseApiUrl", () => {
+  it("accepts the API's origin, with or without a trailing slash", () => {
+    expect(parseApiUrl("https://api.pakkaagent.in")).toBe("https://api.pakkaagent.in");
+    expect(parseApiUrl("http://localhost:4000/")).toBe("http://localhost:4000");
+  });
+
+  it.each([undefined, "", "api.example.test", "https://api.example.test/api", "ftp://api.example.test", "https://user:pw@api.example.test"])(
+    "refuses %j, naming the variable but not the value",
+    (value) => {
+      expect(() => parseApiUrl(value)).toThrow(/NEXT_PUBLIC_API_URL/);
+      if (value) expect(() => parseApiUrl(value)).not.toThrow(value);
+    },
+  );
+});
 
 describe("parsePublicEnv", () => {
   it("accepts the project's https API URL and anon key", () => {

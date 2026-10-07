@@ -1,4 +1,4 @@
-import { serverEnv } from "@pakka/backend/lib/env";
+import { z } from "zod";
 
 export interface DevModeInputs {
   nodeEnv: string | undefined;
@@ -18,13 +18,14 @@ export function dashboardWithoutTenantAllowed({ nodeEnv, vercelEnv, flag }: DevM
   return nodeEnv === "development" || flag === "true";
 }
 
-/** Server only. Fails closed: if the server environment doesn't validate, the flag counts as off. */
+const Flag = z.enum(["true", "false"]).optional();
+
+/** Server only. Fails closed: a flag that isn't "true" or "false" counts as off. */
 export function dashboardWithoutTenant(): boolean {
-  let flag: string | undefined;
-  try {
-    flag = serverEnv().DEV_DASHBOARD_WITHOUT_TENANT;
-  } catch {
-    flag = undefined;
-  }
-  return dashboardWithoutTenantAllowed({ nodeEnv: process.env.NODE_ENV, vercelEnv: process.env.VERCEL_ENV, flag });
+  const parsed = Flag.safeParse(process.env.DEV_DASHBOARD_WITHOUT_TENANT || undefined);
+  return dashboardWithoutTenantAllowed({
+    nodeEnv: process.env.NODE_ENV,
+    vercelEnv: process.env.VERCEL_ENV,
+    flag: parsed.success ? parsed.data : undefined,
+  });
 }

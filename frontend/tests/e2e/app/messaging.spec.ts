@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
-import { appAlert, SIGNED_OUT, expect, expectNoHorizontalOverflow, signIn, test } from "../support/app";
+import { API_URL } from "../../../playwright.config";
+import { appAlert, asUser, SIGNED_OUT, expect, expectNoHorizontalOverflow, signIn, test } from "../support/app";
 
 // Signed in as owner@test.local (project storage state) unless a test says otherwise.
 
@@ -120,7 +121,7 @@ test.describe("send test message as staff", () => {
     await signIn(page, "staff@test.local", "/dashboard/messages/test");
     await expect(page.getByRole("note").filter({ hasText: "Only an owner or admin" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Send test message" })).toBeDisabled();
-    const res = await page.request.post("/api/messages/test", { data: { to: "+919840012345", body: "hi" } });
+    const res = await page.request.post(`${API_URL}/api/messages/test`, { data: { to: "+919840012345", body: "hi" }, headers: await asUser(page) });
     expect(res.status()).toBe(403);
     expect((await res.json()).error).toEqual({ code: "forbidden", message: "Only an owner or admin can send a test message." });
   });

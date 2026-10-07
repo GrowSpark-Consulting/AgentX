@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
-import { FLAG_OFF_URL } from "../../../playwright.config";
-import { expect, expectNoHorizontalOverflow, mainNav, MOCK_SUPABASE_URL, SIGNED_OUT, signIn, signUp, test, uniqueEmail } from "../support/app";
+import { API_URL, FLAG_OFF_URL } from "../../../playwright.config";
+import { asUser, expect, expectNoHorizontalOverflow, mainNav, MOCK_SUPABASE_URL, SIGNED_OUT, signIn, signUp, test, uniqueEmail } from "../support/app";
 
 // The development dashboard for a signed-in account with no business (DEV_DASHBOARD_WITHOUT_TENANT,
 // on for the main e2e server). It renders the shell with empty states, invents no tenant, and every
@@ -85,9 +85,9 @@ test.describe("dashboard for an account with no business (development)", () => {
       await expect(page.getByTestId("tenant-identity")).toContainText("No business yet");
       for (const name of OTHER_BUSINESSES) await expect(page.getByText(name)).toHaveCount(0);
     }
-    // Tenant-scoped API routes still refuse the account.
+    // Tenant-scoped API routes still refuse the account, whatever business the browser names.
     for (const route of ["/api/templates", "/api/messages/test"]) {
-      const res = await page.request.post(route, { data: {} });
+      const res = await page.request.post(`${API_URL}${route}`, { data: {}, headers: { ...(await asUser(page)), "x-pakka-tenant": REALTY_ID } });
       expect(res.status()).toBe(403);
       expect((await res.json()).error.code).toBe("no_membership");
     }

@@ -36,12 +36,13 @@ Related: [dashboard-screen-inventory.md](dashboard-screen-inventory.md) ·
 
 ## Repository layout
 
-The repo is a pnpm monorepo with **one** Next.js app.
+The repo is a pnpm monorepo with two deployables: the Next.js app (Vercel) and the API (Railway).
+Hosting, variables and the request flow are in [environments.md](environments.md).
 
 ```
 AgentX/
-├── frontend/            @pakka/frontend: the Next.js 16 app (UI + /api route handlers)
-├── backend/             @pakka/backend: server modules imported by the route handlers
+├── frontend/            @pakka/frontend: the Next.js 16 app (UI, sign-in, server-rendered reads)
+├── backend/             @pakka/backend: the API service (backend/src/server) and the modules behind it
 ├── packages/
 │   ├── types/           @pakka/types: shared types + Zod schemas (empty until the first contract)
 │   └── config/          @pakka/config: shared tsconfig base
@@ -77,10 +78,7 @@ frontend/
 │   │       │   ├── inbox/                /dashboard/inbox[?chat=]   → real Inbox (features/inbox)
 │   │       │   └── knowledge/            /dashboard/knowledge       → real Knowledge base (features/knowledge)
 │   │       └── preview/page.tsx  /dashboard/preview → <PakkaRoot /> prototype (sample data, demo URL switches)
-│   ├── api/health/route.ts      GET /api/health
-│   ├── api/inngest/route.ts     /api/inngest (re-exports @pakka/backend/inngest/serve)
-│   ├── api/messages/test/       POST /api/messages/test → backend channels/whatsapp/test-message
-│   ├── api/templates/           POST /api/templates     → backend notify/templates
+│   ├── auth/callback/route.ts   GET /auth/callback (Supabase code exchange; the only route handler)
 │   ├── connect/[token]/         reserved (assisted WhatsApp connect page, not built; .gitkeep only)
 │   ├── h/[token]/               reserved (staff takeover redirect, not built; .gitkeep only)
 │   └── favicon.ico
@@ -103,12 +101,12 @@ frontend/
 │   └── auth/                    empty: auth is not started
 ├── fixtures/dashboard/          TEMPORARY dashboard sample data + fixtures.test.ts
 ├── styles/                      dashboard.css, onboarding.css
-├── lib/utils.ts                 cn()
+├── lib/                         api/client.ts (the one way to call the API), supabase/{server,client}.ts,
+│                                auth/, onboarding/trial.ts, env.ts, errors.ts, utils.ts (cn())
 ├── hooks/  types/               empty
 ├── public/fonts/                Archivo woff2 used by the dashboard
 ├── tests/
-│   ├── api-host-rewrite.test.ts
-│   └── e2e/{dashboard,onboarding}/   Playwright
+│   └── e2e/{app,dashboard,onboarding}/   Playwright (starts the API and a mock Supabase)
 └── next.config.ts  tsconfig.json  eslint.config.mjs  postcss.config.mjs  components.json
     vitest.config.mts  playwright.config.ts  vercel.json
 ```
@@ -120,15 +118,19 @@ export docs still line up.
 
 ```
 backend/src/
-├── inngest/   client.ts, functions.ts, ping.ts, serve.ts (Next route handlers for /api/inngest)
-├── lib/       env.ts (serverEnv()) + env.test.ts
-└── agent/ channels/whatsapp/connect/ kb/ booking/ notify/ billing/ features/ consent/   (.gitkeep)
+├── server/    main.ts (entry: PORT, 0.0.0.0, graceful shutdown), node.ts (node:http ↔ Request/Response),
+│              app.ts (dispatch, 404/405, error envelope), routes.ts (every endpoint), auth.ts (bearer
+│              token + tenant), cors.ts (exact-origin allowlist)
+├── inngest/   client.ts, functions.ts, ping.ts, serve.ts (inngest/edge handler for /api/inngest)
+├── lib/       env.ts (serverEnv()), tenant.ts, errors.ts, supabase-admin.ts, crypto.ts
+└── agent/ channels/whatsapp/ kb/ booking/ notify/ billing/ features/ consent/
 ```
 
-`@pakka/backend` exports `./*` → `./src/*.ts`, for example `@pakka/backend/lib/env` and
-`@pakka/backend/inngest/serve`. Next compiles it via `transpilePackages`. It isn't a separate server:
-everything still runs inside the Next.js app on Vercel, as the handover describes. Only `backend/`
-depends on `inngest`, so there's one copy of it.
+`backend/` is its own service: `pnpm --filter @pakka/backend start` runs `src/server/main.ts` with tsx
+on Railway. Only `backend/` depends on `inngest`, so there's one copy of it and one Inngest endpoint.
+The frontend imports exactly two of its modules, `@pakka/backend/lib/tenant` and
+`@pakka/backend/channels/whatsapp/connections`, which run on the caller's own Supabase client (RLS);
+ESLint refuses any other `@pakka/backend` import in `frontend/`.
 
 ## Route ownership
 
@@ -148,50 +150,62 @@ depends on `inngest`, so there's one copy of it.
 | `/dashboard/knowledge` | Dev 3 | Real Knowledge base: services CRUD under RLS; `kb_documents` list (read only). FAQs, unanswered questions, upload and website sync are shown as not available: no backend contract yet |
 | `/dashboard/preview` | Dev 3 | Prototype dashboard (sample data), signed-in only |
 | `/connect/[token]`, `/h/[token]` | Dev 3 / Dev 1 | Reserved folders, no route yet |
-| `/api/health` | Dev 2 | Exists |
-| `/api/inngest` | Dev 2 | Exists (functions in `backend/src/inngest`) |
-| `POST /api/messages/test` | Dev 3 route · Dev 1 adapter | Exists; answers `whatsapp_not_connected` without an active connection, and `not_available` until the adapter lands |
-| `POST /api/templates` | Dev 3 route · Dev 2 service | Exists; answers `not_available` until a template table and Meta submission exist |
-| `/api/*` in the handover (webhooks, onboarding, conversations, bookings, features, billing, team, admin) | per handover | Not built |
+API routes are served by the API service (`backend/src/server/routes.ts`), not by Next.js:
 
-The `api.*` host rewrite (`frontend/next.config.ts`) is unchanged: `api.pakkaagent.in/x` → `/api/x`.
+| Route (on the API host) | Owner | Status |
+|---|---|---|
+| `GET /api/health` | Dev 2 | Exists (Railway healthcheck) |
+| `GET/POST/PUT /api/inngest` | Dev 2 | Exists (functions in `backend/src/inngest`) |
+| `POST /api/messages/test` | Dev 3 UI · Dev 1 adapter · Dev 2 API | Exists; answers `whatsapp_not_connected` without an active connection, and `not_available` until the adapter lands |
+| `POST /api/templates` | Dev 3 UI · Dev 2 service | Exists; answers `not_available` until a template table and Meta submission exist |
+| `POST /api/onboarding/trial` | Dev 3 UI · Dev 2 API | Exists; the onboarding Business step |
+| `GET /api/webhooks/whatsapp` | Dev 1 | Exists (Meta verification); POST not built, answers 405 |
+| Other `/api/*` in the handover (onboarding, conversations, bookings, features, billing, team, admin) | per handover | Not built; add them to `routes.ts` |
 
 ## Auth and tenant context
 
 Supabase Auth with email + password and Google, through `@supabase/ssr` (cookie sessions, PKCE).
-Sign-up, sign-in, the Google round trip and sign-out run on the server. The Inbox and Knowledge
-screens read (and, for services, write) from the browser through `lib/supabase/browser.ts`, acting as
-the signed-in member: RLS applies, every query also filters by the session's tenant id, which the page
-resolves on the server and passes down.
+Sign-up, sign-in, the Google round trip and sign-out run on the Next.js server, as do server-rendered
+reads. The Inbox and Knowledge screens read (and, for services, write) from the browser through
+`lib/supabase/browser.ts`, acting as the signed-in member: RLS applies, every query also filters by the
+session's tenant id, which the page resolves on the server and passes down. The same browser client
+gives `lib/api/client.ts` the access token for API calls: it sends `Authorization: Bearer <access token>`
+and, in the dashboard, `X-Pakka-Tenant` (the business from `useTenant()`). The API verifies the token
+with Supabase Auth and the membership with the same `resolveTenant` (`backend/src/server/auth.ts`).
 
 A new account is told apart from an existing one by membership only: no business yet → onboarding,
 otherwise → dashboard. This is decided from the account's state after sign-in, never from the page it
 started on: an existing member using "Continue with Google" on `/signup` still lands on the dashboard,
 and an existing account that never set up a business is sent back to onboarding when it signs in. Signing up (email or Google) creates only the account. The business is created
-on onboarding's Business step, once the user has typed its name and picked a trade: the `startTrial`
-server action (`lib/onboarding/actions.ts`) calls Dev 2's `createTrialTenant` with the session's user
-id and the trade's pack key, mapped on the server (`INDUSTRIES[].packKey`; trades without a pack can't
-start a trial). An account that already belongs to a business, in any role, gets no new one. Onboarding
-has no saved progress or "completed" flag yet.
+on onboarding's Business step, once the user has typed its name and picked a trade:
+`lib/onboarding/trial.ts` calls `POST /api/onboarding/trial`, where the API runs `startTrialFor` and
+`createTrialTenant` with the token's user id and the trade's pack key, mapped on the server
+(`TRIAL_PACKS` in `@pakka/types`; trades without a pack can't start a trial). An account that already
+belongs to a business, in any role, gets no new one. Onboarding has no saved progress or "completed"
+flag yet.
 
 | Piece | Where | What it does |
 |---|---|---|
-| Public config | `frontend/lib/env.ts` | Validates `NEXT_PUBLIC_SUPABASE_URL` (must be the https API URL, no credentials) and the anon key |
+| Public config | `frontend/lib/env.ts` | Validates `NEXT_PUBLIC_SUPABASE_URL` (must be the https API URL, no credentials), the anon key and `NEXT_PUBLIC_API_URL` (an origin, no path) |
 | Server client | `frontend/lib/supabase/server.ts` | Per-request client acting as the user; row-level security applies |
 | Browser client | `frontend/lib/supabase/browser.ts` | One client per tab from the same cookies; `ensureRealtimeAuth()` hands the member's token to Realtime before subscribing |
 | Session refresh | `frontend/components/shared/session-refresh.tsx` | Mounted in both root layouts; the browser client refreshes the access token and rewrites the session cookies (Server Components can't). There is no proxy or middleware: every redirect below happens in a page, layout, server action or route handler |
 | Root page | `app/(onboarding)/page.tsx` | `/` → `/login` for everyone; the session alone decides nothing there |
+| Browser client | `frontend/lib/supabase/browser.ts` | One client per tab from the same cookies; `ensureRealtimeAuth()` hands the member's token to Realtime before subscribing; also supplies the access token for API calls |
+| API client | `frontend/lib/api/client.ts` | `apiFetch()` / `postJson()`: `${NEXT_PUBLIC_API_URL}/api/...` with the bearer token and `X-Pakka-Tenant` |
+| Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding`; signed-in `/login` → `/dashboard`, `/signup` → `/onboarding` (optimistic) |
+| Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding` (optimistic). Signed-out `/login` and `/signup` always render the page |
 | Redirect rules | `frontend/lib/auth/redirect.ts` | `safeNext()` (in-app paths only), `destinationAfterAuth()`, fixed copy for `?error=` codes |
 | Post-sign-in destination | `frontend/lib/auth/destination.ts` | `destinationForUser()`: resolves the account's memberships and applies `destinationAfterAuth()`. Used by the callback, the password login, the new-password form and `redirectIfSignedIn()` |
 | OAuth / email-link callback | `frontend/app/auth/callback/route.ts` | `exchangeCodeForSession()`, then routes by membership (or to `/reset-password` for a reset link); failures → `/login`, `/signup` or `/forgot-password?error=…` |
-| Data access layer | `frontend/lib/auth/session.ts` | `getAuth()` (Supabase verifies the token), `getSessionState()`, `redirectIfSignedIn()` (for `/login` and `/signup`), `requireTenantContext()`, `requireApiTenant()` |
-| Tenant resolver | `backend/src/lib/tenant.ts` | memberships → tenants through the user's own client; one membership → that tenant; several → the user chooses (`pakka_tenant` cookie, honoured only if the user is a member); none → "not linked to a business" |
+| Data access layer | `frontend/lib/auth/session.ts` | `getAuth()` (Supabase verifies the token), `getSessionState()`, `redirectIfSignedIn()` (for `/login` and `/signup`), `requireTenantContext()`, `requireDashboardView()` |
+| Tenant resolver | `backend/src/lib/tenant.ts` | memberships → tenants through the user's own client; one membership → that tenant; several → the user chooses (`pakka_tenant` cookie on the frontend, `X-Pakka-Tenant` on the API, honoured only if the user is a member); none → "not linked to a business" |
 | Gate | `app/(dashboard)/dashboard/layout.tsx` | Authoritative check for every `/dashboard` page; renders no markup in the normal case |
 | Client context | `components/dashboard/tenant-context.tsx` | `TenantProvider` / `useTenant()` |
 | Actions | `frontend/lib/auth/actions.ts` | `login` (validated, safe `next`), `signup` (validated; same screen whether or not the address is taken), `signInWithGoogle`, `logout`, `chooseTenant` |
 
-API routes use `tenantRoute()` (`frontend/lib/api/route.ts`): verify the session, resolve the tenant
-on the server, call the backend service, answer errors as `{ error: { code, message } }`.
+API routes use `tenantRoute()` (`backend/src/server/auth.ts`): verify the bearer token, resolve the
+tenant on the server, call the backend service, answer errors as `{ error: { code, message } }`.
 User-facing error text comes from `formatError()` (`frontend/lib/errors.ts`); credentials are
 stripped by `redactSecrets()` (`@pakka/types`) before anything is logged.
 

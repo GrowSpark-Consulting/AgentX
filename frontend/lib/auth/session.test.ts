@@ -20,7 +20,7 @@ vi.mock("@/lib/supabase/server", () => ({ createSupabaseServerClient: async () =
 vi.mock("@pakka/backend/lib/tenant", () => ({ resolveTenant: (...args: unknown[]) => resolveTenant(...args) }));
 vi.mock("@/lib/dev-mode", () => ({ dashboardWithoutTenant: () => devShell() }));
 
-const { redirectIfSignedIn, requireApiTenant, requireDashboardView, requireTenantContext } = await import("./session");
+const { redirectIfSignedIn, requireDashboardView, requireTenantContext } = await import("./session");
 
 const user = { id: "u-1", email: "new@example.com" };
 const context = {
@@ -83,10 +83,7 @@ describe("tenant-scoped access is unchanged by the development view", () => {
   it("requireTenantContext still refuses an account with no business", async () => {
     expect(await redirectOf(requireTenantContext())).toBe("/dashboard");
   });
-
-  it("API routes still answer no_membership", async () => {
-    await expect(requireApiTenant()).rejects.toMatchObject({ code: "no_membership" });
-  });
+  // The API's answer for the same account (no_membership) is tested in backend/src/server/app.test.ts.
 });
 
 describe("redirectIfSignedIn (/login and /signup)", () => {
