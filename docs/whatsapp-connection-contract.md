@@ -67,7 +67,7 @@ Every route that returns a connection returns this shape, parsed with `WhatsAppC
 {
   "id": "<uuid>",
   "tenant_id": "<uuid>",
-  "method": "embedded_signup | assisted | manual_byo",
+  "method": "embedded_signup | assisted | manual_byo | platform",
   "waba_id": "<string>",
   "phone_number_id": "<string>",
   "display_phone": "<string | null>",
@@ -82,6 +82,11 @@ Every route that returns a connection returns this shape, parsed with `WhatsAppC
 ```
 
 `last_check` is never null. `{}` means "never checked".
+
+`method = 'platform'` (migration 0014, **Fixed**): one of our own test or demo numbers in our own Meta app,
+signed with `META_APP_SECRET`. It is created only by the seed script (`pnpm seed:connection`), never through
+an endpoint here, so no endpoint above accepts or returns it except the connection reads. A client-facing screen
+should label it "Spark Agent number" and offer no disconnect or recheck for it.
 
 ### `last_check` (PROPOSED / NEW)
 

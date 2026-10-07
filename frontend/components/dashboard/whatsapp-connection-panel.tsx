@@ -35,6 +35,7 @@ const METHOD: Record<WhatsAppConnectionPublic["method"], string> = {
   embedded_signup: "Connected with Facebook",
   assisted: "Assisted setup",
   manual_byo: "Connected manually",
+  platform: "Spark Agent number",
 };
 
 const ADDED = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });

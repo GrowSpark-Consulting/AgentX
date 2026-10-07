@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ManualConnectInput, WhatsAppConnectionPublic } from "./connection";
+import { ConnectionMethod, ManualConnectInput, WhatsAppConnectionPublic } from "./connection";
 
 const row = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -16,6 +16,14 @@ const row = {
   messaging_limit: "TIER_1K",
   created_at: "2026-10-06T09:00:00Z",
 };
+
+describe("ConnectionMethod", () => {
+  it("has the three ways a client connects and platform, our own numbers signed with our own Meta app", () => {
+    expect(ConnectionMethod.options).toEqual(["embedded_signup", "assisted", "manual_byo", "platform"]);
+    expect(WhatsAppConnectionPublic.parse({ ...row, method: "platform" }).method).toBe("platform");
+    expect(() => ConnectionMethod.parse("bsp")).toThrow();
+  });
+});
 
 describe("WhatsAppConnectionPublic", () => {
   it("accepts a row of the public view", () => {
