@@ -11,7 +11,8 @@ export const TENANT_HEADER = "x-pakka-tenant";
 export type ApiPath = `/api/${string}`;
 
 export interface ApiRequest {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  /** Sent as JSON, except FormData, which the browser sends as multipart with its own boundary. */
   body?: unknown;
   /** The business from the dashboard's TenantContext. The API checks the user is a member. */
   tenantId?: string;
@@ -31,18 +32,41 @@ export async function apiFetch(path: ApiPath, { method, body, tenantId, signal }
   // Without a token the API answers 401 unauthenticated, which the UI shows as "signed out".
   if (token) headers.set("authorization", `Bearer ${token}`);
   if (tenantId) headers.set(TENANT_HEADER, tenantId);
-  if (body !== undefined) headers.set("content-type", "application/json");
+  const multipart = body instanceof FormData;
+  if (body !== undefined && !multipart) headers.set("content-type", "application/json");
   return fetch(`${apiBaseUrl()}${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : multipart ? body : JSON.stringify(body),
     signal,
   });
 }
 
+type CallOptions = { tenantId?: string; signal?: AbortSignal };
+
 /** POSTs JSON to the API; throws ApiError on an error response. */
-export async function postJson<T>(path: ApiPath, body: unknown, options: { tenantId?: string; signal?: AbortSignal } = {}): Promise<T> {
+export async function postJson<T>(path: ApiPath, body: unknown, options: CallOptions = {}): Promise<T> {
   const res = await apiFetch(path, { method: "POST", body, ...options });
   if (!res.ok) throw await apiErrorFrom(res);
   return (await res.json()) as T;
+}
+
+/** PATCHes JSON to the API; throws ApiError on an error response. */
+export async function patchJson<T>(path: ApiPath, body: unknown, options: CallOptions = {}): Promise<T> {
+  const res = await apiFetch(path, { method: "PATCH", body, ...options });
+  if (!res.ok) throw await apiErrorFrom(res);
+  return (await res.json()) as T;
+}
+
+/** POSTs a multipart form (a file upload); throws ApiError on an error response. */
+export async function postForm<T>(path: ApiPath, form: FormData, options: CallOptions = {}): Promise<T> {
+  const res = await apiFetch(path, { method: "POST", body: form, ...options });
+  if (!res.ok) throw await apiErrorFrom(res);
+  return (await res.json()) as T;
+}
+
+/** Calls a route that answers 204 No Content (a DELETE, or a POST with no body); throws ApiError on an error response. */
+export async function sendNoContent(path: ApiPath, method: "POST" | "DELETE", options: CallOptions = {}): Promise<void> {
+  const res = await apiFetch(path, { method, ...options });
+  if (!res.ok) throw await apiErrorFrom(res);
 }

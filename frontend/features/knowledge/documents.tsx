@@ -1,48 +1,102 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "@/components/shared/states";
 import { formatError, type FormattedError } from "@/lib/errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
-import { documentMeta, listKbDocuments, type KbDocument } from "./kb-content";
+import { ConfirmDialog } from "./confirm-dialog";
+import { FlashStatus, useFlash } from "./flash";
+import {
+  deleteDocument,
+  describeKbWriteError,
+  DOCUMENT_STATUS_TEXT,
+  documentMeta,
+  hasProcessing,
+  listKbDocuments,
+  uploadDocument,
+  upsertDocument,
+  type DocumentStatus,
+  type KbDocument,
+} from "./kb-content";
+import { UploadDialog } from "./upload-dialog";
+import { useDocumentWatch } from "./use-document-watch";
 
 // "Documents", ported from the /dashboard/preview Knowledge base (features/knowledge/pakka-knowledge.tsx):
 // title over a 2px ink rule with a ghost Upload, then a grid of file tiles (ink label block, name,
-// one line of detail on --color-surface).
+// one line of detail on --color-surface), each with its status: Processing, Ready or Failed.
 //
-// Reads the business's kb_documents under RLS: title, source type and date. Two things are not shown
-// because nothing stores them: a processing status (kb_documents has no status column, although the
-// PROPOSED KnowledgeBase shape lists one) and the prototype's "sent 62 times" counts (those describe
-// files sent to customers, not knowledge sources).
-//
-// Upload is switched off: POST /api/kb/documents (HANDOVER · Dev 1: upload, chunk, embed) isn't built,
-// and its request, response, accepted file types and processing states aren't defined. No file is
-// picked or sent from here until that contract exists.
+// Reads the business's kb_documents under RLS. Upload (POST /api/kb/documents, multipart) and Delete
+// (DELETE /api/kb/documents/:id) go through the API, owners and admins only. An upload is accepted for
+// processing, not finished: the tile shows Processing until Realtime or polling sees it ready or
+// failed. The prototype's "sent 62 times" counts describe files sent to customers, a different
+// feature, and are not shown.
 
 type ListState = { status: "loading" } | { status: "error"; error: FormattedError } | { status: "ready"; documents: KbDocument[] };
+type DialogState = { kind: "none" } | { kind: "upload" } | { kind: "delete"; doc: KbDocument };
 
-export function Documents({ tenantId, timeZone }: { tenantId: string; timeZone: string }) {
+const CHIP: Record<DocumentStatus, { border: string; color: string }> = {
+  processing: { border: "var(--color-divider)", color: "var(--color-neutral-700)" },
+  ready: { border: "var(--color-text)", color: "var(--color-text)" },
+  failed: { border: "var(--color-accent)", color: "var(--color-accent-700)" },
+};
+
+export function Documents({ tenantId, timeZone, canWrite }: { tenantId: string; timeZone: string; canWrite: boolean }) {
   const [list, setList] = useState<ListState>({ status: "loading" });
+  const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
+  const [toast, flash] = useFlash();
+  // Bumped by every local change, so a read that started before it can't put back what it replaced.
+  const changes = useRef(0);
 
-  const load = useCallback(
-    () =>
-      listKbDocuments(getSupabaseBrowserClient(), tenantId).then(
-        (documents) => setList({ status: "ready", documents }),
-        (err: unknown) => setList({ status: "error", error: formatError(err) }),
-      ),
-    [tenantId],
-  );
+  const load = useCallback(() => {
+    const at = changes.current;
+    return listKbDocuments(getSupabaseBrowserClient(), tenantId).then(
+      (documents) => {
+        if (at === changes.current) setList({ status: "ready", documents });
+      },
+      (err: unknown) => setList({ status: "error", error: formatError(err) }),
+    );
+  }, [tenantId]);
+
+  /** A background re-read while something processes: a failure keeps the list as it is. */
+  const refresh = useCallback(async () => {
+    const at = changes.current;
+    try {
+      const documents = await listKbDocuments(getSupabaseBrowserClient(), tenantId);
+      if (at === changes.current) setList((prev) => (prev.status === "ready" ? { status: "ready", documents } : prev));
+    } catch {
+      // Tried again on the next poll or change.
+    }
+  }, [tenantId]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const documents = list.status === "ready" ? list.documents : [];
+  const watch = useDocumentWatch(tenantId, hasProcessing(documents), refresh);
 
   function retry() {
     setList({ status: "loading" });
     void load();
   }
 
-  const documents = list.status === "ready" ? list.documents : [];
+  const close = useCallback(() => setDialog({ kind: "none" }), []);
+
+  async function upload(file: File, title: string) {
+    const doc = await uploadDocument(tenantId, file, title);
+    changes.current += 1;
+    setList((prev) => (prev.status === "ready" ? { ...prev, documents: upsertDocument(prev.documents, doc) } : prev));
+    setDialog({ kind: "none" });
+    flash(doc.status === "processing" ? `${doc.name} is processing` : `${doc.name}: ${DOCUMENT_STATUS_TEXT[doc.status]}`);
+  }
+
+  async function remove(doc: KbDocument) {
+    await deleteDocument(tenantId, doc.id);
+    changes.current += 1;
+    setList((prev) => (prev.status === "ready" ? { ...prev, documents: prev.documents.filter((d) => d.id !== doc.id) } : prev));
+    setDialog({ kind: "none" });
+    flash(`Deleted ${doc.name}`);
+  }
 
   return (
     <section aria-labelledby="documents-heading" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -50,12 +104,18 @@ export function Documents({ tenantId, timeZone }: { tenantId: string; timeZone: 
         <h2 id="documents-heading" style={{ margin: "0", fontSize: "13px", letterSpacing: ".08em", textTransform: "uppercase" }}>
           Documents{list.status === "ready" ? ` · ${documents.length}` : ""}
         </h2>
-        <button type="button" className="btn btn-ghost" disabled aria-describedby="documents-upload-note">
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => setDialog({ kind: "upload" })}
+          disabled={!canWrite || list.status !== "ready"}
+          aria-describedby="documents-upload-note"
+        >
           Upload
         </button>
       </div>
       <p id="documents-upload-note" className="app-hint" style={{ margin: 0 }}>
-        Uploading documents isn’t switched on yet, so nothing is sent from here.
+        {canWrite ? "PDF, Word (.docx), text or Markdown, up to 5 MB. The AI uses a document once it’s ready." : "Only an owner or admin can upload or delete documents."}
       </p>
 
       {list.status === "loading" ? <LoadingState compact title="Loading documents" /> : null}
@@ -66,23 +126,63 @@ export function Documents({ tenantId, timeZone }: { tenantId: string; timeZone: 
         <EmptyState compact title="No documents yet" description="Documents added to your knowledge base appear here." />
       ) : null}
 
+      {watch.state === "stalled" ? (
+        <div style={{ display: "flex", gap: "8px 12px", flexWrap: "wrap", alignItems: "center", fontSize: "13px", color: "var(--color-neutral-700)" }}>
+          <span>Still processing. This can take a few minutes for a long document.</span>
+          <button type="button" className="btn btn-secondary" onClick={watch.checkAgain}>
+            Check again
+          </button>
+        </div>
+      ) : null}
+
       {documents.length > 0 ? (
-        <ul aria-label="Documents" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "12px" }}>
+        <ul aria-label="Documents" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(min(240px,100%),1fr))", gap: "12px" }}>
           {documents.map((d) => (
-            <li key={d.id} style={{ display: "flex", gap: "12px", alignItems: "center", padding: "14px", background: "var(--color-surface)", minWidth: 0 }}>
+            <li key={d.id} style={{ display: "flex", gap: "12px", alignItems: "flex-start", padding: "14px", background: "var(--color-surface)", minWidth: 0 }}>
               <span aria-hidden="true" style={{ width: "36px", height: "44px", background: "var(--color-text)", color: "var(--color-bg)", fontSize: "10px", fontWeight: "800", display: "grid", placeItems: "center", flex: "none" }}>
                 {d.label}
               </span>
-              <span style={{ minWidth: "0" }}>
-                <span title={d.name} style={{ display: "block", fontWeight: "600", fontSize: "14px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {d.name}
+              <span style={{ minWidth: "0", flex: "1", display: "flex", flexDirection: "column", gap: "6px" }}>
+                <span>
+                  <span title={d.name} style={{ display: "block", fontWeight: "600", fontSize: "14px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {d.name}
+                  </span>
+                  <span style={{ fontSize: "12px", color: "var(--color-neutral-700)" }}>{documentMeta(d, timeZone)}</span>
                 </span>
-                <span style={{ fontSize: "12px", color: "var(--color-neutral-700)" }}>{documentMeta(d, timeZone)}</span>
+                <span style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                  <span
+                    data-status={d.status}
+                    style={{ fontSize: "11px", fontWeight: "600", padding: "3px 8px", border: `1px solid ${CHIP[d.status].border}`, color: CHIP[d.status].color, whiteSpace: "nowrap" }}
+                  >
+                    {DOCUMENT_STATUS_TEXT[d.status]}
+                  </span>
+                  {d.status === "failed" ? <span style={{ fontSize: "12px", color: "var(--color-neutral-700)" }}>Couldn’t be read. Delete it and try another file.</span> : null}
+                  {canWrite ? (
+                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px", marginLeft: "auto" }} aria-label={`Delete ${d.name}`} onClick={() => setDialog({ kind: "delete", doc: d })}>
+                      Delete
+                    </button>
+                  ) : null}
+                </span>
               </span>
             </li>
           ))}
         </ul>
       ) : null}
+
+      {dialog.kind === "upload" ? <UploadDialog onUpload={upload} onClose={close} /> : null}
+      {dialog.kind === "delete" ? (
+        <ConfirmDialog
+          title={`Delete ${dialog.doc.name}?`}
+          text="The AI stops using what’s in it. This can’t be undone."
+          confirmLabel="Delete document"
+          busyLabel="Deleting…"
+          keepLabel="Keep it"
+          onConfirm={() => remove(dialog.doc)}
+          describeError={(err) => describeKbWriteError(err, "Couldn't delete the document", "document")}
+          onClose={close}
+        />
+      ) : null}
+      <FlashStatus toast={toast} />
     </section>
   );
 }

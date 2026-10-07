@@ -1,16 +1,25 @@
-import type { APIRequestContext, Page } from "@playwright/test";
-import { appAlert, expect, expectNoHorizontalOverflow, mainNav, MOCK_SUPABASE_URL, SIGNED_OUT, signIn, test } from "../support/app";
+import type { APIRequestContext, Page, WebSocketRoute } from "@playwright/test";
+import { appAlert, expect, expectNoHorizontalOverflow, mainNav, MOCK_SUPABASE_URL, SIGNED_OUT, signIn, test as base } from "../support/app";
+import { mockKbApi, type Gap, type KbApi } from "../support/kb-api";
 
-// The real Knowledge base at /dashboard/knowledge: the Services & prices section against
-// mock-supabase.mjs. Every test gets its own account and business (POST /__mock/services-account), so
-// the desktop, tablet and phone projects can add, edit and delete at the same time.
+// The real Knowledge base at /dashboard/knowledge. Services, FAQs and documents are read from
+// mock-supabase.mjs under RLS; the knowledge-base API (docs/contracts.md section 9: FAQs, uploads,
+// gaps) is support/kb-api.ts, a contract-shaped stand-in for routes Dev 1 hasn't built. Every test
+// gets its own account and business (POST /__mock/services-account), so the desktop, tablet and phone
+// projects can add, edit and delete at the same time.
+
+type Role = "owner" | "admin" | "staff";
+const test = base.extend<{ kbRole: Role; kb: KbApi }>({
+  kbRole: ["owner", { option: true }],
+  kb: [async ({ page, request, kbRole }, use) => use(await mockKbApi(page, request, { role: kbRole })), { auto: true }],
+});
 
 type Account = { email: string; tenantId: string };
 type StoredService = { id: string; tenant_id: string; name: string; duration_min: number; price_min: number | null; price_max: number | null; resource_type: string; active: boolean };
 
 async function newAccount(
   request: APIRequestContext,
-  options: { seed?: boolean; error?: boolean; docs?: boolean; docsError?: boolean } = {},
+  options: { seed?: boolean; error?: boolean; docs?: boolean; docsError?: boolean; faqs?: boolean; role?: Role } = {},
 ): Promise<Account> {
   return (await request.post(`${MOCK_SUPABASE_URL}/__mock/services-account`, { data: options })).json();
 }
@@ -224,81 +233,560 @@ test.describe("Knowledge base · services", () => {
   });
 });
 
-test.describe("Knowledge base · FAQs, questions and documents", () => {
+
+// FAQs, documents and unanswered questions ---------------------------------------------------------
+
+const faqs = (page: Page) => page.getByRole("region", { name: /^FAQs/ });
+const docsRegion = (page: Page) => page.getByRole("region", { name: /^Documents/ });
+const gapsRegion = (page: Page) => page.getByRole("region", { name: /^Questions the AI couldn’t answer/ });
+const tile = (page: Page, name: string) => docsRegion(page).getByRole("listitem").filter({ hasText: name });
+
+type StoredDoc = { id: string; tenant_id: string; source_type: string; title: string | null; body: string | null; status: string };
+async function storedDocs(request: APIRequestContext, tenantId: string): Promise<StoredDoc[]> {
+  return (await request.get(`${MOCK_SUPABASE_URL}/__mock/kb-documents?tenant=${tenantId}`)).json();
+}
+async function addDoc(request: APIRequestContext, row: { tenant_id: string; source_type: string; title: string; status: string; body?: string }): Promise<StoredDoc> {
+  return (await request.post(`${MOCK_SUPABASE_URL}/__mock/kb-documents`, { data: row })).json();
+}
+/** What the ingest job does when it finishes (or gives up on) a document. */
+async function setStatus(request: APIRequestContext, id: string, status: "ready" | "failed") {
+  await request.patch(`${MOCK_SUPABASE_URL}/__mock/kb-documents?id=${id}`, { data: { status } });
+}
+async function kbReads(request: APIRequestContext, email: string): Promise<{ method: string; table: string; query: string }[]> {
+  const log = (await (await request.get(`${MOCK_SUPABASE_URL}/__mock/rest-log?email=${email}`)).json()) as { method: string; table: string; query: string }[];
+  return log.filter((r) => r.table === "kb_documents");
+}
+
+const gap = (n: number, question: string, askedCount: number, lastAskedBy: string | null = "Priya"): Gap => ({
+  id: `a0000000-0000-4000-8000-00000000000${n}`,
+  question,
+  askedCount,
+  lastAskedBy,
+});
+const GAPS = [gap(1, "Do you open on Sundays?", 2, "+91 98••• ••321"), gap(2, "Do you do keratin?", 4), gap(3, "Is there a student discount?", 1, null)];
+
+/** Answers the Realtime socket (Phoenix protocol, as inbox.spec.ts): joins succeed or fail; tests push row changes. */
+async function mockRealtime(page: Page, { fail = false } = {}) {
+  const joins: { topic: string; changes: { id: number; event: string; table: string; filter?: string }[] }[] = [];
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket(/\/realtime\/v1\/websocket/, (ws) => {
+    socket = ws;
+    ws.onMessage((raw) => {
+      const [joinRef, ref, topic, event, payload] = JSON.parse(String(raw));
+      const reply = (status: string, response: unknown) => ws.send(JSON.stringify([joinRef, ref, topic, "phx_reply", { status, response }]));
+      if (event === "heartbeat" || event === "phx_leave") reply("ok", {});
+      else if (event === "phx_join") {
+        if (fail) return reply("error", { reason: "Unable to subscribe to changes with given parameters" });
+        const changes = payload.config.postgres_changes.map((f: { event: string; table: string; filter?: string }, i: number) => ({ ...f, id: i + 1 }));
+        joins.push({ topic, changes });
+        reply("ok", { postgres_changes: changes });
+      }
+    });
+  });
+  return {
+    joins,
+    push(table: string, record: Record<string, unknown>) {
+      const join = joins[joins.length - 1];
+      const ids = join.changes.filter((c) => c.table === table).map((c) => c.id);
+      socket!.send(JSON.stringify([null, null, join.topic, "postgres_changes", {
+        ids,
+        data: { type: "UPDATE", schema: "public", table, commit_timestamp: new Date().toISOString(), columns: [], record, errors: null },
+      }]));
+    },
+  };
+}
+
+function expectSignedCall(call: { tenant: string | null; authorization: string | null; body: string } | undefined, tenantId: string) {
+  expect(call, "API call").toBeTruthy();
+  expect(call!.tenant).toBe(tenantId);
+  expect(call!.authorization).toMatch(/^Bearer \S+/);
+  // The business is named by the header only, never in a body.
+  expect(call!.body).not.toContain(tenantId);
+}
+
+test.describe("Knowledge base · FAQs", () => {
   test.use({ storageState: SIGNED_OUT });
 
-  test("FAQs and unanswered questions say they aren't available, and offer nothing to save", async ({ page, request }) => {
-    const account = await newAccount(request, { seed: true });
+  test("lists the business's FAQs in the prototype's accordion, in page order", async ({ page, request }) => {
+    const account = await newAccount(request, { seed: true, faqs: true, docs: true });
     await openKnowledge(page, account);
-
-    // The prototype's order: questions, services, FAQs, documents.
     await expect(page.getByRole("heading", { level: 2 })).toHaveText([
-      "Questions the AI couldn’t answer",
+      "Questions the AI couldn’t answer · 0",
       "Services & prices · 3",
-      "FAQs",
-      /^Documents/,
+      "FAQs · 2",
+      "Documents · 2",
     ]);
-    const gaps = page.getByRole("region", { name: "Questions the AI couldn’t answer" });
-    await expect(gaps).toContainText("Not available yet");
-    await expect(gaps.getByRole("button")).toHaveCount(0);
-    await expect(gaps.getByRole("textbox")).toHaveCount(0);
-
-    const faqs = page.getByRole("region", { name: "FAQs" });
-    await expect(faqs).toContainText("Not available yet");
-    await expect(faqs.getByRole("button", { name: "Add" })).toBeDisabled();
-    await expect(faqs.getByText("Adding FAQs isn’t switched on yet.")).toBeVisible();
-    await expect(faqs.getByRole("button", { expanded: true })).toHaveCount(0);
+    const first = faqs(page).getByRole("button", { name: "Do you do home visits?", exact: true });
+    await expect(first).toHaveAttribute("aria-expanded", "true");
+    await expect(faqs(page)).toContainText("Yes, within 5 km of the studio");
+    await expect(faqs(page).getByRole("button", { name: "Edit FAQ: Do you do home visits?" })).toBeVisible();
+    const second = faqs(page).getByRole("button", { name: "Is there parking?", exact: true });
+    await expect(second).toHaveAttribute("aria-expanded", "false");
+    await second.click();
+    await expect(faqs(page)).toContainText("two-wheeler parking");
+    // FAQs are kb_documents rows too, but only knowledge sources are listed under Documents.
+    await expect(docsRegion(page)).not.toContainText("home visits");
     await expectNoHorizontalOverflow(page);
   });
 
-  test("lists the business's documents in the prototype's tiles, with upload switched off", async ({ page, request }) => {
+  test("adds an FAQ through the API, saying so only once it's saved", async ({ page, request, kb }) => {
+    const account = await newAccount(request, { faqs: true });
+    await openKnowledge(page, account);
+    await faqs(page).getByRole("button", { name: "Add", exact: true }).click();
+    await expect(dialog(page)).toContainText("Add an FAQ");
+    await expectDialogFits(page);
+    await dialog(page).getByLabel("Question").fill("  Do you take card payments? ");
+    await dialog(page).getByLabel("Answer").fill("Yes: cards, UPI and cash.");
+
+    const release = kb.hold("POST /api/kb/faqs");
+    await dialog(page).getByRole("button", { name: "Add FAQ" }).click();
+    await expect(dialog(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
+    await expect(dialog(page).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await expect(toast(page, "Added to FAQs")).toHaveCount(0);
+    release();
+
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page, "Added to FAQs")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "FAQs · 3" })).toBeVisible();
+    await expect(faqs(page).getByRole("button", { name: "Do you take card payments?", exact: true })).toBeVisible();
+
+    const [call] = kb.writes();
+    expect(call.route).toBe("POST /api/kb/faqs");
+    expect(call.contentType).toBe("application/json");
+    expect(JSON.parse(call.body)).toEqual({ q: "Do you take card payments?", a: "Yes: cards, UPI and cash." });
+    expectSignedCall(call, account.tenantId);
+    expect((await storedDocs(request, account.tenantId)).filter((d) => d.source_type === "manual")).toHaveLength(3);
+  });
+
+  test("edits an FAQ, sending only what changed", async ({ page, request, kb }) => {
+    const account = await newAccount(request, { faqs: true });
+    await openKnowledge(page, account);
+    await faqs(page).getByRole("button", { name: "Edit FAQ: Do you do home visits?" }).click();
+    await expect(dialog(page)).toContainText("Edit FAQ");
+    await expectDialogFits(page);
+    await expect(dialog(page).getByLabel("Question")).toHaveValue("Do you do home visits?");
+    await dialog(page).getByLabel("Answer").fill("Yes, anywhere in Chennai.");
+    await dialog(page).getByRole("button", { name: "Save changes" }).click();
+
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page, "Saved the FAQ")).toBeVisible();
+    await expect(faqs(page)).toContainText("Yes, anywhere in Chennai.");
+    const [call] = kb.writes();
+    expect(call.route).toBe("PATCH /api/kb/faqs/:id");
+    expect(JSON.parse(call.body)).toEqual({ a: "Yes, anywhere in Chennai." });
+    expectSignedCall(call, account.tenantId);
+  });
+
+  test("deletes an FAQ after confirming, and keeps it on Keep it", async ({ page, request, kb }) => {
+    const account = await newAccount(request, { faqs: true });
+    await openKnowledge(page, account);
+    const del = faqs(page).getByRole("button", { name: "Delete FAQ: Do you do home visits?" });
+    await del.click();
+    await expect(dialog(page)).toContainText("Delete this FAQ?");
+    await expectDialogFits(page);
+    await dialog(page).getByRole("button", { name: "Keep it" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    expect(kb.writes()).toEqual([]);
+
+    await del.click();
+    await dialog(page).getByRole("button", { name: "Delete FAQ" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page, "Deleted the FAQ")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "FAQs · 1" })).toBeVisible();
+    await expect(faqs(page).getByRole("button", { name: "Do you do home visits?", exact: true })).toHaveCount(0);
+    expect(kb.writes().map((c) => c.route)).toEqual(["DELETE /api/kb/faqs/:id"]);
+    expectSignedCall(kb.writes()[0], account.tenantId);
+  });
+
+  test("validates before sending, and shows a duplicate question on the question field", async ({ page, request, kb }) => {
+    const account = await newAccount(request, { faqs: true });
+    await openKnowledge(page, account);
+    await faqs(page).getByRole("button", { name: "Add", exact: true }).click();
+    await dialog(page).getByRole("button", { name: "Add FAQ" }).click();
+    await expect(dialog(page).getByText("Write the question the way customers ask it")).toBeVisible();
+    await expect(dialog(page).getByText("Write the answer", { exact: true })).toBeVisible();
+    await expect(dialog(page).getByLabel("Question")).toHaveAttribute("aria-invalid", "true");
+
+    // Already listed: refused here, ignoring case and spaces.
+    await dialog(page).getByLabel("Question").fill("  IS THERE PARKING? ");
+    await dialog(page).getByLabel("Answer").fill("x".repeat(2001));
+    await dialog(page).getByRole("button", { name: "Add FAQ" }).click();
+    await expect(dialog(page).getByText("You already have an FAQ with this question")).toBeVisible();
+    await expect(dialog(page).getByText("Keep the answer under 2000 characters")).toBeVisible();
+    expect(kb.writes()).toEqual([]);
+
+    // Added elsewhere since the page loaded: the API answers conflict, shown on the same field.
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "manual", title: "Do you sell gift cards?", body: "Yes.", status: "ready" });
+    await dialog(page).getByLabel("Question").fill("Do you sell gift cards?");
+    await dialog(page).getByLabel("Answer").fill("Yes, from ₹500.");
+    await dialog(page).getByRole("button", { name: "Add FAQ" }).click();
+    await expect(dialog(page).getByText("You already have an FAQ with this question")).toBeVisible();
+    await expect(dialog(page).getByLabel("Question")).toHaveAttribute("aria-invalid", "true");
+    await expect(dialog(page).getByRole("button", { name: "Add FAQ" })).toBeEnabled();
+    expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/faqs"]);
+    await expect(toast(page, "Added")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "FAQs · 2" })).toBeVisible();
+  });
+
+  test("a save or delete the API refused is reported, never shown as done", async ({ page, request, kb }) => {
+    const account = await newAccount(request, { faqs: true });
+    await openKnowledge(page, account);
+    kb.fail("POST /api/kb/faqs", { status: 502, code: "upstream_failed", message: "Couldn't prepare this answer for the AI. Try again in a moment." });
+    await faqs(page).getByRole("button", { name: "Add", exact: true }).click();
+    await dialog(page).getByLabel("Question").fill("Do you take card payments?");
+    await dialog(page).getByLabel("Answer").fill("Yes.");
+    await dialog(page).getByRole("button", { name: "Add FAQ" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText("Couldn't save the FAQ");
+    await expect(dialog(page).getByRole("alert")).toContainText("Couldn't prepare this answer for the AI");
+    await expect(dialog(page).getByLabel("Answer")).toHaveValue("Yes.");
+    await dialog(page).getByRole("button", { name: "Cancel" }).click();
+
+    // Deleted by someone else meanwhile: not_found, and the FAQ stays listed.
+    const [visits] = (await storedDocs(request, account.tenantId)).filter((d) => d.title === "Do you do home visits?");
+    await request.delete(`${MOCK_SUPABASE_URL}/__mock/kb-documents?id=${visits.id}`);
+    await faqs(page).getByRole("button", { name: "Delete FAQ: Do you do home visits?" }).click();
+    await dialog(page).getByRole("button", { name: "Delete FAQ" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText("This FAQ no longer exists");
+    await expect(dialog(page).getByRole("button", { name: "Delete FAQ" })).toBeEnabled();
+    await expect(toast(page, "Deleted")).toHaveCount(0);
+    await expectDialogFits(page);
+  });
+});
+
+test.describe("Knowledge base · documents", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  test("lists the business's documents with their status", async ({ page, request }) => {
+    const account = await newAccount(request, { docs: true });
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: "Old menu.docx", status: "failed" });
+    await openKnowledge(page, account);
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 3");
+    const tiles = docsRegion(page).getByRole("listitem");
+    // Newest first; the tile label comes from the file type, else from where it came from.
+    await expect(tiles.nth(0)).toContainText("DOCX");
+    await expect(tiles.nth(0)).toContainText("Failed");
+    await expect(tiles.nth(0)).toContainText("Couldn’t be read");
+    await expect(tiles.nth(1)).toContainText("WEB");
+    await expect(tiles.nth(1)).toContainText("From your website · 5 Oct 2026");
+    await expect(tiles.nth(1)).toContainText("Ready");
+    await expect(tiles.nth(2)).toContainText("Bridal price list.pdf");
+    await expect(tiles.nth(2)).toContainText("Uploaded · 1 Oct 2026");
+    await expect(docsRegion(page).getByRole("list")).not.toContainText(/sent \d+ times/);
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("uploads a document: Uploading, then Processing, then Ready when Realtime reports it", async ({ page, request, kb }) => {
+    const realtime = await mockRealtime(page);
     const account = await newAccount(request, { docs: true });
     await openKnowledge(page, account);
-    const docs = page.getByRole("region", { name: /^Documents/ });
-    await expect(docs.getByRole("heading")).toHaveText("Documents · 2");
-    const tiles = docs.getByRole("listitem");
-    await expect(tiles).toHaveCount(2);
-    // Newest first; the tile label comes from the file type, else from where it came from.
-    await expect(tiles.nth(0)).toContainText("WEB");
-    await expect(tiles.nth(0)).toContainText("services");
-    await expect(tiles.nth(0)).toContainText("From your website · 5 Oct 2026");
-    await expect(tiles.nth(1)).toContainText("PDF");
-    await expect(tiles.nth(1)).toContainText("Bridal price list.pdf");
-    await expect(tiles.nth(1)).toContainText("Uploaded · 1 Oct 2026");
-    // No processing state or send counts: nothing stores them.
-    await expect(docs.getByRole("list")).not.toContainText(/processing|ready|failed|sent/i);
+    await docsRegion(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page)).toContainText("Upload a document");
+    await expectDialogFits(page);
+    await dialog(page).getByLabel("File").setInputFiles({ name: "Price list.md", mimeType: "text/markdown", buffer: Buffer.from("# Prices\nHaircut ₹300") });
+    await dialog(page).getByLabel("Title (optional)").fill("Salon prices");
 
-    await expect(docs.getByRole("button", { name: "Upload" })).toBeDisabled();
-    await expect(docs.getByText("Uploading documents isn’t switched on yet, so nothing is sent from here.")).toBeVisible();
-    await expect(page.locator('input[type="file"]')).toHaveCount(0);
-    await expectNoHorizontalOverflow(page);
+    const release = kb.hold("POST /api/kb/documents");
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page).getByRole("button", { name: "Uploading…" })).toBeDisabled();
+    await expectDialogFits(page);
+    release();
 
-    // Read only, and only the session's business.
-    const log = (await (await request.get(`${MOCK_SUPABASE_URL}/__mock/rest-log?email=${account.email}`)).json()) as { method: string; table: string; query: string }[];
-    const reads = log.filter((r) => r.table === "kb_documents");
-    expect(reads.length).toBeGreaterThan(0);
-    for (const r of reads) {
-      expect(r.method).toBe("GET");
-      expect(decodeURIComponent(r.query)).toContain(`tenant_id=eq.${account.tenantId}`);
-    }
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page, "Salon prices is processing")).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: /uploaded successfully/i })).toHaveCount(0);
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 3");
+    await expect(tile(page, "Salon prices")).toContainText("Processing");
+
+    const [call] = kb.writes();
+    expect(call.route).toBe("POST /api/kb/documents");
+    expect(call.contentType).toMatch(/^multipart\/form-data; boundary=/);
+    expect(call.body).toContain('name="file"; filename="Price list.md"');
+    expect(call.body).toMatch(/name="title"\r\n\r\nSalon prices\r\n/);
+    expectSignedCall(call, account.tenantId);
+
+    // The ingest job finishes; Realtime (subscribed while something processes) reports the change.
+    await expect.poll(() => realtime.joins.flatMap((j) => j.changes.map((c) => `${c.table} ${c.filter}`))).toContain(`kb_documents tenant_id=eq.${account.tenantId}`);
+    const uploaded = (await storedDocs(request, account.tenantId)).find((d) => d.title === "Salon prices")!;
+    expect(uploaded).toMatchObject({ source_type: "upload", status: "processing" });
+    await setStatus(request, uploaded.id, "ready");
+    realtime.push("kb_documents", { ...uploaded, status: "ready" });
+    await expect(tile(page, "Salon prices")).toContainText("Ready");
+    await expect(tile(page, "Salon prices")).not.toContainText("Processing");
   });
 
-  test("a business with no documents says so", async ({ page, request }) => {
+  test("without Realtime, polls a processing document until it fails, then stops polling", async ({ page, request }) => {
+    await page.clock.install();
+    await mockRealtime(page, { fail: true });
+    const account = await newAccount(request);
+    const doc = await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: "Scanned brochure.pdf", status: "processing" });
+    await openKnowledge(page, account);
+    await expect(tile(page, "Scanned brochure.pdf")).toContainText("Processing");
+
+    await setStatus(request, doc.id, "failed");
+    await page.clock.runFor(3_000);
+    await expect(tile(page, "Scanned brochure.pdf")).toContainText("Failed");
+    await expect(tile(page, "Scanned brochure.pdf")).toContainText("Couldn’t be read");
+
+    // Nothing is processing any more: ten minutes later, no further reads.
+    const before = (await kbReads(request, account.email)).length;
+    await page.clock.runFor(10 * 60_000);
+    expect((await kbReads(request, account.email)).length).toBe(before);
+  });
+
+  test("stops polling after the polling window and offers Check again", async ({ page, request }) => {
+    await page.clock.install();
+    await mockRealtime(page, { fail: true });
+    const account = await newAccount(request);
+    const doc = await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: "Long catalogue.pdf", status: "processing" });
+    await openKnowledge(page, account);
+    await expect(tile(page, "Long catalogue.pdf")).toContainText("Processing");
+    // One poll every 3 s, each re-read landing before the next is due, up to the 100-poll window.
+    let reads = (await kbReads(request, account.email)).length;
+    for (let i = 0; i < 100; i += 1) {
+      await page.clock.runFor(3_000);
+      await expect.poll(async () => (await kbReads(request, account.email)).length).toBe(reads + 1);
+      reads += 1;
+    }
+    await expect(docsRegion(page)).toContainText("Still processing");
+    const before = (await kbReads(request, account.email)).length;
+    await page.clock.runFor(10 * 60_000);
+    expect((await kbReads(request, account.email)).length).toBe(before);
+
+    await setStatus(request, doc.id, "ready");
+    await docsRegion(page).getByRole("button", { name: "Check again" }).click();
+    await expect(tile(page, "Long catalogue.pdf")).toContainText("Ready");
+    await expect(docsRegion(page)).not.toContainText("Still processing");
+  });
+
+  test("refuses a file over 5 MB or of another type before sending, and shows the API's file error", async ({ page, request, kb }) => {
     const account = await newAccount(request);
     await openKnowledge(page, account);
-    const docs = page.getByRole("region", { name: /^Documents/ });
-    await expect(docs.getByRole("heading")).toHaveText("Documents · 0");
-    await expect(docs.getByText("No documents yet")).toBeVisible();
+    await docsRegion(page).getByRole("button", { name: "Upload" }).click();
+    const fileInput = dialog(page).getByLabel("File");
+
+    await fileInput.setInputFiles({ name: "big.pdf", mimeType: "application/pdf", buffer: Buffer.alloc(5 * 1024 * 1024 + 1) });
+    await expect(dialog(page).getByText("This file is 5.1 MB. The limit is 5 MB")).toBeVisible();
+    await expect(fileInput).toHaveAttribute("aria-invalid", "true");
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page).getByText("This file is 5.1 MB. The limit is 5 MB")).toBeVisible();
+
+    await fileInput.setInputFiles({ name: "photo.png", mimeType: "image/png", buffer: Buffer.from("png") });
+    await expect(dialog(page).getByText("Choose a PDF, Word (.docx), text (.txt) or Markdown (.md) file")).toBeVisible();
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    expect(kb.writes()).toEqual([]);
+
+    // The API checks again (it reads the file); its fields.file message goes on the same field.
+    kb.fail("POST /api/kb/documents", { status: 400, code: "validation_failed", message: "Check the file.", fields: { file: "This PDF couldn't be opened." } });
+    await fileInput.setInputFiles({ name: "locked.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.7") });
+    await expect(dialog(page).getByText("PDF, Word (.docx), text (.txt) or Markdown (.md), up to 5 MB.")).toBeVisible();
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page).getByText("This PDF couldn't be opened.")).toBeVisible();
+    await expect(dialog(page).getByRole("button", { name: "Upload" })).toBeEnabled();
+    expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/documents"]);
+    await expectDialogFits(page);
+    await expectNoHorizontalOverflow(page);
+    await dialog(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 0");
   });
 
-  test("a failed documents read shows an error with Try again, and the rest of the page still works", async ({ page, request }) => {
+  test("deletes a document after confirming", async ({ page, request, kb }) => {
+    const account = await newAccount(request, { docs: true });
+    await openKnowledge(page, account);
+    await docsRegion(page).getByRole("button", { name: "Delete Bridal price list.pdf" }).click();
+    await expect(dialog(page)).toContainText("Delete Bridal price list.pdf?");
+    await expectDialogFits(page);
+    await dialog(page).getByRole("button", { name: "Delete document" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page, "Deleted Bridal price list.pdf")).toBeVisible();
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 1");
+    await expect(tile(page, "Bridal price list.pdf")).toHaveCount(0);
+    expect(kb.writes().map((c) => c.route)).toEqual(["DELETE /api/kb/documents/:id"]);
+    expectSignedCall(kb.writes()[0], account.tenantId);
+    expect((await storedDocs(request, account.tenantId)).map((d) => d.title)).toEqual([null]);
+  });
+});
+
+test.describe("Knowledge base · questions the AI couldn't answer", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  test("loads the open questions, most asked first", async ({ page, request, kb }) => {
+    kb.setGaps(GAPS);
+    const account = await newAccount(request);
+    await openKnowledge(page, account);
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+    const rows = gapsRegion(page).getByText(/^“/);
+    await expect(rows).toHaveText(["“Do you do keratin?”", "“Do you open on Sundays?”", "“Is there a student discount?”"]);
+    await expect(gapsRegion(page)).toContainText("Asked 4 times · last by Priya");
+    await expect(gapsRegion(page)).toContainText("Asked twice · last by +91 98••• ••321");
+    await expect(gapsRegion(page)).toContainText(/Asked once(?! · last by)/);
+    const [list] = kb.calls.filter((c) => c.route === "GET /api/kb/gaps");
+    expectSignedCall(list, account.tenantId);
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("answering a question adds it to the FAQs and takes it off the list", async ({ page, request, kb }) => {
+    kb.setGaps(GAPS);
+    const account = await newAccount(request, { faqs: true });
+    await openKnowledge(page, account);
+    await gapsRegion(page).getByRole("button", { name: "Add answer: Do you do keratin?" }).click();
+    const answer = gapsRegion(page).getByLabel("Answer to “Do you do keratin?”");
+    await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+    await expect(gapsRegion(page).getByText("Write the answer")).toBeVisible();
+    expect(kb.writes()).toEqual([]);
+
+    await answer.fill("Yes, from ₹4,500. It takes about 2 hours.");
+    const release = kb.hold("POST /api/kb/gaps/:id/answer");
+    await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+    await expect(gapsRegion(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
+    release();
+
+    await expect(toast(page, "Added to FAQs")).toBeVisible();
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 2");
+    await expect(gapsRegion(page)).not.toContainText("keratin");
+    await expect(page.getByRole("heading", { name: "FAQs · 3" })).toBeVisible();
+    await faqs(page).getByRole("button", { name: "Do you do keratin?", exact: true }).click();
+    await expect(faqs(page)).toContainText("Yes, from ₹4,500. It takes about 2 hours.");
+
+    const [call] = kb.writes();
+    expect(call.route).toBe("POST /api/kb/gaps/:id/answer");
+    expect(call.path).toBe(`/api/kb/gaps/${GAPS[1].id}/answer`);
+    expect(JSON.parse(call.body)).toEqual({ a: "Yes, from ₹4,500. It takes about 2 hours." });
+    expectSignedCall(call, account.tenantId);
+  });
+
+  test("dismisses a question after confirming", async ({ page, request, kb }) => {
+    kb.setGaps([GAPS[0]]);
+    const account = await newAccount(request);
+    await openKnowledge(page, account);
+    const dismiss = gapsRegion(page).getByRole("button", { name: "Dismiss: Do you open on Sundays?" });
+    await dismiss.click();
+    await expect(dialog(page)).toContainText("Dismiss this question?");
+    await expectDialogFits(page);
+    await dialog(page).getByRole("button", { name: "Keep it" }).click();
+    expect(kb.writes()).toEqual([]);
+
+    await dismiss.click();
+    await dialog(page).getByRole("button", { name: "Dismiss question" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page, "Dismissed the question")).toBeVisible();
+    await expect(gapsRegion(page)).toContainText("All caught up. Nothing new to answer.");
+    await expect(page.getByRole("heading", { name: "FAQs · 0" })).toBeVisible();
+    expect(kb.writes().map((c) => [c.route, c.body])).toEqual([["POST /api/kb/gaps/:id/dismiss", ""]]);
+    expectSignedCall(kb.writes()[0], account.tenantId);
+  });
+
+  test("failures load and save nothing silently: Try again, and the question stays", async ({ page, request, kb }) => {
+    kb.setGaps(GAPS);
+    kb.fail("GET /api/kb/gaps", { status: 500, code: "internal", message: "Something went wrong. Try again in a moment." });
+    const account = await newAccount(request, { seed: true });
+    await openKnowledge(page, account);
+    await expect(gapsRegion(page).getByRole("alert")).toContainText("Couldn't load the questions");
+    // The rest of the page still works.
+    await expect(table(page).locator("tbody tr")).toHaveCount(3);
+    kb.fail("GET /api/kb/gaps", null);
+    await gapsRegion(page).getByRole("button", { name: "Try again" }).click();
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+
+    kb.fail("POST /api/kb/gaps/:id/answer", { status: 404, code: "not_found", message: "Not found." });
+    await gapsRegion(page).getByRole("button", { name: "Add answer: Do you do keratin?" }).click();
+    await gapsRegion(page).getByLabel("Answer to “Do you do keratin?”").fill("Yes.");
+    await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+    await expect(gapsRegion(page).getByRole("alert")).toContainText("This question no longer exists");
+    await expect(gapsRegion(page).getByLabel("Answer to “Do you do keratin?”")).toHaveValue("Yes.");
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+
+    // An FAQ with the same question was added meanwhile: conflict, and the question stays open.
+    kb.fail("POST /api/kb/gaps/:id/answer", null);
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "manual", title: "Do you do keratin?", body: "Yes.", status: "ready" });
+    await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+    await expect(gapsRegion(page).getByRole("alert")).toContainText("already answered, or one of your FAQs already asks it");
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+    await expect(toast(page, "Added to FAQs")).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+  });
+});
+
+test.describe("Knowledge base · who can change it", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  test.describe("admin", () => {
+    test.use({ kbRole: "admin" });
+
+    test("an admin can add, edit, delete, upload, answer and dismiss", async ({ page, request, kb }) => {
+      kb.setGaps([GAPS[0]]);
+      const account = await newAccount(request, { faqs: true, docs: true, role: "admin" });
+      await openKnowledge(page, account);
+      await expect(faqs(page).getByRole("button", { name: "Add", exact: true })).toBeEnabled();
+      await expect(faqs(page).getByRole("button", { name: "Edit FAQ: Do you do home visits?" })).toBeEnabled();
+      await expect(docsRegion(page).getByRole("button", { name: "Upload" })).toBeEnabled();
+      await expect(docsRegion(page).getByRole("button", { name: "Delete Bridal price list.pdf" })).toBeEnabled();
+      await expect(gapsRegion(page).getByRole("button", { name: "Dismiss: Do you open on Sundays?" })).toBeEnabled();
+
+      await faqs(page).getByRole("button", { name: "Add", exact: true }).click();
+      await dialog(page).getByLabel("Question").fill("Do you do threading?");
+      await dialog(page).getByLabel("Answer").fill("Yes, ₹50.");
+      await dialog(page).getByRole("button", { name: "Add FAQ" }).click();
+      await expect(toast(page, "Added to FAQs")).toBeVisible();
+      expectSignedCall(kb.writes()[0], account.tenantId);
+    });
+  });
+
+  test.describe("staff", () => {
+    test.use({ kbRole: "staff" });
+
+    test("staff can answer questions, and read FAQs and documents without changing them", async ({ page, request, kb }) => {
+      kb.setGaps(GAPS);
+      const account = await newAccount(request, { faqs: true, docs: true, role: "staff" });
+      await openKnowledge(page, account);
+      await expect(page.getByRole("heading", { name: "FAQs · 2" })).toBeVisible();
+      await expect(faqs(page)).toContainText("Yes, within 5 km of the studio");
+      await expect(faqs(page).getByRole("button", { name: "Add", exact: true })).toBeDisabled();
+      await expect(faqs(page).getByText("Only an owner or admin can change FAQs.")).toBeVisible();
+      await expect(faqs(page).getByRole("button", { name: /^(Edit|Delete) FAQ/ })).toHaveCount(0);
+
+      await expect(docsRegion(page).getByRole("listitem")).toHaveCount(2);
+      await expect(docsRegion(page).getByRole("button", { name: "Upload" })).toBeDisabled();
+      await expect(docsRegion(page).getByText("Only an owner or admin can upload or delete documents.")).toBeVisible();
+      await expect(docsRegion(page).getByRole("button", { name: /^Delete/ })).toHaveCount(0);
+      await expect(page.locator('input[type="file"]')).toHaveCount(0);
+
+      expect(kb.writes()).toEqual([]);
+      await expectNoHorizontalOverflow(page);
+
+      // Any team member can answer a question (section 9, Raja 7 Oct); dismissing stays with owner and admin.
+      await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+      await expect(gapsRegion(page)).toContainText("Answer once and the AI uses it from then on");
+      await expect(gapsRegion(page).getByRole("button", { name: /^Dismiss/ })).toHaveCount(0);
+      await gapsRegion(page).getByRole("button", { name: "Add answer: Do you open on Sundays?" }).click();
+      await gapsRegion(page).getByLabel("Answer to “Do you open on Sundays?”").fill("Yes, 10 am to 6 pm.");
+      await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+      await expect(toast(page, "Added to FAQs")).toBeVisible();
+      await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 2");
+      await expect(page.getByRole("heading", { name: "FAQs · 3" })).toBeVisible();
+      expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/gaps/:id/answer"]);
+      expectSignedCall(kb.writes()[0], account.tenantId);
+    });
+  });
+});
+
+test.describe("Knowledge base · failed reads", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  test("failed FAQ and document reads show errors with Try again, and the rest of the page still works", async ({ page, request }) => {
     const account = await newAccount(request, { seed: true, docsError: true });
     await openKnowledge(page, account);
-    const docs = page.getByRole("region", { name: /^Documents/ });
-    await expect(docs.getByRole("alert")).toContainText("Couldn't load your documents");
-    await expect(docs.getByRole("alert")).not.toContainText(/boom|unexpected shape/);
-    await docs.getByRole("button", { name: "Try again" }).click();
-    await expect(docs.getByRole("alert")).toContainText("Couldn't load your documents");
+    await expect(faqs(page).getByRole("alert")).toContainText("Couldn't load the FAQs");
+    await expect(faqs(page).getByRole("button", { name: "Add", exact: true })).toBeDisabled();
+    await expect(docsRegion(page).getByRole("alert")).toContainText("Couldn't load your documents");
+    await expect(docsRegion(page).getByRole("button", { name: "Upload" })).toBeDisabled();
+    for (const region of [faqs(page), docsRegion(page)]) {
+      await expect(region.getByRole("alert")).not.toContainText(/boom|unexpected shape/);
+      await region.getByRole("button", { name: "Try again" }).click();
+      await expect(region.getByRole("alert")).toBeVisible();
+    }
     await expect(table(page).locator("tbody tr")).toHaveCount(3);
+    await expectNoHorizontalOverflow(page);
   });
 });

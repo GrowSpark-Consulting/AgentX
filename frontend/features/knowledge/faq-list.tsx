@@ -6,13 +6,24 @@ import type { FaqItem, SectionSource } from "./kb-content";
 
 // "FAQs · n", ported from the /dashboard/preview Knowledge base (features/knowledge/pakka-knowledge.tsx):
 // title over a 2px ink rule with a ghost Add, then an accordion (question row with +/−, the answer
-// below; the first one starts open).
-//
-// No FAQ storage exists yet (PROPOSED POST|PATCH /api/kb/faqs, Dev 1; no table, no read). The page
-// passes an "unavailable" source, and Add stays switched off with the reason: nothing here can look
-// like a saved FAQ. Opening and closing answers is local only.
+// below; the first one starts open). An open FAQ has Edit and Delete for owners and admins; staff
+// read only. A FAQ that isn't ready (its save failed to reach the AI) says so.
 
-export function FaqList({ source, onAdd }: { source: SectionSource<FaqItem>; onAdd?: () => void }) {
+const NOT_READY: Record<Exclude<FaqItem["status"], "ready">, string> = { processing: "Processing", failed: "Not in use: edit to try again" };
+
+export function FaqList({
+  source,
+  canWrite,
+  onAdd,
+  onEdit,
+  onDelete,
+}: {
+  source: SectionSource<FaqItem>;
+  canWrite: boolean;
+  onAdd: () => void;
+  onEdit: (faq: FaqItem) => void;
+  onDelete: (faq: FaqItem) => void;
+}) {
   const faqs = source.status === "ready" ? source.items : [];
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const isOpen = (id: string, index: number) => open[id] ?? index === 0;
@@ -23,21 +34,22 @@ export function FaqList({ source, onAdd }: { source: SectionSource<FaqItem>; onA
         <h2 id="faqs-heading" style={{ margin: "0", fontSize: "13px", letterSpacing: ".08em", textTransform: "uppercase" }}>
           FAQs{source.status === "ready" ? ` · ${faqs.length}` : ""}
         </h2>
-        <button type="button" className="btn btn-ghost" onClick={onAdd} disabled={!onAdd} aria-describedby={onAdd ? undefined : "faqs-add-note"}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={onAdd}
+          disabled={!canWrite || source.status !== "ready"}
+          aria-describedby={canWrite ? undefined : "faqs-add-note"}
+        >
           Add
         </button>
       </div>
-      {onAdd ? null : (
+      {canWrite ? null : (
         <p id="faqs-add-note" className="app-hint">
-          Adding FAQs isn’t switched on yet.
+          Only an owner or admin can change FAQs.
         </p>
       )}
 
-      {source.status === "unavailable" ? (
-        <div style={{ paddingTop: "12px" }}>
-          <EmptyState compact title="Not available yet" description={source.reason} />
-        </div>
-      ) : null}
       {source.status === "loading" ? (
         <div style={{ paddingTop: "12px" }}>
           <LoadingState compact title="Loading FAQs" />
@@ -49,7 +61,9 @@ export function FaqList({ source, onAdd }: { source: SectionSource<FaqItem>; onA
         </div>
       ) : null}
       {source.status === "ready" && faqs.length === 0 ? (
-        <p style={{ padding: "16px 0", margin: "0", color: "var(--color-neutral-700)" }}>No FAQs yet.</p>
+        <div style={{ paddingTop: "12px" }}>
+          <EmptyState compact title="No FAQs yet" description="Add the questions customers often ask. The AI answers them the way you write them here." />
+        </div>
       ) : null}
 
       {faqs.map((f, i) => {
@@ -63,15 +77,30 @@ export function FaqList({ source, onAdd }: { source: SectionSource<FaqItem>; onA
               onClick={() => setOpen((o) => ({ ...o, [f.id]: !expanded }))}
               style={{ width: "100%", display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", padding: "14px 0", border: "0", background: "transparent", color: "var(--color-text)", font: "inherit", fontSize: "15px", fontWeight: "600", textAlign: "left", cursor: "pointer" }}
             >
-              <span>{f.q}</span>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{f.q}</span>
               <span aria-hidden="true" style={{ fontSize: "20px", fontWeight: "400", lineHeight: "1" }}>
                 {expanded ? "−" : "+"}
               </span>
             </button>
-            {expanded ? (
-              <p id={`faq-${f.id}`} style={{ margin: "0 0 14px", fontSize: "14px", color: "var(--color-neutral-800)", maxWidth: "720px" }}>
-                {f.a}
+            {f.status !== "ready" ? (
+              <p style={{ margin: "-6px 0 10px" }}>
+                <span style={{ fontSize: "11px", fontWeight: "600", padding: "3px 8px", border: "1px solid var(--color-accent)", color: "var(--color-accent-700)" }}>{NOT_READY[f.status]}</span>
               </p>
+            ) : null}
+            {expanded ? (
+              <div id={`faq-${f.id}`} style={{ margin: "0 0 14px" }}>
+                <p style={{ margin: 0, fontSize: "14px", color: "var(--color-neutral-800)", maxWidth: "720px", whiteSpace: "pre-line", overflowWrap: "anywhere" }}>{f.a}</p>
+                {canWrite ? (
+                  <div style={{ display: "flex", gap: "4px", marginTop: "8px", marginLeft: "-6px" }}>
+                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px" }} aria-label={`Edit FAQ: ${f.q}`} onClick={() => onEdit(f)}>
+                      Edit
+                    </button>
+                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px" }} aria-label={`Delete FAQ: ${f.q}`} onClick={() => onDelete(f)}>
+                      Delete
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
           </div>
         );
