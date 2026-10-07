@@ -3,6 +3,7 @@ import { getBalance } from "../billing/credits";
 import { startTrialFor } from "../billing/start-trial";
 import { createTrialTenant } from "../billing/trial";
 import { sendTestMessage } from "../channels/whatsapp/test-message";
+import { handleWhatsAppWebhook } from "../channels/whatsapp/inbound";
 import { handleWhatsAppVerification } from "../channels/whatsapp/verify-challenge";
 import { resolveTenant } from "../lib/tenant";
 import { createTemplate } from "../notify/templates";
@@ -80,10 +81,13 @@ export const ROUTES: readonly Route[] = [
   { path: "/api/messages/test", browser: true, methods: { POST: (request, deps) => testMessage(request, deps.userClient) } },
   { path: "/api/onboarding/trial", browser: true, methods: { POST: startTrial } },
   {
-    // Meta's callback URL. GET is the verification check; message handling (POST) is not built yet,
-    // so other methods get a 405.
+    // Meta's callback URL. GET is the verification check; POST delivers messages and statuses (the
+    // signature is verified in the handler). Server to server: not `browser`, so no CORS; default body limit.
     path: "/api/webhooks/whatsapp",
-    methods: { GET: (request) => handleWhatsAppVerification(request) },
+    methods: {
+      GET: (request) => handleWhatsAppVerification(request),
+      POST: (request) => handleWhatsAppWebhook(request),
+    },
   },
   {
     // Inngest syncs (PUT), introspects (GET) and runs functions (POST) here.
