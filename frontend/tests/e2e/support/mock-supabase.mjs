@@ -31,6 +31,7 @@ const T = {
   realty: tenant("10000000-0000-0000-0000-000000000001", "Test Realty", "real-estate"),
   salon: tenant("10000000-0000-0000-0000-000000000002", "Beta Salon", "salon"),
   interiors: tenant("10000000-0000-0000-0000-000000000003", "Bright Interiors", "interiors"),
+  inbox: tenant("10000000-0000-0000-0000-000000000004", "Inbox Realty", "real-estate"),
 };
 const connection = (tenantId, status) => ({
   id: "30000000-0000-0000-0000-000000000001", tenant_id: tenantId, method: "embedded_signup", waba_id: "102938475610",
@@ -51,7 +52,100 @@ const USERS = {
   "multi@test.local": { memberships: [[T.realty, "owner"], [T.salon, "admin"]], view: MISSING_VIEW },
   "pending@test.local": { memberships: [[T.interiors, "owner"]], view: { status: 200, body: [connection(T.interiors.id, "pending")] } },
   "failed@test.local": { memberships: [[T.interiors, "owner"]], view: { status: 200, body: [connection(T.interiors.id, "failed")] } },
+  // Inbox: inbox@ has chats (INBOX below); owner@ has none; inboxerror@'s conversation reads return bad rows.
+  "inbox@test.local": { memberships: [[T.inbox, "owner"]], view: { status: 200, body: [] } },
+  "inboxerror@test.local": { memberships: [[T.realty, "owner"]], view: { status: 200, body: [] }, inboxError: true },
 };
+
+// Inbox rows for T.inbox (conversations, contacts, handoffs, messages), with times relative to when the
+// mock started so the 24-hour window is open or closed as described. Read-only: every project reads
+// the same data in parallel.
+const STARTED = Date.now();
+const ago = (minutes) => new Date(STARTED - minutes * 60_000).toISOString();
+const cid = (n) => `40000000-0000-0000-0000-00000000000${n}`;
+const mid = (n) => `41000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+const INBOX = {
+  conversations: [
+    // Needs human: open handoff, window open.
+    { id: cid(1), tenant_id: T.inbox.id, mode: "ai", status: "open", last_customer_msg_at: ago(20), created_at: ago(30),
+      contacts: { name: "Karthik R", phone: "+919812345621", language: "ta" },
+      handoffs: [{ id: "42000000-0000-0000-0000-000000000001", trigger: "asked_human", resolved_at: null }] },
+    // AI handling, window open.
+    { id: cid(2), tenant_id: T.inbox.id, mode: "ai", status: "open", last_customer_msg_at: ago(121), created_at: ago(125),
+      contacts: { name: "Priya S", phone: "+919900000037", language: "en" }, handoffs: [] },
+    // A team member replying, window closed (customer wrote 3 days ago); its handoff is resolved.
+    { id: cid(3), tenant_id: T.inbox.id, mode: "human", status: "open", last_customer_msg_at: ago(3 * 24 * 60), created_at: ago(3 * 24 * 60 + 10),
+      contacts: { name: "Lakshmi V", phone: "+919400000008", language: "ta" },
+      handoffs: [{ id: "42000000-0000-0000-0000-000000000003", trigger: "complaint", resolved_at: ago(3 * 24 * 60) }] },
+    // Own-number takeover, no name, no messages yet.
+    { id: cid(4), tenant_id: T.inbox.id, mode: "external", status: "open", last_customer_msg_at: null, created_at: ago(4 * 24 * 60),
+      contacts: { name: null, phone: "+919000000052", language: null }, handoffs: [] },
+  ],
+  messages: [
+    [1, cid(1), "in", "customer", "Velachery la 3BHK irukka? Ready to move venum", ago(25)],
+    [2, cid(1), "out", "ai", "Vanakkam Karthik! Yes, ready-to-move 3BHKs are available. What budget are you looking at?", ago(24)],
+    [3, cid(1), "out", "system", "Handed to team · asked for a person", ago(21)],
+    [4, cid(1), "in", "customer", "Can I talk to someone about the price?", ago(20)],
+    [5, cid(2), "in", "customer", "Hi, OMR 2BHK price enna?", ago(121)],
+    [6, cid(2), "out", "ai", "Hi Priya! 2BHKs on OMR start from ₹62 L.", ago(120)],
+    [7, cid(3), "in", "customer", "Visit ku varen, parking iruka?", ago(3 * 24 * 60)],
+    [8, cid(3), "out", "staff", "Yes ma’am, visitor parking is at the site office.", ago(3 * 24 * 60 - 5)],
+  ].map(([n, conversation_id, direction, sender, body, created_at]) => ({
+    id: mid(n), tenant_id: T.inbox.id, conversation_id, direction, sender, body, media: null, template_name: null,
+    delivery_status: null, created_at,
+  })),
+};
+// Knowledge base services (0001 services, 0002 member writes). Each Knowledge test creates its own
+// account and business through POST /__mock/services-account, so the parallel projects never edit
+// each other's rows. Rows: { id, tenant_id, name, duration_min, price_min, price_max, resource_type, active }.
+const SERVICES = [];
+/** tenant id → resource types (resources.type) offered as suggestions. */
+const RESOURCE_TYPES = new Map();
+const SEED_SERVICES = [
+  ["Haircut", 30, 300, 600, "stylist", true],
+  ["Bridal trial", 90, 2500, 5000, "stylist", true],
+  ["Hair spa", 60, null, null, "chair", false],
+];
+/** kb_documents rows (0001), read-only for members: { id, tenant_id, source_type, source_url, title, created_at }. */
+const KB_DOCUMENTS = [];
+const SEED_DOCUMENTS = [
+  ["upload", null, "Bridal price list.pdf", "2026-10-01T05:30:00Z"],
+  ["website", "https://glowstudio.in/services", null, "2026-10-05T05:30:00Z"],
+];
+/**
+ * { seed?, error?, docs?, docsError? }: seed adds services and resource types; docs adds kb_documents;
+ * error / docsError make that table's reads return rows the app can't parse.
+ */
+function createServicesAccount({ seed = false, error = false, docs = false, docsError = false } = {}) {
+  const email = `kb-${randomUUID()}@test.local`;
+  const t = tenant(randomUUID(), "Glow Studio", "salon");
+  USERS[email] = { memberships: [[t, "owner"]], view: { status: 200, body: [] }, servicesError: error, kbDocumentsError: docsError };
+  if (seed) {
+    for (const [name, duration_min, price_min, price_max, resource_type, active] of SEED_SERVICES) {
+      SERVICES.push({ id: randomUUID(), tenant_id: t.id, name, duration_min, price_min, price_max, resource_type, active });
+    }
+    RESOURCE_TYPES.set(t.id, ["chair", "stylist"]);
+  }
+  if (docs) {
+    for (const [source_type, source_url, title, created_at] of SEED_DOCUMENTS) {
+      KB_DOCUMENTS.push({ id: randomUUID(), tenant_id: t.id, source_type, source_url, title, created_at });
+    }
+  }
+  return { email, tenantId: t.id };
+}
+const SERVICE_COLUMNS = ["id", "tenant_id", "name", "duration_min", "price_min", "price_max", "resource_type", "active"];
+const pickService = (s) => Object.fromEntries(SERVICE_COLUMNS.map((k) => [k, s[k]]));
+
+/** A conversations row as the inbox's select returns it: open handoffs, newest non-system message. */
+const inboxListRow = ({ handoffs, ...c }) => ({
+  ...c,
+  handoffs: handoffs.filter((h) => h.resolved_at === null).map(({ id, trigger }) => ({ id, trigger })),
+  messages: INBOX.messages
+    .filter((m) => m.conversation_id === c.id && m.sender !== "system")
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, 1)
+    .map(({ id, sender, body, media, template_name, created_at }) => ({ id, sender, body, media, template_name, created_at })),
+});
 const idOf = (email) => `00000000-0000-0000-0000-${String(Object.keys(USERS).indexOf(email) + 1).padStart(12, "0")}`;
 const userJson = (email) => ({ id: idOf(email), aud: "authenticated", role: "authenticated", email, app_metadata: { provider: USERS[email]?.provider ?? "email" }, user_metadata: {}, identities: [{ provider: USERS[email]?.provider ?? "email" }], created_at: "2026-10-01T00:00:00Z" });
 
@@ -156,8 +250,10 @@ function emailFromToken(auth) {
   }
 }
 
+// The inbox reads Supabase from the browser (another origin), so answers carry CORS headers like the
+// real API's.
 function send(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json" });
+  res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*" });
   res.end(body === undefined ? "" : JSON.stringify(body));
 }
 const readBody = (req) => new Promise((resolve) => { let s = ""; req.on("data", (d) => (s += d)); req.on("end", () => { try { resolve(JSON.parse(s || "{}")); } catch { resolve({}); } }); });
@@ -166,6 +262,15 @@ createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const path = url.pathname;
   if (path === "/health") return send(res, 200, { ok: true });
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
+      "access-control-allow-headers": req.headers["access-control-request-headers"] ?? "*",
+    });
+    res.end();
+    return;
+  }
 
   if (path === "/auth/v1/token") {
     const body = await readBody(req);
@@ -276,6 +381,21 @@ ${choose("Cancel", "cancel=1")}
     }));
     return send(res, 200, { memberships, trialCalls: trialCalls.get(email) ?? 0 });
   }
+  if (path === "/__mock/services-account" && req.method === "POST") {
+    // { seed?: boolean, error?: boolean } → { email, tenantId }; the password is PASSWORD.
+    return send(res, 200, createServicesAccount(await readBody(req)));
+  }
+  if (path === "/__mock/services") {
+    // The rows as stored, for one business (tests check writes landed where they should).
+    const tenantId = url.searchParams.get("tenant");
+    if (req.method === "DELETE") {
+      // Removes a row behind the app's back, as another browser tab or teammate would.
+      const i = SERVICES.findIndex((s) => s.id === url.searchParams.get("id"));
+      if (i >= 0) SERVICES.splice(i, 1);
+      return send(res, 200, { ok: true });
+    }
+    return send(res, 200, SERVICES.filter((s) => s.tenant_id === tenantId));
+  }
   if (path === "/__mock/last-email") {
     const mail = outbox.get(String(url.searchParams.get("to") ?? "").toLowerCase());
     return mail ? send(res, 200, mail) : send(res, 404, { msg: "no email" });
@@ -326,6 +446,72 @@ ${choose("Cancel", "cancel=1")}
       const view = USERS[email].view;
       if (view.delay) await new Promise((r) => setTimeout(r, view.delay));
       return send(res, view.status, view.body);
+    }
+    if (table === "kb_documents") {
+      // RLS as in 0001: members read their own businesses' documents and write none.
+      if (!email) return send(res, 200, []);
+      if (req.method !== "GET") {
+        return send(res, 403, { code: "42501", details: null, hint: null, message: 'new row violates row-level security policy for table "kb_documents"' });
+      }
+      if (USERS[email].kbDocumentsError) return send(res, 200, [{ id: "not-a-document", internal: "boom" }]);
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const tenantId = url.searchParams.get("tenant_id")?.replace(/^eq\./, "") ?? null;
+      const rows = KB_DOCUMENTS.filter((d) => own.has(d.tenant_id) && (!tenantId || d.tenant_id === tenantId));
+      return send(res, 200, [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+    }
+    if (table === "services" || table === "resources") {
+      // RLS as in 0001/0002: members read and write their own businesses' rows only. Filters: eq.
+      if (!email) return send(res, 200, []);
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const eq = (column) => url.searchParams.get(column)?.replace(/^eq\./, "") ?? null;
+      if (table === "resources") {
+        const tenantId = eq("tenant_id");
+        const types = own.has(tenantId) ? (RESOURCE_TYPES.get(tenantId) ?? []) : [];
+        return send(res, 200, types.map((type) => ({ type })));
+      }
+      // Rows the app can't parse (a 5xx would also log a browser console error, which the suite forbids).
+      if (USERS[email].servicesError) return send(res, 200, [{ id: "not-a-service", internal: "boom" }]);
+      const matches = (s) =>
+        own.has(s.tenant_id) && (!eq("tenant_id") || s.tenant_id === eq("tenant_id")) && (!eq("id") || s.id === eq("id"));
+      if (req.method === "GET") {
+        return send(res, 200, SERVICES.filter(matches).sort((a, b) => a.name.localeCompare(b.name)).map(pickService));
+      }
+      if (req.method === "POST") {
+        const body = await readBody(req);
+        const rows = Array.isArray(body) ? body : [body];
+        if (rows.some((r) => !own.has(r.tenant_id))) {
+          return send(res, 403, { code: "42501", details: null, hint: null, message: 'new row violates row-level security policy for table "services"' });
+        }
+        const created = rows.map((r) => ({ active: true, price_min: null, price_max: null, ...r, id: randomUUID() }));
+        SERVICES.push(...created);
+        return send(res, 201, created.map(pickService));
+      }
+      if (req.method === "PATCH") {
+        const patch = await readBody(req);
+        const updated = SERVICES.filter(matches);
+        for (const s of updated) Object.assign(s, patch, { id: s.id, tenant_id: s.tenant_id });
+        return send(res, 200, updated.map(pickService));
+      }
+      if (req.method === "DELETE") {
+        const removed = SERVICES.filter(matches);
+        for (const s of removed) SERVICES.splice(SERVICES.indexOf(s), 1);
+        return send(res, 200, removed.map((s) => ({ id: s.id })));
+      }
+    }
+    if (table === "conversations" || table === "messages") {
+      if (!email) return send(res, 200, []);
+      // Rows the app can't parse (a 500 would also log a browser console error, which the suite forbids).
+      if (USERS[email].inboxError) return send(res, 200, [{ id: "not-a-conversation", internal: "boom" }]);
+      // RLS: only the user's own businesses; then the query's own filters.
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const eq = (column) => url.searchParams.get(column)?.replace(/^eq\./, "") ?? null;
+      const rows = (table === "conversations" ? INBOX.conversations : INBOX.messages).filter(
+        (r) => own.has(r.tenant_id) && (!eq("tenant_id") || r.tenant_id === eq("tenant_id")) &&
+          (!eq("conversation_id") || r.conversation_id === eq("conversation_id")),
+      );
+      return table === "conversations"
+        ? send(res, 200, rows.map(inboxListRow))
+        : send(res, 200, [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at)));
     }
     return send(res, 404, { code: "PGRST205", details: null, hint: null, message: `Could not find the table 'public.${table}' in the schema cache` });
   }

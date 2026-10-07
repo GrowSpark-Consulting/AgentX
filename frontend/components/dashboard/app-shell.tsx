@@ -15,6 +15,8 @@ export interface ShellIdentity {
 
 const NAV = [
   { href: "/dashboard", label: "Home", d: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10" },
+  { href: "/dashboard/inbox", label: "Inbox", d: "M7.9 20A9 9 0 1 0 4 16.1L2 22z" },
+  { href: "/dashboard/knowledge", label: "Knowledge base", d: "M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" },
   { href: "/dashboard/messages/test", label: "Send test message", d: "M7.9 20A9 9 0 1 0 4 16.1L2 22z" },
   { href: "/dashboard/templates/new", label: "Create template", d: "M4 4h16v12H5.2L4 17.2z M8 8h8 M8 12h5" },
   { href: "/dashboard/whatsapp", label: "WhatsApp", d: "M5 2h14a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z M12 18h.01" },

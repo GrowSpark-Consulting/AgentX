@@ -1,0 +1,61 @@
+import type { CSSProperties } from "react";
+import { formatClock, type ChatMessage } from "./data";
+
+// One chat message, ported from the /dashboard/preview Inbox (components/dashboard/pakka-app.tsx):
+// customer messages on the left in --wa-in, everything we sent on the right in --wa-out with a
+// sender label, system events as a centred note. Styles are the prototype's, unchanged.
+
+/** No persona name or staff names exist yet (see data.ts), so the labels say what sent it. */
+const WHO: Partial<Record<ChatMessage["sender"], { label: string; color: string }>> = {
+  ai: { label: "AI", color: "var(--wa-dark)" },
+  staff: { label: "Staff", color: "#c2410c" },
+};
+
+export function MessageBubble({ message, timeZone }: { message: ChatMessage; timeZone: string }) {
+  if (message.sender === "system") {
+    return (
+      <div style={{ alignSelf: "center", maxWidth: "90%", textAlign: "center", fontSize: "12px", background: "var(--wa-sys)", color: "var(--wa-ink)", padding: "5px 10px", margin: "4px 0" }}>
+        {message.body ?? (message.templateName ? `Template sent · ${message.templateName}` : "")}
+      </div>
+    );
+  }
+
+  const outgoing = message.sender !== "customer";
+  const who = WHO[message.sender];
+  const text = message.body ?? (message.templateName ? `Template · ${message.templateName}` : null);
+
+  return (
+    <div
+      data-sender={message.sender}
+      style={{
+        alignSelf: outgoing ? "flex-end" : "flex-start",
+        maxWidth: "var(--inbox-bubble-max, 72%)",
+        background: outgoing ? "var(--wa-out)" : "var(--wa-in)",
+        color: "var(--wa-ink)",
+        padding: "6px 9px 4px",
+        boxShadow: "0 1px 0.5px rgba(11,20,26,.13)",
+        overflowWrap: "anywhere",
+      } as CSSProperties}
+    >
+      {outgoing && who ? (
+        <div style={{ fontSize: "12px", fontWeight: "600", color: who.color, marginBottom: "2px" }}>{who.label}</div>
+      ) : null}
+      {message.attachment ? (
+        <div style={{ display: "flex", gap: "10px", alignItems: "center", background: "rgba(0,0,0,.05)", padding: "8px", marginBottom: "4px", minWidth: "min(220px, 100%)" }}>
+          <span style={{ width: "32px", height: "38px", flex: "none", background: "#e2412f", color: "#fff", fontSize: "10px", fontWeight: "800", display: "grid", placeItems: "center" }}>
+            {message.attachment.label}
+          </span>
+          <span style={{ fontSize: "13px", lineHeight: "1.3", minWidth: "0" }}>
+            <span style={{ fontWeight: "600", display: "block" }}>{message.attachment.name}</span>
+          </span>
+        </div>
+      ) : null}
+      {text ? (
+        <div style={{ fontSize: "14px", lineHeight: "1.4", whiteSpace: "pre-wrap", textWrap: "pretty" } as CSSProperties}>{text}</div>
+      ) : null}
+      <div style={{ fontSize: "11px", opacity: ".6", textAlign: "right", marginTop: "1px" }}>
+        <time dateTime={message.createdAt}>{formatClock(message.createdAt, timeZone)}</time>
+      </div>
+    </div>
+  );
+}
