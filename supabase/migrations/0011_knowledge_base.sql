@@ -77,6 +77,12 @@ $$;
 -- (0004) finds candidates before the tenant and status filters, so iterative scanning keeps searching
 -- until k rows pass them; relaxed order can return them slightly out of order, so the outer query
 -- sorts them again. similarity = 1 - cosine distance. k is capped at 50.
+--
+-- Hosted Supabase runs migrations as a role that isn't a superuser, and that role may put
+-- hnsw.iterative_scan in a function's SET clause only once pgvector's library has defined the setting
+-- in this session ("permission denied to set parameter" otherwise). Using a vector value loads it.
+select '[0]'::extensions.vector;
+
 create function public.match_kb_chunks(p_tenant_id uuid, p_query extensions.vector(1024), p_k int default 5)
 returns table (chunk_id uuid, document_id uuid, title text, content text, similarity double precision)
 language sql stable
