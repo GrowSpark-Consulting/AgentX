@@ -3,6 +3,33 @@
 Owner: Dev 3. Status: **structure merged on 5 Oct 2026; product data is still fixtures.** No backend
 integration and no authentication have been added.
 
+**Update, 7 Oct 2026:** auth, tenant resolution and the signed-in shell are built (below), and two
+screens read real data. See "Dev 3 integration status" below. The prototype at `/dashboard/preview`
+still runs on fixtures and remains the visual reference for every screen.
+
+## Dev 3 integration status (7 Oct 2026)
+
+| Area | Status | Data path |
+|---|---|---|
+| `/dashboard/inbox` | Built, read-only | browser client → `conversations`, `contacts`, `handoffs`, `messages` under RLS, filtered by the session's tenant → one Realtime channel `inbox:<tenantId>` (inserts and updates, `tenant_id` filter) |
+| `/dashboard/knowledge` · services | Built: list, add, edit, delete | browser client → `services` under RLS (0002 member writes) |
+| `/dashboard/knowledge` · documents | Built, read-only | browser client → `kb_documents` under RLS (members can't write it) |
+| FAQs | **Blocked on Dev 1**: no storage, no API | UI ported (`faq-list.tsx`), shown as not available |
+| Unanswered questions (gaps) | **Blocked on Dev 1**: no storage, no API | UI ported (`gaps-list.tsx`), shown as not available |
+| Document upload | **Blocked on Dev 1**: `POST /api/kb/documents` not built or specified | Upload shown switched off |
+| Sending, AI/Human switch, lead card | Not started (Dev 3 routes; send needs Dev 1's registered sender) | Controls shown switched off |
+| PostgreSQL / RLS verification | **Pending**: needs Docker | `0010_inbox_realtime.sql`, `inbox_rls.test.sql`, `services_rls.test.sql` not yet run |
+
+What Dev 3 needs from Dev 1 for the blocked rows: [kb-contract-checklist.md](kb-contract-checklist.md).
+
+Known limits, all shown honestly in the UI: no unread data; no persona or staff names ("AI", "Staff");
+no conversation → lead link (no score, no lead card); the inbox reads the newest 200 chats and a chat's
+newest 300 messages, with no paging; when Realtime can't subscribe (for example before 0010 is applied)
+the inbox says so and re-reads at most every 10 seconds while it retries; the browser receives
+contacts' full numbers under RLS, and the UI only ever shows them masked. Reads and live changes are
+ordered (`ReadSequencer` in `features/inbox/data.ts`) so an older read can't overwrite a newer one or
+drop a change that arrived during it.
+
 Related: [dashboard-screen-inventory.md](dashboard-screen-inventory.md) ·
 [dashboard-screen-contracts.md](dashboard-screen-contracts.md) · [handover.md](handover.md) ·
 [frontend-exports/](frontend-exports/) (archived READMEs of the two original exports)
@@ -46,7 +73,9 @@ frontend/
 │   │       │   ├── page.tsx              /dashboard                 → signed-in home
 │   │       │   ├── messages/test/        /dashboard/messages/test   → Send test message
 │   │       │   ├── templates/new/        /dashboard/templates/new   → Create template
-│   │       │   └── whatsapp/             /dashboard/whatsapp        → WhatsApp connection panel
+│   │       │   ├── whatsapp/             /dashboard/whatsapp        → WhatsApp connection panel
+│   │       │   ├── inbox/                /dashboard/inbox[?chat=]   → real Inbox (features/inbox)
+│   │       │   └── knowledge/            /dashboard/knowledge       → real Knowledge base (features/knowledge)
 │   │       └── preview/page.tsx  /dashboard/preview → <PakkaRoot /> prototype (sample data, demo URL switches)
 │   ├── api/health/route.ts      GET /api/health
 │   ├── api/inngest/route.ts     /api/inngest (re-exports @pakka/backend/inngest/serve)
@@ -64,8 +93,13 @@ frontend/
 ├── features/
 │   ├── onboarding/{data,state}  onboarding mock data + state model
 │   ├── leads/ calendar/ agent/ knowledge/ templates/ billing/ settings/ team/
-│   │                            one dashboard screen each (pakka-<screen>.tsx)
-│   ├── inbox/                   empty: the Inbox still lives inside components/dashboard/pakka-app.tsx
+│   │                            one prototype screen each (pakka-<screen>.tsx), fixtures only
+│   ├── inbox/                   real Inbox: data.ts (RLS reads, view model), use-inbox-realtime.ts,
+│   │                            inbox-screen, conversation-list, chat-view, message-bubble. The
+│   │                            prototype Inbox still lives in components/dashboard/pakka-app.tsx
+│   ├── knowledge/               pakka-knowledge.tsx (prototype) plus the real screen: knowledge-screen,
+│   │                            services-editor (+ data.ts, dialogs), documents, faq-list and
+│   │                            gaps-list (kb-content.ts); FAQs and gaps have no backend contract yet
 │   └── auth/                    empty: auth is not started
 ├── fixtures/dashboard/          TEMPORARY dashboard sample data + fixtures.test.ts
 ├── styles/                      dashboard.css, onboarding.css
@@ -108,6 +142,8 @@ depends on `inngest`, so there's one copy of it.
 | `/dashboard` | Dev 3 | Signed-in home: real business from `memberships` → `tenants` |
 | `/dashboard/messages/test`, `/dashboard/templates/new` | Dev 3 | Meta App Review screens (send test message, create template) |
 | `/dashboard/whatsapp` | Dev 3 | Connection panel reading `whatsapp_connections_public` |
+| `/dashboard/inbox` | Dev 3 | Real Inbox, read-only: RLS reads of `conversations`, `contacts`, `handoffs`, `messages`; one Realtime channel `inbox:<tenantId>` (needs migration 0010). Sending, AI/Human switch, lead card and suggested reply are not built |
+| `/dashboard/knowledge` | Dev 3 | Real Knowledge base: services CRUD under RLS; `kb_documents` list (read only). FAQs, unanswered questions, upload and website sync are shown as not available: no backend contract yet |
 | `/dashboard/preview` | Dev 3 | Prototype dashboard (sample data), signed-in only |
 | `/connect/[token]`, `/h/[token]` | Dev 3 / Dev 1 | Reserved folders, no route yet |
 | `/api/health` | Dev 2 | Exists |
@@ -120,9 +156,11 @@ The `api.*` host rewrite (`frontend/next.config.ts`) is unchanged: `api.pakkaage
 
 ## Auth and tenant context
 
-Supabase Auth with email + password and Google, through `@supabase/ssr` (cookie sessions, PKCE). No
-browser Supabase client is needed yet: sign-up, sign-in, the Google round trip, sign-out and all
-reads run on the server.
+Supabase Auth with email + password and Google, through `@supabase/ssr` (cookie sessions, PKCE).
+Sign-up, sign-in, the Google round trip and sign-out run on the server. The Inbox and Knowledge
+screens read (and, for services, write) from the browser through `lib/supabase/browser.ts`, acting as
+the signed-in member: RLS applies, every query also filters by the session's tenant id, which the page
+resolves on the server and passes down.
 
 A new account is told apart from an existing one by membership only: no business yet → onboarding,
 otherwise → dashboard. Signing up (email or Google) creates only the account. The business is created
@@ -136,6 +174,7 @@ has no saved progress or "completed" flag yet.
 |---|---|---|
 | Public config | `frontend/lib/env.ts` | Validates `NEXT_PUBLIC_SUPABASE_URL` (must be the https API URL, no credentials) and the anon key |
 | Server client | `frontend/lib/supabase/server.ts` | Per-request client acting as the user; row-level security applies |
+| Browser client | `frontend/lib/supabase/browser.ts` | One client per tab from the same cookies; `ensureRealtimeAuth()` hands the member's token to Realtime before subscribing |
 | Proxy | `frontend/proxy.ts` | Refreshes the session cookie; signed-out `/dashboard/*` → `/login?next=…`, `/onboarding` → `/signup?next=/onboarding`; signed-in `/login` → `/dashboard`, `/signup` → `/onboarding` (optimistic) |
 | Redirect rules | `frontend/lib/auth/redirect.ts` | `safeNext()` (in-app paths only), `destinationAfterAuth()`, fixed copy for `?error=` codes |
 | OAuth / email-link callback | `frontend/app/auth/callback/route.ts` | `exchangeCodeForSession()`, then routes by membership; failures → `/login` or `/signup?error=…` |

@@ -36,6 +36,14 @@ onboarding wizard is in [frontend-architecture-map.md](frontend-architecture-map
 
 Nothing else exists. Every dependency below is HANDOVER, RLS READ or PROPOSED.
 
+**Update, 7 Oct 2026:** the prototype moved to `/dashboard/preview` (still fixtures). Real routes now
+exist for two screens; their status is under "Real route" in sections 2 and 7.
+
+| Route | Data |
+|---|---|
+| `/dashboard/inbox[?chat=<id>]` | RLS READ `conversations`, `contacts`, `handoffs`, `messages`; Realtime (migration 0010) |
+| `/dashboard/knowledge` | RLS READ/WRITE `services`; RLS READ `kb_documents` |
+
 ### Proposed role access
 
 | Screen | owner | admin | staff | Notes |
@@ -106,6 +114,15 @@ templates outside the 24-hour window.
 **Plan restriction:** none to view. Own-number takeover is Growth+.
 **Tenant scope:** session tenant; RLS on every table.
 **Owner:** UI Dev 3 · lead card and suggest Dev 1 · send pipeline and credits Dev 2.
+
+**Real route (7 Oct 2026):** `/dashboard/inbox`, code in `frontend/features/inbox/`.
+- Built: chat list and chat (RLS reads), AI / Needs human / Human / Own number tags (mode + open
+  handoff), search, All / AI handling / Needs human filters, one Realtime channel per business, loading,
+  empty, error and "live updates aren't connected" states.
+- Shown switched off: Unread (no unread data), AI/Human switch, message box and Send.
+- Not built: lead card, suggested reply, templates, sending (`POST /api/conversations/:id/messages`
+  and `/mode`). No persona or staff names exist yet, so bubbles say "AI" and "Staff".
+- Database tests (`inbox_rls.test.sql`) and migration 0010 have not been run yet.
 
 ## 3. Leads
 
@@ -228,6 +245,16 @@ sync are local.
 **Plan restriction:** none known.
 **Tenant scope:** session tenant.
 **Owner:** UI Dev 3 · ingestion, retrieval and gaps Dev 1.
+
+**Real route (7 Oct 2026):** `/dashboard/knowledge`, code in `frontend/features/knowledge/`.
+- Built: Services & prices (list, add, edit, delete under RLS; validation before saving; a delete
+  blocked by bookings is explained), documents list from `kb_documents` (title, source, date).
+- Shown as not available, no data and no saving: unanswered questions, FAQs, Upload. The ported list
+  components take the PROPOSED `KnowledgeBase.faqs` / `gaps` shapes and are wired when Dev 1's
+  contracts exist (open question 3 above, `POST /api/kb/documents` shape).
+- Not shown: website sync (`POST /api/onboarding/import-site` not built); a document processing
+  status (no column in `kb_documents`, though the PROPOSED shape has one).
+- Database test `services_rls.test.sql` has not been run yet.
 
 ## 8. Templates
 
