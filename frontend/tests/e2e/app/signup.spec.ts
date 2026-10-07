@@ -40,11 +40,13 @@ test.describe("email and password signup", () => {
     await expect(page).toHaveURL(/\/onboarding$/);
     await expect(page.getByRole("heading", { name: "Start your free trial" })).toBeVisible();
 
-    // Signed in now, still without a business: /signup and /login lead back to onboarding.
+    // Signed in now, still without a business: /signup leads back to onboarding, while /login is
+    // still the real sign-in page (opening it decides nothing).
     await page.goto("/signup");
     await expect(page).toHaveURL(/\/onboarding$/);
     await page.goto("/login");
-    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
 
     // The e2e server runs the development dashboard, which shows the shell with empty states.
     await page.goto("/dashboard");

@@ -1,5 +1,5 @@
 import { test as base, expect, type Page } from "@playwright/test";
-import { SIGNED_OUT, signUp, uniqueEmail } from "../support/app";
+import { PASSWORD, SIGNED_OUT, signUp, uniqueEmail } from "../support/app";
 
 /** Any console error or uncaught page error fails the test. */
 const test = base.extend<{ consoleErrors: string[] }>({
@@ -59,10 +59,24 @@ async function walkTo(page: Page, stop: "WhatsApp" | "Team" | "Live", trade = "R
   await next(page, "Go live").click();
 }
 
-test("/ redirects to /onboarding", async ({ page }) => {
+/** The server's answer to GET / with redirects not followed: the one place `/` sends anyone. */
+async function rootRedirect(page: Page) {
+  const res = await page.request.get("/", { maxRedirects: 0 });
+  return { status: res.status(), location: res.headers()["location"] };
+}
+
+test("/ always goes to /login and stops there, even with a session (signed in)", async ({ page }) => {
+  // Signed in through the project's storage state as owner@test.local, a member of Test Realty.
+  expect(await rootRedirect(page)).toEqual({ status: 307, location: "/login" });
+  const documents: string[] = [];
+  page.on("request", (r) => {
+    if (r.isNavigationRequest()) documents.push(new URL(r.url()).pathname);
+  });
   await page.goto("/");
-  await expect(page).toHaveURL(/\/onboarding$/);
-  await expect(page.getByRole("heading", { name: "Start your free trial" })).toBeVisible();
+  // The session alone decides nothing: the sign-in page renders. Submitting it does the routing.
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  expect(documents).toEqual(["/", "/login"]);
 });
 
 test("walks every step without overflow, and Back returns", async ({ page }) => {
@@ -167,12 +181,30 @@ test.describe("onboarding → dashboard", () => {
 test.describe("onboarding needs an account", () => {
   test.use({ storageState: SIGNED_OUT });
 
-  test("signed out, / and /onboarding go to sign-up", async ({ page }) => {
-    for (const path of ["/", "/onboarding"]) {
-      await page.goto(path);
-      await expect(page).toHaveURL(/\/signup\?next=%2Fonboarding$/);
-      await expect(page.getByRole("heading", { name: "Sign up" })).toBeVisible();
-    }
+  test("signed out, / shows sign-in and /onboarding still asks for an account", async ({ page }) => {
+    expect(await rootRedirect(page)).toEqual({ status: 307, location: "/login" });
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+
+    await page.goto("/onboarding");
+    await expect(page).toHaveURL(/\/signup\?next=%2Fonboarding$/);
+    await expect(page.getByRole("heading", { name: "Sign up" })).toBeVisible();
+
+    // From /, an existing member signs in on the real login page and sign-in sends them on.
+    await page.goto("/");
+    await page.getByLabel("Email").fill("owner@test.local");
+    await page.getByLabel("Password").fill(PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Test Realty" })).toBeVisible();
+  });
+
+  test("an account with no business yet also starts at /login from /", async ({ page }) => {
+    await signUp(page, uniqueEmail());
+    await expect(page).toHaveURL(/\/onboarding$/);
+    // `/` never decides by membership: it answers /login for this account too.
+    expect(await rootRedirect(page)).toEqual({ status: 307, location: "/login" });
   });
 
   test("a new account walks the existing wizard, with the same dummy WhatsApp code and no email code", async ({ page }) => {

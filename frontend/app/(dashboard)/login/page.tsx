@@ -4,16 +4,15 @@ import { GoogleButton } from "@/components/dashboard/google-button";
 import { LoginForm } from "@/components/dashboard/login-form";
 import { ErrorState } from "@/components/shared/states";
 import { authLinkErrorMessage } from "@/lib/auth/redirect";
-import { redirectIfSignedIn } from "@/lib/auth/session";
 import "@/styles/app.css";
 
 export const metadata: Metadata = { title: "Sign in · Pakka" };
 
-// Existing accounts. A visitor who is already signed in goes straight to the dashboard (or to
-// onboarding while their account has no business yet).
+// Existing accounts. Opening this page never decides where anyone belongs, even with a session
+// already in place: signing in (password or Google) does, in lib/auth/actions.ts and
+// app/auth/callback/route.ts.
 export default async function LoginPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { next, error } = await searchParams;
-  await redirectIfSignedIn(next);
   const linkError = authLinkErrorMessage(error);
   return (
     <div className="app-auth">
