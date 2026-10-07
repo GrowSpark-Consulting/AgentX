@@ -14,10 +14,12 @@ const call = (query: string, init?: RequestInit) =>
   app(new Request(`http://localhost:4000/api/webhooks/whatsapp${query}`, init));
 
 describe("/api/webhooks/whatsapp", () => {
-  it("answers GET only: message handling is not part of this route yet", async () => {
-    const res = await call("", { method: "POST", body: "{}" });
-    expect(res.status).toBe(405);
-    expect(res.headers.get("allow")).toBe("GET");
+  it("answers GET and POST only; POST is covered by webhook-post.test.ts", async () => {
+    for (const method of ["PUT", "PATCH", "DELETE"]) {
+      const res = await call("", { method, body: "{}" });
+      expect(res.status).toBe(405);
+      expect(res.headers.get("allow")).toBe("GET, POST");
+    }
   });
 
   it("answers Meta's verification with the challenge as plain text", async () => {

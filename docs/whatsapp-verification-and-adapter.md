@@ -12,7 +12,8 @@ Meta checks a callback URL with `GET /api/webhooks/whatsapp?hub.mode=...&hub.ver
 If the mode is `subscribe` and the token is ours, we answer **200 with the challenge as plain text** and nothing
 else. Every other case is **403 with an empty body**. The code is
 `backend/src/channels/whatsapp/verify-challenge.ts`; the API service serves it at
-`/api/webhooks/whatsapp` (`backend/src/server/routes.ts`), `GET` only: other methods get a 405.
+`/api/webhooks/whatsapp` (`backend/src/server/routes.ts`), `GET` for the check and `POST` for deliveries
+(`channels/whatsapp/inbound.ts`, see `docs/task-notes/2026-10-08-feat-agent-webhook-post.md`); other methods get a 405.
 
 ## 1.2 The token and the setup
 
@@ -36,8 +37,8 @@ deliveries will get errors. The callback check only needs the GET.
 - The challenge must be 1 to 256 printable ASCII characters. A repeated parameter counts as missing.
 - Nothing is logged except one fixed line, `webhook verification: environment invalid`, when `serverEnv()`
   throws (the answer is still 403). The token and the challenge are never logged or returned.
-- There is **no POST handler yet**. Next should answer 405 for other methods; that is **unconfirmed** until
-  seen on staging.
+- Other methods (PUT, PATCH, DELETE) answer 405 with `allow: GET, POST`; that is **unconfirmed** until seen on
+  staging. The POST handler verifies `META_APP_SECRET` only; `manual_byo` signatures are a follow-up.
 
 **Open item:** clients on `manual_byo` set their own verify token in their own Meta app, which will not match
 ours. A decision for Raja before `manual_byo` goes live.
@@ -134,6 +135,7 @@ shapes (`messages[0].id`, `{"success": true}`), and the error codes in the table
 Done: the webhook GET verification and the adapter with `sendText` and `markRead`. Tests:
 `verify-challenge.test.ts` (right and wrong mode, token and challenge, empty or missing token, different token
 lengths, the log line, no token in any response), the route test `backend/src/server/webhook.test.ts`
-(GET only, POST 405; 200 and 403; no CORS headers), `adapter.test.ts` (exact request, token handling, errors, timeouts,
-validation, `markRead`) and `meta-errors.test.ts` (the mapping table). **Next:** the `MessageSender` wrapper and `sendTemplate`, then the connection loader and
-`registerSender`; the POST webhook route after that.
+(GET and POST only, other methods 405; 200 and 403; no CORS headers), `webhook-post.test.ts` (the POST route),
+`adapter.test.ts` (exact request, token handling, errors, timeouts, validation, `markRead`) and
+`meta-errors.test.ts` (the mapping table). The POST webhook route is built. **Next:** the `MessageSender` wrapper
+and `sendTemplate`, then the connection loader and `registerSender`.
