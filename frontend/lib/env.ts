@@ -57,3 +57,31 @@ export function apiBaseUrl(): string {
   // Referenced literally so Next.js inlines it into the browser bundle at build time.
   return parseApiUrl(process.env.NEXT_PUBLIC_API_URL);
 }
+
+// Meta Embedded Signup (Connect with Facebook): our Meta app id and the Facebook Login for Business
+// configuration id. Both are public. Optional: until both are set, the real popup stays switched off.
+export type MetaSignupConfig =
+  | { status: "ready"; appId: string; configId: string }
+  | { status: "off"; problems: string[] };
+
+const META_ID = /^\d{1,32}$/;
+
+/** Validates the Embedded Signup settings. Problems name the variable, never its value. */
+export function parseMetaSignupEnv(source: Record<string, string | undefined>): MetaSignupConfig {
+  const appId = source.NEXT_PUBLIC_META_APP_ID?.trim() ?? "";
+  const configId = source.NEXT_PUBLIC_META_ES_CONFIG_ID?.trim() ?? "";
+  const problems: string[] = [];
+  for (const [name, value] of [["NEXT_PUBLIC_META_APP_ID", appId], ["NEXT_PUBLIC_META_ES_CONFIG_ID", configId]] as const) {
+    if (!value) problems.push(`${name} is not set`);
+    else if (!META_ID.test(value)) problems.push(`${name} must be a numeric id`);
+  }
+  return problems.length ? { status: "off", problems } : { status: "ready", appId, configId };
+}
+
+export function metaSignupConfig(): MetaSignupConfig {
+  // Referenced literally so Next.js inlines them into the browser bundle at build time.
+  return parseMetaSignupEnv({
+    NEXT_PUBLIC_META_APP_ID: process.env.NEXT_PUBLIC_META_APP_ID,
+    NEXT_PUBLIC_META_ES_CONFIG_ID: process.env.NEXT_PUBLIC_META_ES_CONFIG_ID,
+  });
+}

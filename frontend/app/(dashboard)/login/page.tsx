@@ -17,7 +17,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <div className="app-auth">
       <div className="app-auth-card">
-        <Link href="/onboarding" className="app-brand">
+        <Link href="/login" className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
           <span className="app-brand-name">Spark Agent</span>
         </Link>

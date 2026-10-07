@@ -30,13 +30,24 @@ export function AppShell({ identity, children }: { identity: ShellIdentity; chil
   const pathname = usePathname();
   const navRef = useRef<HTMLElement>(null);
 
-  // On phones the nav is a scrolling row; keep the current page's link in view.
+  // On phones the nav is a scrolling row; keep the current page's link in view. Scrolls the row itself:
+  // scrollIntoView() would also move the browser's keyboard starting point to that link, so the first
+  // Tab would skip "Skip to content", the logo and the current link.
   useEffect(() => {
-    navRef.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const nav = navRef.current;
+    const current = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!nav || !current || nav.scrollWidth <= nav.clientWidth) return;
+    const row = nav.getBoundingClientRect();
+    const link = current.getBoundingClientRect();
+    if (link.left < row.left) nav.scrollLeft += link.left - row.left;
+    else if (link.right > row.right) nav.scrollLeft += link.right - row.right;
   }, [pathname]);
 
   return (
     <div className="app-root">
+      <a href="#main" className="app-skip">
+        Skip to content
+      </a>
       <aside className="app-side">
         <Link href="/dashboard" className="app-brand">
           <span className="app-brand-mark" aria-hidden="true" />
@@ -84,7 +95,10 @@ export function AppShell({ identity, children }: { identity: ShellIdentity; chil
           </form>
         </div>
       </aside>
-      <main className="app-main">{children}</main>
+      {/* tabIndex -1: the skip link moves keyboard focus here, not just the scroll position. */}
+      <main id="main" tabIndex={-1} className="app-main">
+        {children}
+      </main>
     </div>
   );
 }

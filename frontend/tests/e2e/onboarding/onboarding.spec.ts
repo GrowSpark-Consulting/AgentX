@@ -115,17 +115,64 @@ test("walks every step without overflow, and Back returns", async ({ page }) => 
   await expectNoHorizontalOverflow(page);
 });
 
-test("Connect with Facebook: pop-up steps, checks, then live", async ({ page }) => {
+/** The step says it is a preview before anything is clicked. */
+async function expectPreviewNotice(page: Page) {
+  const note = page.getByRole("note", { name: "Preview" });
+  await expect(note).toContainText("Preview: connecting a number isn’t switched on yet.");
+  await expect(note).toContainText("Nothing is sent to Meta and no number is connected.");
+}
+
+/** Whatever the preview showed, nothing claims a real connection, test send or Meta result. */
+async function expectNoConnectionClaim(page: Page) {
+  const body = page.locator("body");
+  await expect(body).not.toContainText(/\+91 [\d ]+ is connected/);
+  await expect(body).not.toContainText(/Test sent|Send a test message to my phone/);
+  await expect(body).not.toContainText(/9 of 12|In review|Not added/);
+}
+
+test("Connect with Facebook: a labelled preview that ends without connecting anything", async ({ page }) => {
   await openOnboarding(page);
   await walkTo(page, "WhatsApp");
+  await expectPreviewNotice(page);
   await next(page, "Continue with Facebook").click();
   const popup = page.getByRole("dialog");
+  // The preview window doesn't pose as facebook.com.
+  await expect(popup).toContainText("Preview · Meta’s WhatsApp setup window");
+  await expect(popup).not.toContainText("facebook.com");
   for (const cta of ["Continue", "Next", "Next", "Verify", "Finish"]) {
+    if (cta === "Verify") await expect(popup).toContainText("+91 98400 12345 · code sent");
     await popup.getByRole("button", { name: cta, exact: true }).click();
   }
   await expect(popup).toHaveCount(0);
   await advance(page, 700, 8);
   await expect(next(page, /^Continue$/)).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Preview finished" })).toContainText(
+    "Preview finished: +91 98400 12345 isn’t connected yet",
+  );
+  await expectNoConnectionClaim(page);
+  await expectNoHorizontalOverflow(page);
+
+  // The Live step never shows the number as live after a preview.
+  await next(page, /^Continue$/).click();
+  await next(page, "Go live").click();
+  await expect(page.getByText("Your number +91 98400 12345")).toBeVisible();
+  await expect(page.getByText("Not connected yet")).toBeVisible();
+});
+
+test("own Meta app: no token or secret fields, and no made-up ids to copy", async ({ page }) => {
+  await openOnboarding(page);
+  await walkTo(page, "WhatsApp");
+  await option(page, "Manual connection").click();
+  await expect(page.getByText("Not available yet. Our team shares it when connecting opens.")).toHaveCount(1);
+  await expect(page.getByText("3141592653589793")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Use my own Meta app" }).click();
+  await expect(page.getByText("access tokens and app secrets are never typed into this page")).toBeVisible();
+  await expect(page.locator("input[type=password]")).toHaveCount(0);
+  await expect(page.getByLabel(/access token|app secret/i)).toHaveCount(0);
+  await expect(page.getByText("Not available yet. Our team shares it when connecting opens.")).toHaveCount(2);
+  await expect(page.locator("body")).not.toContainText(/webhooks\/wa\/conn_|vt_9QX2/);
+  await expect(page.getByRole("button", { name: "Copy" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Check connection" })).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 });
 
@@ -143,6 +190,8 @@ test("manual partner access fails without IDs, then waits for “hi”", async (
   await advance(page, 700, 8);
   await next(page, "Prototype: “hi” received").click();
   await expect(next(page, /^Continue$/)).toBeVisible();
+  await expect(page.getByText("Preview finished: +91 98400 12345 isn’t connected yet")).toBeVisible();
+  await expectNoConnectionClaim(page);
 });
 
 test.describe("onboarding → dashboard", () => {

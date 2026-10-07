@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, type CSSProperties } from "react";
+import { Fragment, useEffect, useId, useRef, type CSSProperties } from "react";
 import { ErrorState, LoadingState } from "@/components/shared/states";
 import type { FormattedError } from "@/lib/errors";
 import {
@@ -19,6 +19,10 @@ import { MessageBubble } from "./message-bubble";
 // Read-only for now. Sending, switching AI/Human and templates are separate work (POST
 // /api/conversations/:id/messages and /mode), so those controls are shown switched off and say so.
 // Left out on purpose until their data exists: the suggested reply and the lead card.
+
+/** Why the AI / Human switch is off. Shown in the status strip under the header, which the switch's
+ *  buttons point to, so keyboard and screen-reader users get it as well as the mouse tooltip. */
+const SWITCH_NOTE = "Switching between AI and Human isn’t available yet.";
 
 export type ChatState =
   | { status: "loading" }
@@ -63,6 +67,7 @@ export function ChatView({
   onRetry: () => void;
 }) {
   const messagesRef = useRef<HTMLDivElement>(null);
+  const switchNoteId = useId();
   const messages = chat.status === "ready" ? chat.messages : null;
   const tag = conversationTag(conversation);
   const humanReplying = conversation.mode === "human" || conversation.mode === "external";
@@ -93,11 +98,11 @@ export function ChatView({
             {conversation.language ? ` · ${conversation.language}` : ""}
           </div>
         </div>
-        <div role="group" aria-label="Who replies" title="Switching between AI and Human isn't available yet" style={{ display: "flex", border: "2px solid var(--color-text)", flex: "none" }}>
-          <button type="button" disabled aria-pressed={conversation.mode === "ai"} style={segment(conversation.mode === "ai", "var(--color-text)", "var(--color-bg)")}>
+        <div role="group" aria-label="Who replies" aria-describedby={switchNoteId} title={SWITCH_NOTE} style={{ display: "flex", border: "2px solid var(--color-text)", flex: "none" }}>
+          <button type="button" disabled aria-pressed={conversation.mode === "ai"} aria-describedby={switchNoteId} style={segment(conversation.mode === "ai", "var(--color-text)", "var(--color-bg)")}>
             AI
           </button>
-          <button type="button" disabled aria-pressed={humanReplying} style={segment(humanReplying, "var(--color-accent)", "#fff")}>
+          <button type="button" disabled aria-pressed={humanReplying} aria-describedby={switchNoteId} style={segment(humanReplying, "var(--color-accent)", "#fff")}>
             Human
           </button>
         </div>
@@ -106,27 +111,30 @@ export function ChatView({
       {tag === "needs_human" ? (
         <div style={{ ...strip, background: "var(--color-accent-100)", color: "var(--color-accent-800)" }}>
           <span style={{ flex: "1", minWidth: "180px" }}>
-            <strong>Needs you:</strong> {handoffReason(conversation.openHandoffs[0]?.trigger)}.
+            <strong>Needs you:</strong> {handoffReason(conversation.openHandoffs[0]?.trigger)}.{" "}
+            <span id={switchNoteId}>{SWITCH_NOTE}</span>
           </span>
         </div>
       ) : null}
       {tag === "human" ? (
         <div style={{ ...strip, background: "var(--color-surface)" }}>
           <span style={{ flex: "1", minWidth: "180px" }}>
-            <strong>A team member is replying.</strong> The AI won’t message on this chat.
+            <strong>A team member is replying.</strong> The AI won’t message on this chat.{" "}
+            <span id={switchNoteId}>{SWITCH_NOTE}</span>
           </span>
         </div>
       ) : null}
       {tag === "external" ? (
         <div style={{ ...strip, background: "var(--color-surface)" }}>
           <span style={{ flex: "1", minWidth: "180px" }}>
-            <strong>A team member is replying from their own number.</strong> The AI won’t message on this chat.
+            <strong>A team member is replying from their own number.</strong> The AI won’t message on this chat.{" "}
+            <span id={switchNoteId}>{SWITCH_NOTE}</span>
           </span>
         </div>
       ) : null}
       {tag === "ai" ? (
         <div style={{ padding: "8px 14px", fontSize: "13px", color: "var(--color-neutral-700)", borderBottom: "1px solid var(--color-divider)", flex: "none" }}>
-          The AI is handling this chat.
+          The AI is handling this chat. <span id={switchNoteId}>{SWITCH_NOTE}</span>
         </div>
       ) : null}
 

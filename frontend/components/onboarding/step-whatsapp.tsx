@@ -42,6 +42,7 @@ export function StepWhatsApp({
   const list = CHECKS[kind];
 
   const copy = (item: CopyItem) => {
+    if (item.value === null) return;
     try {
       navigator.clipboard?.writeText(item.value);
     } catch {
@@ -55,52 +56,27 @@ export function StepWhatsApp({
       ? "Your phone with the WhatsApp Business app, to scan a QR code"
       : "The business phone, to receive a code";
 
-  const liveNote =
+  const previewNote =
     kind === "meta"
       ? s.coex === "yes"
-        ? "Connected with Facebook · the WhatsApp Business app keeps working"
-        : "Connected with Facebook"
-      : kind === "partner"
-        ? "Connected through partner access · you keep ownership"
-        : "Connected with your own Meta app";
+        ? "With Facebook, keeping the WhatsApp Business app working"
+        : "With Facebook"
+      : "Through partner access, so you keep ownership";
 
-  const metaList: {
-    t: string;
-    status: string;
-    note: string;
-    ok: boolean;
-  }[] = [
+  // What Meta asks for once a number is really connected. No statuses: nothing has been checked.
+  const metaList: { t: string; note: string }[] = [
     {
       t: "Display name “" + bizLabel(s) + "” approved",
-      status: kind === "meta" ? "Approved" : "In review",
-      note:
-        kind === "meta"
-          ? ""
-          : "Meta checks it matches your business. Usually a few hours.",
-      ok: kind === "meta",
+      note: "Meta checks it matches your business.",
     },
     {
       t: "Payment method added in Meta",
-      status: "Not added",
       note: "Needed before reminders and follow-ups can go out. Add a card in WhatsApp Manager → Payment settings.",
-      ok: false,
     },
     {
       t: "Message templates approved",
-      status: "9 of 12",
-      note: "The rest are in review. You can go live now.",
-      ok: false,
+      note: "Your assistant’s templates are sent to Meta for review after you connect.",
     },
-    ...(kind === "meta" && s.coex === "yes"
-      ? [
-          {
-            t: "WhatsApp Business app still works on your phone",
-            status: "Kept",
-            note: "",
-            ok: true,
-          },
-        ]
-      : []),
   ];
 
   return (
@@ -109,6 +85,18 @@ export function StepWhatsApp({
         Keep the number customers already use. Your assistant replies from it
         once it’s connected.
       </StepIntro>
+
+      <div
+        role="note"
+        aria-label="Preview"
+        className="border-2 border-dashed border-foreground px-4 py-3 text-sm flex flex-col gap-1"
+      >
+        <strong>Preview: connecting a number isn’t switched on yet.</strong>
+        <span className="text-neutral-700">
+          These steps show how it will work. Nothing is sent to Meta and no number is connected.
+          You can skip this step and connect later from your dashboard.
+        </span>
+      </div>
 
       {/* ── choose a method ── */}
       {idle && (
@@ -281,71 +269,14 @@ export function StepWhatsApp({
           )}
 
           {s.mMode === "own" && (
-            <p className="m-0 text-sm text-neutral-700">
-              For businesses and agencies running their own Meta app. Copy these from
-              your app’s WhatsApp → API setup page.
-            </p>
-          )}
-
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3.5">
-            <div>
-              <Label htmlFor="pk-waba">WhatsApp Business Account ID</Label>
-              <Input
-                id="pk-waba"
-                value={s.mWaba}
-                onChange={(e) => set({ mWaba: e.target.value })}
-                placeholder="234567890123456"
-                className="font-mono"
-              />
-            </div>
-            <div>
-              <Label htmlFor="pk-phone-id">Phone number ID</Label>
-              <Input
-                id="pk-phone-id"
-                value={s.mPhoneId}
-                onChange={(e) => set({ mPhoneId: e.target.value })}
-                placeholder="109876543210987"
-                className="font-mono"
-              />
-            </div>
-          </div>
-
-          {s.mMode === "own" && (
-            <>
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3.5">
-                <div>
-                  <Label htmlFor="pk-token">Permanent access token</Label>
-                  <Input
-                    id="pk-token"
-                    type="password"
-                    value={s.mToken}
-                    onChange={(e) => set({ mToken: e.target.value })}
-                    placeholder="EAAG…"
-                    className="font-mono"
-                  />
-                  <span className="text-xs text-neutral-700">
-                    System user token set to never expire
-                  </span>
-                </div>
-                <div>
-                  <Label htmlFor="pk-secret">App secret</Label>
-                  <Input
-                    id="pk-secret"
-                    type="password"
-                    value={s.mSecret}
-                    onChange={(e) => set({ mSecret: e.target.value })}
-                    placeholder="32 characters"
-                    className="font-mono"
-                  />
-                  <span className="text-xs text-neutral-700">
-                    Used to check that messages really come from Meta
-                  </span>
-                </div>
-              </div>
-
+            <div className="flex flex-col gap-3">
+              <p className="m-0 text-sm text-neutral-700">
+                For businesses and agencies running their own Meta app. Our team sets this
+                up with you: access tokens and app secrets are never typed into this page.
+              </p>
               <div className="bg-surface px-4 py-3.5 flex flex-col gap-2.5">
                 <div className="text-[13px] font-extrabold">
-                  In your Meta app → WhatsApp → Configuration, set the webhook to:
+                  You’ll point your Meta app’s webhook at Spark Agent:
                 </div>
                 {OWN_APP_COPY.map((item) => (
                   <CopyRow
@@ -355,24 +286,44 @@ export function StepWhatsApp({
                     onCopy={() => copy(item)}
                   />
                 ))}
-                <span className="text-xs text-neutral-700">
-                  Then subscribe to the <strong>messages</strong> field. This address is
-                  unique to your business.
-                </span>
               </div>
-            </>
+            </div>
           )}
 
-          <span className="text-xs text-neutral-700">
-            Tokens and secrets are encrypted and never shown again after you save.
-          </span>
-          <Button
-            variant="primary"
-            onClick={() => onRunChecks(s.mMode)}
-            className="self-start text-base px-[18px] py-3 min-w-[240px] justify-start"
-          >
-            Check connection
-          </Button>
+          {s.mMode === "partner" && (
+            <>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3.5">
+                <div>
+                  <Label htmlFor="pk-waba">WhatsApp Business Account ID</Label>
+                  <Input
+                    id="pk-waba"
+                    value={s.mWaba}
+                    onChange={(e) => set({ mWaba: e.target.value })}
+                    placeholder="234567890123456"
+                    className="font-mono"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="pk-phone-id">Phone number ID</Label>
+                  <Input
+                    id="pk-phone-id"
+                    value={s.mPhoneId}
+                    onChange={(e) => set({ mPhoneId: e.target.value })}
+                    placeholder="109876543210987"
+                    className="font-mono"
+                  />
+                </div>
+              </div>
+
+              <Button
+                variant="primary"
+                onClick={() => onRunChecks(s.mMode)}
+                className="self-start text-base px-[18px] py-3 min-w-[240px] justify-start"
+              >
+                Check connection
+              </Button>
+            </>
+          )}
         </>
       )}
 
@@ -380,7 +331,7 @@ export function StepWhatsApp({
       {s.wa === "checking" && (
         <>
           <RuleHeading>
-            {kind === "meta" ? "Finishing setup" : "Checking your connection"}
+            {kind === "meta" ? "Preview: finishing setup" : "Preview: checking your connection"}
           </RuleHeading>
           <div role="status" aria-live="polite" className="flex flex-col">
             {list.map((c, i) => {
@@ -445,47 +396,36 @@ export function StepWhatsApp({
         </>
       )}
 
-      {/* ── Connected ── */}
+      {/* ── End of the preview: nothing is connected ── */}
       {s.wa === "live" && (
         <>
-          <div className="border-2 border-foreground px-[18px] py-4 flex gap-3 items-center flex-wrap">
-            <span className="size-8 bg-whatsapp-green text-white grid place-items-center font-extrabold flex-none">
-              ✓
+          <div
+            role="status"
+            className="border-2 border-foreground px-[18px] py-4 flex gap-3 items-center flex-wrap"
+          >
+            <span
+              aria-hidden
+              className="size-8 border-2 border-foreground grid place-items-center font-extrabold flex-none"
+            >
+              i
             </span>
             <span className="flex-1 min-w-[200px]">
-              <strong className="block text-[17px]">+91 {s.phone} is connected</strong>
-              <span className="text-sm text-neutral-700">{liveNote}</span>
+              <strong className="block text-[17px]">
+                Preview finished: +91 {s.phone} isn’t connected yet
+              </strong>
+              <span className="text-sm text-neutral-700">
+                {previewNote}. When connecting is switched on, you’ll do this for real and
+                your dashboard’s WhatsApp page will show the number’s status.
+              </span>
             </span>
           </div>
 
-          <RuleHeading>Finish in Meta</RuleHeading>
+          <RuleHeading>After you connect, Meta will ask for</RuleHeading>
           <div className="flex flex-col">
             {metaList.map((c) => (
-              <CheckRow
-                key={c.t}
-                mark={c.ok ? "done" : "active"}
-                title={c.t}
-                note={c.note || undefined}
-                noteTone={c.ok ? "muted" : "alert"}
-                status={c.status}
-                statusTone={c.ok ? "strong" : "alert"}
-              />
+              <CheckRow key={c.t} mark="idle" title={c.t} note={c.note} noteTone="muted" status="" statusTone="muted" />
             ))}
           </div>
-
-          {!s.testSent ? (
-            <Button
-              variant="secondary"
-              onClick={() => set({ testSent: true })}
-              className="self-start"
-            >
-              Send a test message to my phone
-            </Button>
-          ) : (
-            <span className="text-sm font-semibold">
-              Test sent to +91 {s.phone}. Check your WhatsApp.
-            </span>
-          )}
         </>
       )}
     </>

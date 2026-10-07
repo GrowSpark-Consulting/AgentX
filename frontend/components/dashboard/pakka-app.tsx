@@ -175,7 +175,7 @@ class PakkaAppLogic extends DCLogic {
       themeClass:dark?'pk-dark':'pk-light',
       outerBg:phone?'var(--color-neutral-300)':'var(--color-bg)',outerPad:phone?'32px 16px':'0',
       appRef:this.appRef,msgsRef:this.msgsRef,
-      appW:phone?'390px':'100%',appH:phone?'844px':'100vh',appBorder:phone?'2px solid var(--color-text)':'0',appShadow:phone?'var(--shadow-lg)':'none',
+      appW:phone?'390px':'100%',appH:phone?'844px':'calc(100vh - var(--preview-banner-h, 0px))',appBorder:phone?'2px solid var(--color-text)':'0',appShadow:phone?'var(--shadow-lg)':'none',
       isDesktop,isMobile,planName,
       navItems:nav,tabItems,moreItems,moreOpen:s.more&&isMobile,closeMore:()=>this.setState({more:false}),
       showTabbar:isMobile&&!(s.screen==='inbox'&&s.mobileChat),
@@ -247,7 +247,7 @@ class PakkaAppLogic extends DCLogic {
 function renderPakkaApp($v: any) {
   return (
     <>
-      <div className={$v.themeClass} style={{ minHeight: "100vh", background: `${$v.outerBg ?? ""}`, color: "var(--color-text)", fontFamily: "var(--font-body)", display: "flex", justifyContent: "center", alignItems: "flex-start", padding: `${$v.outerPad ?? ""}` } as React.CSSProperties}>
+      <div className={$v.themeClass} style={{ minHeight: "calc(100vh - var(--preview-banner-h, 0px))", background: `${$v.outerBg ?? ""}`, color: "var(--color-text)", fontFamily: "var(--font-body)", display: "flex", justifyContent: "center", alignItems: "flex-start", padding: `${$v.outerPad ?? ""}` } as React.CSSProperties}>
         <div ref={$v.appRef} style={{ position: "relative", display: "flex", width: `${$v.appW ?? ""}`, height: `${$v.appH ?? ""}`, background: "var(--color-bg)", overflow: "hidden", border: `${$v.appBorder ?? ""}`, boxShadow: `${$v.appShadow ?? ""}` } as React.CSSProperties}>
           {$v.isDesktop ? (
             <>

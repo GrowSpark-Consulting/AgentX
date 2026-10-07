@@ -11,8 +11,9 @@ import { POPUP_QR_BODY, POPUP_STEPS } from "@/features/onboarding/data";
 import type { OnboardingState } from "@/features/onboarding/state";
 
 /**
- * Simulated Facebook “Embedded Signup” window. Five screens; closing it at
- * any point records which screen the user abandoned on.
+ * A preview of Meta’s Embedded Signup window, labelled as one. Five screens; closing it at any
+ * point records which screen the user abandoned on. The real window is opened by Facebook’s SDK
+ * (lib/whatsapp/facebook-sdk.ts) once the API can exchange its code.
  */
 export function MetaPopup({
   s,
@@ -45,7 +46,7 @@ export function MetaPopup({
         <div className="flex items-center gap-2 px-3 py-2 bg-meta-chrome border-b border-meta-line text-xs text-meta-muted">
           <span className="size-2.5 rounded-full bg-meta-dot" />
           <span className="flex-1 overflow-hidden whitespace-nowrap text-ellipsis">
-            facebook.com · WhatsApp setup for Spark Agent
+            Preview · Meta’s WhatsApp setup window
           </span>
           <button
             type="button"
@@ -82,7 +83,11 @@ export function MetaPopup({
               {P.options.map((label, i) => {
                 const first = i === 0;
                 const text =
-                  s.popStep === 1 && i === 0 ? s.biz || "Your business" : label;
+                  s.popStep === 1 && i === 0
+                    ? s.biz || "Your business"
+                    : s.popStep === 3 && i === 0
+                      ? "+91 " + s.phone + " · code sent"
+                      : label;
                 return (
                   <div
                     key={label}

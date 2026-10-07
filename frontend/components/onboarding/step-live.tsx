@@ -1,7 +1,6 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { ROUTES } from "@/features/onboarding/data";
 import { bizLabel, industryKey, trialCodeOf, type OnboardingState } from "@/features/onboarding/state";
 
@@ -9,12 +8,9 @@ export function StepLive({ s }: { s: OnboardingState }) {
   const K = industryKey(s);
   const dashHref =
     ROUTES.dashboard + (K !== "fix" && K !== "re" ? "?industry=" + K : "");
-  const numStatus =
-    s.wa === "live"
-      ? "Live"
-      : s.wa === "pending"
-        ? "Waiting for Meta approval"
-        : "Not connected yet";
+  // The WhatsApp step is a preview that connects nothing, so the number is never shown as live here.
+  // The dashboard's WhatsApp page shows the real status from whatsapp_connections_public.
+  const numStatus = "Not connected yet";
   // The real trial once it exists; the prototype's sample figures before that.
   const trialSummary = s.trial
     ? `${s.trial.trialDays} ${s.trial.trialDays === 1 ? "day" : "days"}` +
@@ -42,7 +38,7 @@ export function StepLive({ s }: { s: OnboardingState }) {
         </div>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-3 border-b border-divider text-[15px]">
           <span>Your number +91 {s.phone}</span>
-          <strong className={cn(s.wa === "live" ? "text-foreground" : "text-brand-700")}>
+          <strong className="text-brand-700">
             {numStatus}
           </strong>
         </div>

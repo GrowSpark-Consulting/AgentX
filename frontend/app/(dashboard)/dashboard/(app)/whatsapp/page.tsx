@@ -12,7 +12,7 @@ export default async function WhatsAppPage() {
   if (view.kind === "no_business") {
     return <NoBusinessPage eyebrow="WhatsApp" title="WhatsApp connection" detail="there's no WhatsApp connection to show" />;
   }
-  const { tenant } = view.context;
+  const { tenant, role } = view.context;
   return (
     <div className="app-page">
       <div>
@@ -21,7 +21,7 @@ export default async function WhatsAppPage() {
         <p className="app-lede">The number your assistant replies from, and how Meta rates it.</p>
       </div>
       <Suspense fallback={<LoadingState title="Checking your WhatsApp connection" />}>
-        <WhatsAppConnectionPanel tenantId={tenant.id} />
+        <WhatsAppConnectionPanel tenantId={tenant.id} role={role} />
       </Suspense>
     </div>
   );
