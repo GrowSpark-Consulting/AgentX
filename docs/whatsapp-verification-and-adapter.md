@@ -11,20 +11,20 @@ Related: [whatsapp-webhook-parser.md](whatsapp-webhook-parser.md) · [encryption
 Meta checks a callback URL with `GET /api/webhooks/whatsapp?hub.mode=...&hub.verify_token=...&hub.challenge=...`.
 If the mode is `subscribe` and the token is ours, we answer **200 with the challenge as plain text** and nothing
 else. Every other case is **403 with an empty body**. The code is
-`backend/src/channels/whatsapp/verify-challenge.ts`; the route file
-`frontend/app/api/webhooks/whatsapp/route.ts` is thin and only exports `GET`.
+`backend/src/channels/whatsapp/verify-challenge.ts`; the API service serves it at
+`/api/webhooks/whatsapp` (`backend/src/server/routes.ts`), `GET` only: other methods get a 405.
 
 ## 1.2 The token and the setup
 
 | | |
 |---|---|
 | Variable | `META_WEBHOOK_VERIFY_TOKEN`, one platform-wide value for our Meta app, read through `serverEnv()` |
-| Staging callback URL | `https://api-staging.pakkaagent.in/webhooks/whatsapp` |
-| Vercel (Preview env) | **Dev 2** owns the Vercel environment ([environments.md](environments.md)) and sets `META_WEBHOOK_VERIFY_TOKEN` there |
+| Staging callback URL | `https://<staging API host>/api/webhooks/whatsapp`: the Railway domain, or `https://api-staging.pakkaagent.in/api/webhooks/whatsapp` once that DNS points at Railway |
+| Railway (staging env) | **Dev 2** owns the Railway environment ([environments.md](environments.md)) and sets `META_WEBHOOK_VERIFY_TOKEN` there |
 | Meta app and DNS | **Raja** sets the webhook callback URL and the same verify token in the Meta app, and adds the DNS (his Day 1 list) |
 
-The staging URL comes from [environments.md](environments.md). **Both setups must happen before Meta can verify
-the callback**, and neither is confirmed yet. The values must match: the token in Vercel and the token in the
+The API host comes from [environments.md](environments.md). **Both setups must happen before Meta can verify
+the callback**, and neither is confirmed yet. The values must match: the token in Railway and the token in the
 Meta app. **Do not subscribe the app to the `messages` field until the POST route is merged**, or Meta's
 deliveries will get errors. The callback check only needs the GET.
 
@@ -124,16 +124,16 @@ shapes (`messages[0].id`, `{"success": true}`), and the error codes in the table
 
 | | Do |
 |---|---|
-| Dev 1 | The `MessageSender` wrapper, `sendTemplate`, the connection loader, `registerSender` at startup, and marking a connection `failed` on an expired token. The POST webhook route. |
-| Dev 2 | Answer the two open questions above, then wire the registered factory into `notify.send`. Set `META_WEBHOOK_VERIFY_TOKEN` in the Vercel Preview environment (it must match the token Raja enters in the Meta app). |
+| Dev 1 | The `MessageSender` wrapper, `sendTemplate`, the connection loader, `registerSender` at startup, and marking a connection `failed` on an expired token. The POST webhook handler, added as `POST` on `/api/webhooks/whatsapp` in `backend/src/server/routes.ts` (the request's raw body is available for the signature check). |
+| Dev 2 | Answer the two open questions above, then wire the registered factory into `notify.send`. Set `META_WEBHOOK_VERIFY_TOKEN` in the Railway staging environment (it must match the token Raja enters in the Meta app). |
 | Dev 3 | Nothing in the UI depends on this yet. Screens may later see `outside_window`, `rate_limited`, `whatsapp_not_connected`, `validation_failed` and `upstream_failed`, but until question 1 is settled `notify.send` still answers a generic `upstream_failed`. |
-| Raja | Set the webhook callback URL and the verify token in the Meta app, add the staging DNS, and decide the `manual_byo` verify-token question. Both his setup and Dev 2's Vercel variable are needed before Meta can verify the callback. |
+| Raja | Set the webhook callback URL and the verify token in the Meta app, add the staging DNS, and decide the `manual_byo` verify-token question. Both his setup and Dev 2's Railway variable are needed before Meta can verify the callback. |
 
 # Status
 
 Done: the webhook GET verification and the adapter with `sendText` and `markRead`. Tests:
 `verify-challenge.test.ts` (right and wrong mode, token and challenge, empty or missing token, different token
-lengths, the log line, no token in any response), the route test `frontend/app/api/webhooks/whatsapp/route.test.ts`
-(only `GET` is exported; 200 and 403), `adapter.test.ts` (exact request, token handling, errors, timeouts,
+lengths, the log line, no token in any response), the route test `backend/src/server/webhook.test.ts`
+(GET only, POST 405; 200 and 403; no CORS headers), `adapter.test.ts` (exact request, token handling, errors, timeouts,
 validation, `markRead`) and `meta-errors.test.ts` (the mapping table). **Next:** the `MessageSender` wrapper and `sendTemplate`, then the connection loader and
 `registerSender`; the POST webhook route after that.

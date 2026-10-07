@@ -37,6 +37,27 @@ export async function signIn(page: Page, email: string, next?: string) {
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
+/**
+ * The signed-in user's access token, read from the Supabase session cookie the way the browser client
+ * reads it (possibly split into .0, .1… chunks, base64url with a "base64-" prefix). For calling the API
+ * directly, as the app's lib/api/client.ts does.
+ */
+export async function accessToken(page: Page): Promise<string> {
+  const chunks = (await page.context().cookies())
+    .filter((c) => /^sb-.+-auth-token(\.\d+)?$/.test(c.name))
+    .sort((a, b) => Number(a.name.split(".")[1] ?? -1) - Number(b.name.split(".")[1] ?? -1));
+  let raw = chunks.map((c) => c.value).join("");
+  if (raw.startsWith("base64-")) raw = Buffer.from(raw.slice("base64-".length), "base64url").toString();
+  const token = (JSON.parse(raw) as { access_token?: string }).access_token;
+  if (!token) throw new Error("no Supabase session cookie: sign in first");
+  return token;
+}
+
+/** Headers for an API call as the signed-in user. */
+export async function asUser(page: Page): Promise<Record<string, string>> {
+  return { authorization: `Bearer ${await accessToken(page)}` };
+}
+
 /** Mock Supabase (tests/e2e/support/mock-supabase.mjs), for reading the emails it "sends". */
 export const MOCK_SUPABASE_URL = "http://127.0.0.1:54399";
 

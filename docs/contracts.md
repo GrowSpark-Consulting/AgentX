@@ -233,6 +233,15 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 input with Zod, resolves the tenant from the session (the browser never sends `tenantId`), checks
 membership and role, and returns `{ error: { code, message, fields? } }`.
 
+**Where routes run (changed in `feat/backend-railway-split`):** the API service on Railway
+(`backend/src/server/routes.ts`), at `${NEXT_PUBLIC_API_URL}/api/...`; paths and shapes are unchanged.
+The browser authenticates with `Authorization: Bearer <Supabase access token>` instead of the session
+cookie, and in the dashboard names the business with `X-Pakka-Tenant`, which the API honours only for
+one of the caller's own memberships (the same rule as the `pakka_tenant` cookie). Browser calls come
+from allowed origins only (CORS). New route: `POST /api/onboarding/trial` `{ name, industry }` →
+`StartTrialResult` (`@pakka/types`), with status 200 `ready`, 409 `has_business`, 422 `invalid` or
+`unavailable`, 500 `failed`; 401 envelope when signed out. It replaces the onboarding server action.
+
 **Error codes.** The list is `ERROR_CODES` in `packages/types/src/errors.ts`; the HTTP statuses are in
 `backend/src/lib/errors.ts`.
 

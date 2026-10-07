@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "pnpm --filter @pakka/frontend dev",
+    "dev": "pnpm --parallel --filter @pakka/frontend --filter @pakka/backend dev",
     "build": "pnpm --filter @pakka/frontend build",
     "start": "pnpm --filter @pakka/frontend start",
     "lint": "pnpm -r lint",
@@ -11,7 +11,7 @@
     "test": "pnpm -r test",
     "test:watch": "pnpm -r --parallel test:watch",
     "test:e2e": "pnpm --filter @pakka/frontend test:e2e",
-    "inngest:dev": "inngest-cli dev -u http://localhost:3000/api/inngest --no-discovery",
+    "inngest:dev": "inngest-cli dev -u http://localhost:4000/api/inngest --no-discovery",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",

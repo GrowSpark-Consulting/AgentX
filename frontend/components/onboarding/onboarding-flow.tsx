@@ -14,7 +14,7 @@ import {
   type OnboardingState,
   type Patch,
 } from "@/features/onboarding/state";
-import { startTrial } from "@/lib/onboarding/actions";
+import { startTrial } from "@/lib/onboarding/trial";
 import { StepVerifyPhone } from "@/components/onboarding/step-verify-phone";
 import { StepBusiness } from "@/components/onboarding/step-business";
 import { StepTeach } from "@/components/onboarding/step-teach";
@@ -99,7 +99,7 @@ export function OnboardingFlow() {
   const cancelPopup = () =>
     set((x) => ({ popup: false, cancelStep: POPUP_STEPS[x.popStep].title }));
 
-  /* ── Business step: the server creates the trial business (or finds the account's business) ── */
+  /* ── Business step: the API creates the trial business (or finds the account's business) ── */
   const [savingBusiness, startSavingBusiness] = React.useTransition();
   const submitBusiness = () => {
     startSavingBusiness(async () => {

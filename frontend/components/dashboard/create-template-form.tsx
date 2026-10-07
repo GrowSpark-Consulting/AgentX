@@ -12,7 +12,8 @@ import {
 } from "@pakka/types";
 import { useRef, useState, type FormEvent } from "react";
 import { EmptyState, ErrorState, LoadingState } from "@/components/shared/states";
-import { formatError, postJson, type FormattedError } from "@/lib/errors";
+import { postJson } from "@/lib/api/client";
+import { formatError, type FormattedError } from "@/lib/errors";
 import { useTenant } from "./tenant-context";
 
 type Status =
@@ -66,7 +67,7 @@ function buttonErrors(b: ButtonDraft): Record<string, string> {
 }
 
 export function CreateTemplateForm() {
-  const { role } = useTenant();
+  const { role, tenant } = useTenant();
   const canCreate = role === "owner" || role === "admin";
   const [name, setName] = useState("");
   const [category, setCategory] = useState<Category>("utility");
@@ -144,7 +145,7 @@ export function CreateTemplateForm() {
     setFields({});
     setStatus({ kind: "submitting" });
     try {
-      const result = await postJson<CreateTemplateResult>("/api/templates", parsed.data);
+      const result = await postJson<CreateTemplateResult>("/api/templates", parsed.data, { tenantId: tenant.id });
       setStatus({ kind: "submitted", result });
     } catch (err) {
       const error = formatError(err);

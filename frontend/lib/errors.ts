@@ -115,29 +115,19 @@ export function formatError(err: unknown): FormattedError {
   return GENERIC;
 }
 
+/** An ApiError from a failed response's status and parsed body (falls back to a generic error body). */
+export function apiErrorFromBody(status: number, json: unknown): ApiError {
+  const parsed = ApiErrorBody.safeParse(json);
+  return new ApiError(status, parsed.success ? parsed.data : { error: { code: "internal", message: GENERIC.message } });
+}
+
 /** Parses a failed API response into an ApiError (falls back to a generic error body). */
 export async function apiErrorFrom(res: Response): Promise<ApiError> {
   let json: unknown = null;
   try {
     json = await res.json();
   } catch {
-    // Not JSON (proxy error page, network middlebox): use the generic body below.
+    // Not JSON (proxy error page, network middlebox): use the generic body.
   }
-  const parsed = ApiErrorBody.safeParse(json);
-  return new ApiError(
-    res.status,
-    parsed.success ? parsed.data : { error: { code: "internal", message: GENERIC.message } },
-  );
-}
-
-/** POSTs JSON to one of our API routes; throws ApiError on an error response. */
-export async function postJson<T>(url: string, body: unknown, init?: { signal?: AbortSignal }): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal: init?.signal,
-  });
-  if (!res.ok) throw await apiErrorFrom(res);
-  return (await res.json()) as T;
+  return apiErrorFromBody(res.status, json);
 }

@@ -1,12 +1,16 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // Dashboard and onboarding smoke tests run against a production build (`next build && next start`),
-// the same output users get. Supabase is replaced by tests/e2e/support/mock-supabase.mjs, which
-// speaks the real Auth and PostgREST protocols, so login, sessions and tenant resolution run through
-// the app's real code. Set PLAYWRIGHT_BASE_URL to test an already running server instead.
+// the same output users get, and the API (backend/) the browser calls. Supabase is replaced by
+// tests/e2e/support/mock-supabase.mjs, which speaks the real Auth and PostgREST protocols, so login,
+// sessions, bearer-token checks and tenant resolution run through the real code on both sides. Set
+// PLAYWRIGHT_BASE_URL (and PLAYWRIGHT_API_URL) to test already running servers instead.
 const PORT = 3100;
 const MOCK_PORT = 54399;
+const API_PORT = 4100;
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${PORT}`;
+/** The API, as the browser reaches it (NEXT_PUBLIC_API_URL in the build below). */
+export const API_URL = process.env.PLAYWRIGHT_API_URL ?? `http://127.0.0.1:${API_PORT}`;
 /**
  * The main server runs with DEV_DASHBOARD_WITHOUT_TENANT=true (the development dashboard for an
  * account with no business). A second `next start` of the same build, with the flag off, keeps the
@@ -17,13 +21,21 @@ export const FLAG_OFF_URL = process.env.PLAYWRIGHT_BASE_URL ? undefined : `http:
 
 /** Placeholder service-role key: the mock accepts it for create_trial_tenant and credit_balance only. */
 const SERVICE_ROLE_KEY = "e2e-service-role-key";
-// Server env shared by both app servers. Placeholder server secrets keep serverEnv() valid without a
-// .env.local and stop the tests from ever using real ones; they only ever reach the mock.
-const appEnv = {
+const supabaseEnv = {
   NEXT_PUBLIC_SUPABASE_URL: `http://127.0.0.1:${MOCK_PORT}`,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: "e2e-anon-key",
-  NEXT_PUBLIC_APP_URL: `http://localhost:${PORT}`,
+};
+// Env shared by both app servers: public values only, like Vercel.
+const appEnv = { ...supabaseEnv, NEXT_PUBLIC_API_URL: API_URL };
+// The API's env. Placeholder server secrets keep serverEnv() valid without a .env.local and stop the
+// tests from ever using real ones; they only ever reach the mock. Both app servers may call it.
+const apiEnv = {
+  ...supabaseEnv,
   SUPABASE_SERVICE_ROLE_KEY: SERVICE_ROLE_KEY,
+  PORT: String(API_PORT),
+  HOST: "127.0.0.1",
+  NEXT_PUBLIC_APP_URL: `http://localhost:${PORT}`,
+  CORS_ALLOWED_ORIGINS: `http://localhost:${FLAG_OFF_PORT}`,
 };
 /** Signed in as owner@test.local; written by auth.setup.ts. */
 export const OWNER_STATE = "tests/e2e/.auth/owner.json";
@@ -57,6 +69,12 @@ export default defineConfig({
           url: `http://127.0.0.1:${MOCK_PORT}/health`,
           reuseExistingServer: false,
           env: { MOCK_SUPABASE_PORT: String(MOCK_PORT), MOCK_SERVICE_ROLE_KEY: SERVICE_ROLE_KEY },
+        },
+        {
+          command: "pnpm --filter @pakka/backend start",
+          url: `${API_URL}/api/health`,
+          reuseExistingServer: false,
+          env: apiEnv,
         },
         {
           // Always a fresh build: NEXT_PUBLIC_* values are compiled in, and they must point at the mock.

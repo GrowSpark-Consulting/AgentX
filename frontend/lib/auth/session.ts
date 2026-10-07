@@ -1,4 +1,3 @@
-import { AppError } from "@pakka/backend/lib/errors";
 import { resolveTenant, type TenantResolution } from "@pakka/backend/lib/tenant";
 import type { TenantContext } from "@pakka/types";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
@@ -9,8 +8,9 @@ import { destinationForUser } from "@/lib/auth/destination";
 import { dashboardWithoutTenant } from "@/lib/dev-mode";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-// Data access layer for the signed-in user (server only). Everything that needs "who is this and
-// which business" goes through here, so the check is the same for pages, layouts and API routes.
+// Data access layer for the signed-in user (server only). Everything rendered on the server that needs
+// "who is this and which business" goes through here. The API (backend/src/server/auth.ts) makes the
+// same check with the same resolveTenant for the bearer token the browser sends it.
 
 /** Holds the business the user picked when they belong to several; validated on every read. */
 export const TENANT_COOKIE = "pakka_tenant";
@@ -71,14 +71,4 @@ export async function requireDashboardView(): Promise<DashboardView> {
     return { kind: "no_business", user: { id: user.id, email: user.email ?? null } };
   }
   redirect("/dashboard");
-}
-
-/** For API routes: the caller's client and tenant, or an AppError the route turns into a response. */
-export async function requireApiTenant(): Promise<{ supabase: SupabaseClient; context: TenantContext }> {
-  const { supabase } = await getAuth();
-  const state = await getSessionState();
-  if (state.status === "signed_out") throw new AppError("unauthenticated", "Your session has ended. Sign in again.");
-  if (state.status === "no_membership") throw new AppError("no_membership", "Your account isn't linked to a business yet.");
-  if (state.status === "choose") throw new AppError("forbidden", "Choose a business first.");
-  return { supabase, context: state.context };
 }

@@ -11,6 +11,8 @@ allowBuilds:
   inngest-cli: true
   # pulled in by inngest's telemetry deps; its postinstall is only a version check
   protobufjs: false
+  # tsx's compiler; its platform binary comes as an optional dependency, the postinstall only optimizes lookup
+  esbuild: false
 
 packageExtensions:
   # eslint-config-next loads next's bundled Babel parser but doesn't declare `next`. Declaring it as
