@@ -28,6 +28,7 @@ const T = {
   realty: tenant("10000000-0000-0000-0000-000000000001", "Test Realty", "real-estate"),
   salon: tenant("10000000-0000-0000-0000-000000000002", "Beta Salon", "salon"),
   interiors: tenant("10000000-0000-0000-0000-000000000003", "Bright Interiors", "interiors"),
+  inbox: tenant("10000000-0000-0000-0000-000000000004", "Inbox Realty", "real-estate"),
 };
 const connection = (tenantId, status) => ({
   id: "30000000-0000-0000-0000-000000000001", tenant_id: tenantId, method: "embedded_signup", waba_id: "102938475610",
@@ -48,7 +49,60 @@ const USERS = {
   "multi@test.local": { memberships: [[T.realty, "owner"], [T.salon, "admin"]], view: MISSING_VIEW },
   "pending@test.local": { memberships: [[T.interiors, "owner"]], view: { status: 200, body: [connection(T.interiors.id, "pending")] } },
   "failed@test.local": { memberships: [[T.interiors, "owner"]], view: { status: 200, body: [connection(T.interiors.id, "failed")] } },
+  // Inbox: inbox@ has chats (INBOX below); owner@ has none; inboxerror@'s conversation reads return bad rows.
+  "inbox@test.local": { memberships: [[T.inbox, "owner"]], view: { status: 200, body: [] } },
+  "inboxerror@test.local": { memberships: [[T.realty, "owner"]], view: { status: 200, body: [] }, inboxError: true },
 };
+
+// Inbox rows for T.inbox (conversations, contacts, handoffs, messages), with times relative to when the
+// mock started so the 24-hour window is open or closed as described. Read-only: every project reads
+// the same data in parallel.
+const STARTED = Date.now();
+const ago = (minutes) => new Date(STARTED - minutes * 60_000).toISOString();
+const cid = (n) => `40000000-0000-0000-0000-00000000000${n}`;
+const mid = (n) => `41000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+const INBOX = {
+  conversations: [
+    // Needs human: open handoff, window open.
+    { id: cid(1), tenant_id: T.inbox.id, mode: "ai", status: "open", last_customer_msg_at: ago(20), created_at: ago(30),
+      contacts: { name: "Karthik R", phone: "+919812345621", language: "ta" },
+      handoffs: [{ id: "42000000-0000-0000-0000-000000000001", trigger: "asked_human", resolved_at: null }] },
+    // AI handling, window open.
+    { id: cid(2), tenant_id: T.inbox.id, mode: "ai", status: "open", last_customer_msg_at: ago(121), created_at: ago(125),
+      contacts: { name: "Priya S", phone: "+919900000037", language: "en" }, handoffs: [] },
+    // A team member replying, window closed (customer wrote 3 days ago); its handoff is resolved.
+    { id: cid(3), tenant_id: T.inbox.id, mode: "human", status: "open", last_customer_msg_at: ago(3 * 24 * 60), created_at: ago(3 * 24 * 60 + 10),
+      contacts: { name: "Lakshmi V", phone: "+919400000008", language: "ta" },
+      handoffs: [{ id: "42000000-0000-0000-0000-000000000003", trigger: "complaint", resolved_at: ago(3 * 24 * 60) }] },
+    // Own-number takeover, no name, no messages yet.
+    { id: cid(4), tenant_id: T.inbox.id, mode: "external", status: "open", last_customer_msg_at: null, created_at: ago(4 * 24 * 60),
+      contacts: { name: null, phone: "+919000000052", language: null }, handoffs: [] },
+  ],
+  messages: [
+    [1, cid(1), "in", "customer", "Velachery la 3BHK irukka? Ready to move venum", ago(25)],
+    [2, cid(1), "out", "ai", "Vanakkam Karthik! Yes, ready-to-move 3BHKs are available. What budget are you looking at?", ago(24)],
+    [3, cid(1), "out", "system", "Handed to team · asked for a person", ago(21)],
+    [4, cid(1), "in", "customer", "Can I talk to someone about the price?", ago(20)],
+    [5, cid(2), "in", "customer", "Hi, OMR 2BHK price enna?", ago(121)],
+    [6, cid(2), "out", "ai", "Hi Priya! 2BHKs on OMR start from ₹62 L.", ago(120)],
+    [7, cid(3), "in", "customer", "Visit ku varen, parking iruka?", ago(3 * 24 * 60)],
+    [8, cid(3), "out", "staff", "Yes ma’am, visitor parking is at the site office.", ago(3 * 24 * 60 - 5)],
+  ].map(([n, conversation_id, direction, sender, body, created_at]) => ({
+    id: mid(n), tenant_id: T.inbox.id, conversation_id, direction, sender, body, media: null, template_name: null,
+    delivery_status: null, created_at,
+  })),
+};
+
+/** A conversations row as the inbox's select returns it: open handoffs, newest non-system message. */
+const inboxListRow = ({ handoffs, ...c }) => ({
+  ...c,
+  handoffs: handoffs.filter((h) => h.resolved_at === null).map(({ id, trigger }) => ({ id, trigger })),
+  messages: INBOX.messages
+    .filter((m) => m.conversation_id === c.id && m.sender !== "system")
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, 1)
+    .map(({ id, sender, body, media, template_name, created_at }) => ({ id, sender, body, media, template_name, created_at })),
+});
 const idOf = (email) => `00000000-0000-0000-0000-${String(Object.keys(USERS).indexOf(email) + 1).padStart(12, "0")}`;
 const userJson = (email) => ({ id: idOf(email), aud: "authenticated", role: "authenticated", email, app_metadata: { provider: USERS[email]?.provider ?? "email" }, user_metadata: {}, identities: [{ provider: USERS[email]?.provider ?? "email" }], created_at: "2026-10-01T00:00:00Z" });
 
@@ -151,8 +205,10 @@ function emailFromToken(auth) {
   }
 }
 
+// The inbox reads Supabase from the browser (another origin), so answers carry CORS headers like the
+// real API's.
 function send(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json" });
+  res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*" });
   res.end(body === undefined ? "" : JSON.stringify(body));
 }
 const readBody = (req) => new Promise((resolve) => { let s = ""; req.on("data", (d) => (s += d)); req.on("end", () => { try { resolve(JSON.parse(s || "{}")); } catch { resolve({}); } }); });
@@ -161,6 +217,15 @@ createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const path = url.pathname;
   if (path === "/health") return send(res, 200, { ok: true });
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
+      "access-control-allow-headers": req.headers["access-control-request-headers"] ?? "*",
+    });
+    res.end();
+    return;
+  }
 
   if (path === "/auth/v1/token") {
     const body = await readBody(req);
@@ -294,6 +359,21 @@ ${choose("Cancel", "cancel=1")}
       const view = USERS[email].view;
       if (view.delay) await new Promise((r) => setTimeout(r, view.delay));
       return send(res, view.status, view.body);
+    }
+    if (table === "conversations" || table === "messages") {
+      if (!email) return send(res, 200, []);
+      // Rows the app can't parse (a 500 would also log a browser console error, which the suite forbids).
+      if (USERS[email].inboxError) return send(res, 200, [{ id: "not-a-conversation", internal: "boom" }]);
+      // RLS: only the user's own businesses; then the query's own filters.
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const eq = (column) => url.searchParams.get(column)?.replace(/^eq\./, "") ?? null;
+      const rows = (table === "conversations" ? INBOX.conversations : INBOX.messages).filter(
+        (r) => own.has(r.tenant_id) && (!eq("tenant_id") || r.tenant_id === eq("tenant_id")) &&
+          (!eq("conversation_id") || r.conversation_id === eq("conversation_id")),
+      );
+      return table === "conversations"
+        ? send(res, 200, rows.map(inboxListRow))
+        : send(res, 200, [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at)));
     }
     return send(res, 404, { code: "PGRST205", details: null, hint: null, message: `Could not find the table 'public.${table}' in the schema cache` });
   }
