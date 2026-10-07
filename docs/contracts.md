@@ -253,8 +253,9 @@ membership and role, and returns `{ error: { code, message, fields? } }`.
 - `POST /api/messages/test` `{ to, body }` → `{ providerMsgId, status: "accepted" }`; owner or admin.
 - `POST /api/templates` `{ name, category, language, body, examples, header?, footer?, buttons?, connectionId? }`
   → `{ id, name, language, status: "pending" | "draft" }`; owner or admin.
-- `notify.send` and `whatsapp_templates` exist. The test route sends through `notify.send` once it
-  is wired (next Dev 2 PR); both routes answer `not_available` until Dev 1's adapter is registered.
+- The test route sends through `notify.send`: `outside_window` (409) when the number has not
+  messaged in 24 hours, `conflict` (409) when it opted out, and `notify.send`'s own codes otherwise.
+  Both routes answer `not_available` until Dev 1's adapter is registered.
 
 **Read routes (Proposed, screen-contracts Q1).** Entitlements and balances are computed on the
 server, so these are routes, not SQL views:
