@@ -342,6 +342,21 @@ describe("routing", () => {
     expect(db.state.contacts.filter((c) => c.phone === "+910000000101").map((c) => c.tenantId).sort()).toEqual([TENANT_A, TENANT_B]);
   });
 
+  it.each(["platform", "assisted"])("serves a %s connection: it is signed with our own app secret", async (method) => {
+    db.state.connections = [connection({ method })];
+    expect((await post(fixture("synthetic-text-message"))).status).toBe(200);
+    expect(db.state.messages).toHaveLength(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a connection with a method it does not know as unknown, so a new method is never trusted by default", async () => {
+    db.state.connections = [connection({ method: "some_future_method" })];
+    expect((await post(fixture("synthetic-text-message"))).status).toBe(200);
+    expect(db.state.messages).toEqual([]);
+    expect(send).not.toHaveBeenCalled();
+    expect(allLogs()).toMatch(/unknown=1/);
+  });
+
   it("treats a manual_byo connection as unknown: 200, nothing stored", async () => {
     db.state.connections = [connection({ method: "manual_byo" })];
     expect((await post(fixture("synthetic-text-message"))).status).toBe(200);

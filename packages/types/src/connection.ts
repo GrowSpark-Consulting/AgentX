@@ -3,7 +3,8 @@ import { z } from "zod";
 // Browser-safe shapes only. The secret-bearing whatsapp_connections row type (token_enc,
 // app_secret_enc) lives in backend and must never be imported by the frontend.
 
-export const ConnectionMethod = z.enum(["embedded_signup", "assisted", "manual_byo"]);
+// `platform`: our own test and demo numbers, in our own Meta app (seeded by script, never self-serve).
+export const ConnectionMethod = z.enum(["embedded_signup", "assisted", "manual_byo", "platform"]);
 export type ConnectionMethod = z.infer<typeof ConnectionMethod>;
 
 export const TokenType = z.enum(["business", "system_user"]);

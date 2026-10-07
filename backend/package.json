@@ -11,7 +11,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed:connection": "tsx --env-file-if-exists=.env.local src/scripts/seed-connection.ts"
   },
   "dependencies": {
     "@pakka/types": "workspace:*",

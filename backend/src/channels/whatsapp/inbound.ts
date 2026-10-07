@@ -14,11 +14,13 @@ import { verifySignature } from "./signature";
 // Meta retries; the dedupe makes the retry safe. Logs hold counts only: no numbers, names, text, message
 // ids or secrets, and no database error text (it can contain values).
 //
-// Only META_APP_SECRET is verified here, so only connections that use our Meta app are served. A
-// manual_byo connection signs with the client's own app secret and is treated as an unknown number until
-// that verification exists.
+// Only META_APP_SECRET is verified here, so only connections that use our Meta app are served: the
+// methods listed below. A manual_byo connection signs with the client's own app secret, and a method
+// we have not listed is not trusted by default; both are treated as an unknown number.
 
 const SIGNATURE_FORMAT = /^sha256=[0-9a-fA-F]{64}$/;
+/** Connection methods whose webhooks come from our own Meta app, signed with META_APP_SECRET. */
+const PLATFORM_SIGNED = new Set(["embedded_signup", "assisted", "platform"]);
 const TAG = "[whatsapp-webhook]";
 
 const unauthenticated = () => new AppError("unauthenticated", "The request could not be verified.");
@@ -82,10 +84,10 @@ export async function handleWhatsAppWebhook(request: Request): Promise<Response>
     fail(err);
   }
 
-  // Which connection may act on an item: ours (not manual_byo), for this account, and active.
+  // Which connection may act on an item: signed by our app, for this account, and active.
   const connectionFor = (item: { phoneNumberId: string; wabaId: string }): ConnectionRow | null => {
     const connection = connections.get(item.phoneNumberId);
-    if (!connection || connection.method === "manual_byo" || connection.wabaId !== item.wabaId) {
+    if (!connection || !PLATFORM_SIGNED.has(connection.method) || connection.wabaId !== item.wabaId) {
       counts.unknown++;
       return null;
     }
