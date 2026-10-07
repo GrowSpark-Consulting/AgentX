@@ -3,6 +3,7 @@ import { createClient, isAuthRetryableFetchError, type SupabaseClient, type User
 import { serverEnv } from "../lib/env";
 import { AppError, toErrorResponse } from "../lib/errors";
 import { resolveTenant } from "../lib/tenant";
+import type { RouteParams } from "./routes";
 
 // Who is calling. The browser sends the signed-in user's Supabase access token as
 // `Authorization: Bearer <token>` and, in the dashboard, the business it is working on as
@@ -74,18 +75,28 @@ export async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-type TenantHandler<T> = (args: { supabase: SupabaseClient; context: TenantContext; body: unknown }) => Promise<T>;
+type TenantHandler<T> = (args: {
+  supabase: SupabaseClient;
+  context: TenantContext;
+  body: unknown;
+  params: RouteParams;
+}) => Promise<T>;
+
+const JSON_BODY_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
 /**
- * Wraps a JSON POST route: verifies the token and resolves the tenant on the server, parses the body,
- * runs the backend service, and turns any error into the `{ error: { code, message } }` envelope.
+ * Wraps a JSON route: verifies the token and resolves the tenant on the server, parses the body
+ * (POST, PUT and PATCH only), runs the backend service, and turns any error into the
+ * `{ error: { code, message } }` envelope. The result is sent with `status` (default 200); a
+ * service that returns nothing answers 204.
  */
-export function tenantRoute<T>(handler: TenantHandler<T>) {
-  return async (request: Request, makeClient: UserClientFactory = userClient): Promise<Response> => {
+export function tenantRoute<T>(handler: TenantHandler<T>, options: { status?: number } = {}) {
+  return async (request: Request, makeClient: UserClientFactory = userClient, params: RouteParams = {}): Promise<Response> => {
     try {
       const { supabase, context } = await requireTenant(request, makeClient);
-      const body = await readJson(request);
-      return Response.json(await handler({ supabase, context, body }));
+      const body = JSON_BODY_METHODS.has(request.method) ? await readJson(request) : undefined;
+      const result = await handler({ supabase, context, body, params });
+      return result === undefined ? new Response(null, { status: 204 }) : Response.json(result, { status: options.status ?? 200 });
     } catch (err) {
       const { status, body } = toErrorResponse(err);
       return Response.json(body, { status });

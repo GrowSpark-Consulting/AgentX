@@ -2,14 +2,52 @@ import { handleInngest } from "../inngest/serve";
 import { toErrorResponse } from "../lib/errors";
 import { userClient } from "./auth";
 import { allowedOrigins, originAllowed, preflight, withCors } from "./cors";
-import type { FetchHandler } from "./node";
-import { ROUTES, type Method, type Route, type RouteDeps } from "./routes";
+import { MAX_BODY_BYTES, type FetchHandler } from "./node";
+import { ROUTES, type Method, type Route, type RouteDeps, type RouteParams } from "./routes";
 
 export interface AppDeps extends RouteDeps {
   allowedOrigins: ReadonlySet<string>;
 }
 
 const notFound = () => Response.json({ error: { code: "not_found", message: "Not found." } }, { status: 404 });
+
+const isPattern = (path: string) => path.includes("/:");
+
+function matchPattern(pattern: string, pathname: string): RouteParams | null {
+  const want = pattern.split("/");
+  const got = pathname.split("/");
+  if (want.length !== got.length) return null;
+  const params: Record<string, string> = {};
+  for (const [i, segment] of want.entries()) {
+    if (!segment.startsWith(":")) {
+      if (segment !== got[i]) return null;
+      continue;
+    }
+    if (got[i] === "") return null;
+    try {
+      params[segment.slice(1)] = decodeURIComponent(got[i]);
+    } catch {
+      return null; // malformed percent-encoding
+    }
+  }
+  return params;
+}
+
+/** The route for a path and its `:name` values. Fixed paths win over patterns. */
+export function matchRoute(pathname: string, routes: readonly Route[] = ROUTES): { route: Route; params: RouteParams } | undefined {
+  const fixed = routes.find((r) => !isPattern(r.path) && r.path === pathname);
+  if (fixed) return { route: fixed, params: {} };
+  for (const route of routes) {
+    const params = isPattern(route.path) ? matchPattern(route.path, pathname) : null;
+    if (params) return { route, params };
+  }
+  return undefined;
+}
+
+/** The body limit for a path, which the HTTP server applies before reading the body. */
+export function bodyLimitFor(pathname: string, routes: readonly Route[] = ROUTES): number {
+  return matchRoute(pathname, routes)?.route.maxBodyBytes ?? MAX_BODY_BYTES;
+}
 
 function methodNotAllowed(route: Route): Response {
   const allow = [...Object.keys(route.methods), ...(route.browser ? ["OPTIONS"] : [])].join(", ");
@@ -20,9 +58,9 @@ function methodNotAllowed(route: Route): Response {
  * The whole API as one fetch-style function: finds the route, answers CORS preflights for browser
  * routes, refuses origins that aren't allowed, and turns anything a route throws into the
  * `{ error: { code, message } }` envelope. `deps` replaces Supabase, Inngest and the origin list in
- * tests; by default they come from serverEnv().
+ * tests; by default they come from serverEnv(). Tests can also pass their own `routes`.
  */
-export function createApp(overrides: Partial<AppDeps> = {}): FetchHandler {
+export function createApp(overrides: Partial<AppDeps> = {}, routes: readonly Route[] = ROUTES): FetchHandler {
   const deps: AppDeps = {
     userClient: overrides.userClient ?? userClient,
     inngest: overrides.inngest ?? handleInngest,
@@ -30,8 +68,9 @@ export function createApp(overrides: Partial<AppDeps> = {}): FetchHandler {
   };
 
   return async function handle(request: Request): Promise<Response> {
-    const route = ROUTES.find((r) => r.path === new URL(request.url).pathname);
-    if (!route) return notFound();
+    const match = matchRoute(new URL(request.url).pathname, routes);
+    if (!match) return notFound();
+    const { route, params } = match;
 
     if (request.method === "OPTIONS" && route.browser) {
       return preflight(request, deps.allowedOrigins, Object.keys(route.methods));
@@ -46,7 +85,7 @@ export function createApp(overrides: Partial<AppDeps> = {}): FetchHandler {
 
     let response: Response;
     try {
-      response = await handler(request, deps);
+      response = await handler(request, deps, params);
     } catch (err) {
       const { status, body } = toErrorResponse(err);
       response = Response.json(body, { status });

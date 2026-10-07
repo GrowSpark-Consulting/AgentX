@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fakeSupabase } from "../test-support/fake-supabase";
 import { errorOf } from "../test-support/http";
+import type { Route } from "./routes";
 
 const createTrialTenant = vi.fn();
 const getBalance = vi.fn();
@@ -11,7 +12,9 @@ vi.mock("../billing/credits", async (importOriginal) => ({
   getBalance: (...args: unknown[]) => getBalance(...args),
 }));
 
-const { createApp } = await import("./app");
+const { bodyLimitFor, createApp } = await import("./app");
+const { tenantRoute } = await import("./auth");
+const { MAX_BODY_BYTES } = await import("./node");
 
 const FRONTEND = "https://app.pakkaagent.in";
 const STAGING = "https://staging.pakkaagent.in";
@@ -275,6 +278,87 @@ describe("POST /api/onboarding/trial", () => {
     const res = await post("/api/onboarding/trial", { name: "Sunrise Homes", industry: "re" }, as("nomember.token.sig"));
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ status: "failed", message: "We couldn't set up your trial. Try again in a moment." });
+  });
+});
+
+describe("path parameters, PATCH and DELETE", () => {
+  const FAQ = "3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f601";
+  const routes: Route[] = [
+    { path: "/api/kb/faqs/export", methods: { GET: () => Response.json({ fixed: true }) } },
+    {
+      path: "/api/kb/faqs/:id",
+      browser: true,
+      methods: {
+        PATCH: (r, d, p) => tenantRoute(async ({ context, body, params }) => ({ tenant: context.tenant.id, body, params }))(r, d.userClient, p),
+        DELETE: (r, d, p) => tenantRoute(async () => undefined)(r, d.userClient, p),
+      },
+    },
+    { path: "/api/kb/gaps/:id/answer", browser: true, methods: { POST: (_r, _d, params) => Response.json(params) } },
+    {
+      path: "/api/kb/faqs",
+      browser: true,
+      maxBodyBytes: 5 * 1024 * 1024,
+      methods: { POST: (r, d, p) => tenantRoute(async ({ body }) => body, { status: 201 })(r, d.userClient, p) },
+    },
+  ];
+  const kb = createApp({ userClient: fakeUserClient, inngest, allowedOrigins: new Set([FRONTEND]) }, routes);
+  const call = (method: string, path: string, init: RequestInit = {}) =>
+    kb(new Request(`http://localhost:4000${path}`, { method, ...init, headers: { origin: FRONTEND, ...(init.headers as Record<string, string>) } }));
+
+  it("passes :name values to the handler, decoded, with the tenant from the token", async () => {
+    const res = await call("PATCH", `/api/kb/faqs/${FAQ}`, { headers: as("owner.token.sig"), body: JSON.stringify({ a: "Yes" }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tenant: REALTY, body: { a: "Yes" }, params: { id: FAQ } });
+    expect(res.headers.get("access-control-allow-origin")).toBe(FRONTEND);
+    expect(await (await call("POST", "/api/kb/gaps/a%20b/answer")).json()).toEqual({ id: "a b" });
+  });
+
+  it("prefers a fixed path over a pattern that also matches", async () => {
+    expect(await (await call("GET", "/api/kb/faqs/export")).json()).toEqual({ fixed: true });
+  });
+
+  it("answers 404 when a segment is empty, extra, missing or badly encoded", async () => {
+    for (const path of ["/api/kb/faqs/", `/api/kb/faqs/${FAQ}/x`, "/api/kb/gaps/answer", "/api/kb/faqs/%E0%A4%A"]) {
+      expect((await call("PATCH", path)).status, path).toBe(404);
+    }
+  });
+
+  it("answers DELETE with 204 and no JSON body read; 201 where the route asks for it", async () => {
+    const deleted = await call("DELETE", `/api/kb/faqs/${FAQ}`, { headers: as("owner.token.sig") });
+    expect(deleted.status).toBe(204);
+    expect(await deleted.text()).toBe("");
+    const created = await call("POST", "/api/kb/faqs", { headers: as("owner.token.sig"), body: JSON.stringify({ q: "Parking?" }) });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual({ q: "Parking?" });
+  });
+
+  it("still authenticates DELETE before doing anything", async () => {
+    expect((await call("DELETE", `/api/kb/faqs/${FAQ}`)).status).toBe(401);
+  });
+
+  it("allows PATCH and DELETE preflights only for routes that have them", async () => {
+    const preflight = (method: string, path = `/api/kb/faqs/${FAQ}`) =>
+      kb(new Request(`http://localhost:4000${path}`, { method: "OPTIONS", headers: { origin: FRONTEND, "access-control-request-method": method } }));
+    for (const method of ["PATCH", "DELETE"]) {
+      const res = await preflight(method);
+      expect(res.status).toBe(204);
+      expect(res.headers.get("access-control-allow-methods")).toBe("PATCH, DELETE, OPTIONS");
+    }
+    expect((await preflight("DELETE", "/api/kb/faqs")).status).toBe(403);
+    expect((await preflight("PATCH", "/api/kb/gaps/1/answer")).status).toBe(403);
+  });
+
+  it("answers 405 with the pattern route's methods", async () => {
+    const res = await call("GET", `/api/kb/faqs/${FAQ}`);
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("PATCH, DELETE, OPTIONS");
+  });
+
+  it("gives each path its route's body limit, 1 MB by default", () => {
+    expect(bodyLimitFor("/api/kb/faqs", routes)).toBe(5 * 1024 * 1024);
+    expect(bodyLimitFor(`/api/kb/faqs/${FAQ}`, routes)).toBe(MAX_BODY_BYTES);
+    expect(bodyLimitFor("/api/nope", routes)).toBe(MAX_BODY_BYTES);
+    expect(bodyLimitFor("/api/templates")).toBe(MAX_BODY_BYTES);
   });
 });
 

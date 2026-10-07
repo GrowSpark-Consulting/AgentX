@@ -348,10 +348,12 @@ in section 1.
 - **Gaps:** pipeline step 5 records one when retrieval is below the threshold, the same event that feeds the
   `kb_gap` handoff after two misses.
 - **Roles:** owner and admin write; staff answering gaps is to confirm with Raja.
-- **Router and upload-limit changes** (a separate small PR between the migration and the FAQ routes):
-  `:param` path matching in `app.ts` (routes match exactly today), `PATCH` and `DELETE` in `Method` and the
-  preflight, and a per-route body limit (`MAX_BODY_BYTES` is 1 MB; uploads need 5 MB). `backend/src/server/`
-  was written by Shaaz (Dev 2): **ask Shaaz before changing it.**
+- **Router and upload-limit changes: built.** Paths take `:name` segments (`/api/kb/faqs/:id`; a fixed
+  path wins over a pattern) and handlers get them as `params`; `PATCH` and `DELETE` are methods, and
+  the preflight lists whatever a route has; a route sets `maxBodyBytes` (default 1 MB), applied
+  before the body is read, so the upload route sets `5 * 1024 * 1024`. `tenantRoute(handler,
+  { status })` passes `params`, reads JSON only for POST, PUT and PATCH, and answers 204 when the
+  service returns nothing. `backend/src/server/` is Shaaz's (Dev 2): ask before changing it.
 - **Build order:** migration, then `backend/src/kb` and the embeddings client (mocked provider), then the
   router PR, then upload and the ingest job, then FAQ routes, then gaps. **FAQ routes and gaps may slip to
   Day 3.**

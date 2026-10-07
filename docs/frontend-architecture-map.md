@@ -205,7 +205,8 @@ flag yet.
 | Actions | `frontend/lib/auth/actions.ts` | `login` (validated, safe `next`), `signup` (validated; same screen whether or not the address is taken), `signInWithGoogle`, `logout`, `chooseTenant` |
 
 API routes use `tenantRoute()` (`backend/src/server/auth.ts`): verify the bearer token, resolve the
-tenant on the server, call the backend service, answer errors as `{ error: { code, message } }`.
+tenant on the server, call the backend service with the body and any `:name` path values, answer
+errors as `{ error: { code, message } }`.
 User-facing error text comes from `formatError()` (`frontend/lib/errors.ts`); credentials are
 stripped by `redactSecrets()` (`@pakka/types`) before anything is logged.
 
