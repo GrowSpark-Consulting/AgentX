@@ -125,7 +125,9 @@ staff-facing kinds arrive with their jobs.
 **Adapter plug-in (Dev 1):** `registerSender(factory)`, where
 `factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params) }`
 and both return `{ providerMsgId }`. Until it is registered, `notify.send` answers `not_available`
-before spending credits.
+before spending credits. Both throw when WhatsApp refuses the message. When Meta refuses free text
+because the 24-hour window has closed (131047, the adapter's `outside_window`), `sendText` throws
+`OutsideWindowError` from `backend/src/notify/sender.ts`; any other refusal can throw a plain `Error`.
 
 `FeatureKey` lives in `backend/src/billing/credit-costs.ts` for now and moves here with the above.
 
@@ -191,6 +193,9 @@ buildLeadCard(leadId): Promise<LeadCard>                                        
 4. `spendCredits` with the kind's cost; 0-cost kinds skip it. `false` returns `skipped / insufficient_credits`.
 5. Send through Dev 1's adapter, store the `messages` row (`credits_charged`), write `audit_logs`.
 6. If the adapter fails after credits were spent, call `refund_credits(tenantId, messageId)`.
+7. If `sendText` throws `OutsideWindowError` (the window closed after step 3), refund, then send the
+   kind's approved template as in step 3; a kind with no template returns `skipped / outside_window`.
+   A refused template send is never retried.
 
 **`test_message` (Agreed):**
 

@@ -5,12 +5,13 @@ import { refundCredits, spendCredits } from "../billing/credits";
 import { isEnabled } from "../features/is-enabled";
 import { supabaseAdmin } from "../lib/supabase-admin";
 import { KINDS, type MessageCreditReason, type NotificationKind } from "./kinds";
-import { senderFactory, type MessageSender } from "./sender";
+import { OutsideWindowError, senderFactory, type MessageSender } from "./sender";
 
 // notify.send (docs/handover.md, module 5; docs/contracts.md, section 4): every outbound message goes
 // through here. Order: feature toggle → recipient and connection → opt-out → test-message limit →
 // 24-hour window (free text) or approved template → credits → send → record (messages + audit_logs).
-// If the send fails after credits were spent, they are refunded.
+// If the send fails after credits were spent, they are refunded. If WhatsApp says the window has
+// closed (OutsideWindowError), the approved template is sent instead.
 
 export type NotifyPayload = {
   /** Customer messages: the conversation to reply in. */
@@ -124,8 +125,14 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
       ? await sender.sendTemplate(target.to_phone, template.name, template.language, payload.templateParams ?? [])
       : await sender.sendText(target.to_phone, payload.text as string);
     providerMsgId = sent.providerMsgId;
-  } catch {
+  } catch (err) {
     if (cost > 0) await refundCredits(tenantId, messageId);
+    // The window closed between our check and WhatsApp's. Send again without the free text, which
+    // picks the kind's approved template; a kind with no template is skipped.
+    if (err instanceof OutsideWindowError && !template) {
+      if (!kindConfig.template) return { status: "skipped", reason: "outside_window" };
+      return send(tenantId, kind, { ...payload, text: undefined });
+    }
     return failed("upstream_failed", "WhatsApp did not accept the message, so it was not sent.");
   }
 
