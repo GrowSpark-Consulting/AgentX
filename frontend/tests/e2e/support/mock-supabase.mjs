@@ -92,6 +92,32 @@ const INBOX = {
     delivery_status: null, created_at,
   })),
 };
+// Knowledge base services (0001 services, 0002 member writes). Each Knowledge test creates its own
+// account and business through POST /__mock/services-account, so the parallel projects never edit
+// each other's rows. Rows: { id, tenant_id, name, duration_min, price_min, price_max, resource_type, active }.
+const SERVICES = [];
+/** tenant id → resource types (resources.type) offered as suggestions. */
+const RESOURCE_TYPES = new Map();
+const SEED_SERVICES = [
+  ["Haircut", 30, 300, 600, "stylist", true],
+  ["Bridal trial", 90, 2500, 5000, "stylist", true],
+  ["Hair spa", 60, null, null, "chair", false],
+];
+/** { seed?, error? }: seed adds services and resource types; error makes service reads return rows the app can't parse. */
+function createServicesAccount({ seed = false, error = false } = {}) {
+  const email = `kb-${randomUUID()}@test.local`;
+  const t = tenant(randomUUID(), "Glow Studio", "salon");
+  USERS[email] = { memberships: [[t, "owner"]], view: { status: 200, body: [] }, servicesError: error };
+  if (seed) {
+    for (const [name, duration_min, price_min, price_max, resource_type, active] of SEED_SERVICES) {
+      SERVICES.push({ id: randomUUID(), tenant_id: t.id, name, duration_min, price_min, price_max, resource_type, active });
+    }
+    RESOURCE_TYPES.set(t.id, ["chair", "stylist"]);
+  }
+  return { email, tenantId: t.id };
+}
+const SERVICE_COLUMNS = ["id", "tenant_id", "name", "duration_min", "price_min", "price_max", "resource_type", "active"];
+const pickService = (s) => Object.fromEntries(SERVICE_COLUMNS.map((k) => [k, s[k]]));
 
 /** A conversations row as the inbox's select returns it: open handoffs, newest non-system message. */
 const inboxListRow = ({ handoffs, ...c }) => ({
@@ -318,6 +344,21 @@ ${choose("Cancel", "cancel=1")}
     }));
     return send(res, 200, { memberships, trialCalls: trialCalls.get(email) ?? 0 });
   }
+  if (path === "/__mock/services-account" && req.method === "POST") {
+    // { seed?: boolean, error?: boolean } → { email, tenantId }; the password is PASSWORD.
+    return send(res, 200, createServicesAccount(await readBody(req)));
+  }
+  if (path === "/__mock/services") {
+    // The rows as stored, for one business (tests check writes landed where they should).
+    const tenantId = url.searchParams.get("tenant");
+    if (req.method === "DELETE") {
+      // Removes a row behind the app's back, as another browser tab or teammate would.
+      const i = SERVICES.findIndex((s) => s.id === url.searchParams.get("id"));
+      if (i >= 0) SERVICES.splice(i, 1);
+      return send(res, 200, { ok: true });
+    }
+    return send(res, 200, SERVICES.filter((s) => s.tenant_id === tenantId));
+  }
   if (path === "/__mock/last-email") {
     const mail = outbox.get(String(url.searchParams.get("to") ?? "").toLowerCase());
     return mail ? send(res, 200, mail) : send(res, 404, { msg: "no email" });
@@ -359,6 +400,45 @@ ${choose("Cancel", "cancel=1")}
       const view = USERS[email].view;
       if (view.delay) await new Promise((r) => setTimeout(r, view.delay));
       return send(res, view.status, view.body);
+    }
+    if (table === "services" || table === "resources") {
+      // RLS as in 0001/0002: members read and write their own businesses' rows only. Filters: eq.
+      if (!email) return send(res, 200, []);
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const eq = (column) => url.searchParams.get(column)?.replace(/^eq\./, "") ?? null;
+      if (table === "resources") {
+        const tenantId = eq("tenant_id");
+        const types = own.has(tenantId) ? (RESOURCE_TYPES.get(tenantId) ?? []) : [];
+        return send(res, 200, types.map((type) => ({ type })));
+      }
+      // Rows the app can't parse (a 5xx would also log a browser console error, which the suite forbids).
+      if (USERS[email].servicesError) return send(res, 200, [{ id: "not-a-service", internal: "boom" }]);
+      const matches = (s) =>
+        own.has(s.tenant_id) && (!eq("tenant_id") || s.tenant_id === eq("tenant_id")) && (!eq("id") || s.id === eq("id"));
+      if (req.method === "GET") {
+        return send(res, 200, SERVICES.filter(matches).sort((a, b) => a.name.localeCompare(b.name)).map(pickService));
+      }
+      if (req.method === "POST") {
+        const body = await readBody(req);
+        const rows = Array.isArray(body) ? body : [body];
+        if (rows.some((r) => !own.has(r.tenant_id))) {
+          return send(res, 403, { code: "42501", details: null, hint: null, message: 'new row violates row-level security policy for table "services"' });
+        }
+        const created = rows.map((r) => ({ active: true, price_min: null, price_max: null, ...r, id: randomUUID() }));
+        SERVICES.push(...created);
+        return send(res, 201, created.map(pickService));
+      }
+      if (req.method === "PATCH") {
+        const patch = await readBody(req);
+        const updated = SERVICES.filter(matches);
+        for (const s of updated) Object.assign(s, patch, { id: s.id, tenant_id: s.tenant_id });
+        return send(res, 200, updated.map(pickService));
+      }
+      if (req.method === "DELETE") {
+        const removed = SERVICES.filter(matches);
+        for (const s of removed) SERVICES.splice(SERVICES.indexOf(s), 1);
+        return send(res, 200, removed.map((s) => ({ id: s.id })));
+      }
     }
     if (table === "conversations" || table === "messages") {
       if (!email) return send(res, 200, []);
