@@ -1,0 +1,33 @@
+{
+  "key": "salon",
+  "version": 1,
+  "label": "Beauty parlour",
+  "bookingModes": ["slot"],
+  "fields": [
+    { "key": "services", "label": "Which services would you like?", "type": "text", "required": true },
+    { "key": "preferred_stylist", "label": "Any preferred stylist?", "type": "text" },
+    { "key": "preferred_date", "label": "Which day would you like to come?", "type": "date_range_or_month", "required": true },
+    { "key": "preferred_time", "label": "Morning, afternoon or evening?", "type": "enum", "options": ["morning", "afternoon", "evening"], "required": true },
+    { "key": "party_size", "label": "How many people?", "type": "int" }
+  ],
+  "scoring": {
+    "rules": [
+      { "field": "services", "match": "in_service_catalog", "points": 40 },
+      { "field": "preferred_date", "match": "starts_within_days", "value": 7, "points": 30 },
+      { "field": "preferred_stylist", "match": "is_available_stylist", "points": 10 },
+      { "field": "preferred_time", "match": "within_working_hours", "points": 10 },
+      { "field": "party_size", "gte": 2, "points": 10 }
+    ],
+    "thresholds": { "hot": 60, "warm": 30 },
+    "hardFails": [{ "field": "services", "match": "none_in_service_catalog" }]
+  },
+  "reminders": [
+    { "event": "appointment", "anchor": "start", "offset": "-24h", "template": "reminder_24h_v1", "feature": "reminder_24h" },
+    { "event": "appointment", "anchor": "start", "offset": "-2h", "template": "reminder_2h_v1", "feature": "reminder_2h" }
+  ],
+  "feedback": { "event": "appointment", "anchor": "end", "offset": "+2h", "template": "feedback_v1", "feature": "feedback_request" },
+  "handoffTriggers": ["asked_human", "complaint", "negotiation", "kb_gap", "stuck"],
+  "templates": ["booking_confirmed_v1", "reminder_24h_v1", "reminder_2h_v1", "feedback_v1", "review_v1", "nudge_v1", "noshow_rebook_v1", "staff_alert_v1"],
+  "kbStarter": ["Services and prices", "Stylists and specialities", "Packages and offers", "Opening hours", "Cancellation policy"],
+  "extraGuardrails": []
+}

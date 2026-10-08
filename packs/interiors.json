@@ -1,0 +1,35 @@
+{
+  "key": "interiors",
+  "version": 1,
+  "label": "Interior design",
+  "bookingModes": ["field_visit"],
+  "fields": [
+    { "key": "property_type", "label": "Type of property", "type": "enum", "options": ["apartment", "independent_house", "villa", "commercial"], "required": true },
+    { "key": "area_sqft", "label": "Area in sq ft", "type": "int", "required": true },
+    { "key": "scope", "label": "What would you like done?", "type": "enum", "options": ["full_home", "modular_kitchen", "wardrobes", "living_room", "bedrooms", "renovation"], "required": true },
+    { "key": "budget", "label": "Budget", "type": "range_inr", "required": true },
+    { "key": "possession_date", "label": "When do you get possession, or want to start?", "type": "date_range_or_month" },
+    { "key": "pincode", "label": "Pincode of the property", "type": "text" }
+  ],
+  "scoring": {
+    "rules": [
+      { "field": "budget", "match": "within_service_band", "points": 30 },
+      { "field": "possession_date", "match": "starts_within_days", "value": 90, "points": 25 },
+      { "field": "scope", "in": ["full_home", "modular_kitchen"], "points": 15 },
+      { "field": "area_sqft", "gte": 600, "points": 15 },
+      { "field": "property_type", "in": ["apartment", "independent_house", "villa"], "points": 5 },
+      { "field": "pincode", "match": "in_service_area", "points": 10 }
+    ],
+    "thresholds": { "hot": 70, "warm": 40 },
+    "hardFails": [{ "field": "budget", "below": "min_service_price" }]
+  },
+  "reminders": [
+    { "event": "site_measurement", "anchor": "start", "offset": "-24h", "template": "reminder_24h_v1", "feature": "reminder_24h" },
+    { "event": "site_measurement", "anchor": "start", "offset": "-2h", "template": "reminder_2h_v1", "feature": "reminder_2h" }
+  ],
+  "feedback": { "event": "site_measurement", "anchor": "end", "offset": "+2h", "template": "feedback_v1", "feature": "feedback_request" },
+  "handoffTriggers": ["asked_human", "complaint", "negotiation", "hot_lead", "kb_gap", "stuck"],
+  "templates": ["booking_confirmed_v1", "reminder_24h_v1", "reminder_2h_v1", "feedback_v1", "review_v1", "nudge_v1", "staff_alert_v1"],
+  "kbStarter": ["Services and packages", "Price per sq ft ranges", "Materials and brands", "Past projects", "Timeline and warranty", "Site measurement visit"],
+  "extraGuardrails": []
+}

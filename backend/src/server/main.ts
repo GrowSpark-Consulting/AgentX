@@ -1,5 +1,5 @@
 import { createPackStore } from "../agent/packs/store";
-import { defaultPacksDir, describeStartupFailure, formatSyncReport, syncPacks } from "../agent/packs/sync";
+import { defaultPacksDir, describeStartupFailure, formatRetry, formatSyncReport, syncPacks } from "../agent/packs/sync";
 import { registerWhatsAppSender } from "../channels/whatsapp/message-sender";
 import { EnvError, serverEnv, type ServerEnv } from "../lib/env";
 import { bodyLimitFor, createApp, logPathFor } from "./app";
@@ -49,14 +49,25 @@ function start(): void {
 }
 
 // Packs (packs/*.json) are validated and stored in vertical_packs before the server listens: an invalid
-// pack, a changed published version or an unreachable database fails the deploy's healthcheck, like a bad
-// environment does. Safe when several instances start at once (see agent/packs/sync.ts).
-syncPacks({ dir: defaultPacksDir(), store: createPackStore() })
-  .then((report) => {
-    for (const line of formatSyncReport(report)) console.log(line);
-    start();
-  })
-  .catch((err: unknown) => {
+// pack, a changed published version or a database that stays unreachable fails the deploy's healthcheck, like
+// a bad environment does. A database that is only briefly unavailable is waited for (see agent/packs/sync.ts),
+// counting the time this process has already spent starting against Railway's 60 s healthcheck. Safe when
+// several instances start at once. Only a failure of the sync is reported as one: if start() throws, the error
+// reaches the process as it is, with its own stack.
+async function boot(): Promise<void> {
+  let report;
+  try {
+    report = await syncPacks({
+      dir: defaultPacksDir(),
+      store: createPackStore(),
+      retry: { elapsedBeforeMs: Math.round(process.uptime() * 1000), onRetry: (info) => console.warn(formatRetry(info)) },
+    });
+  } catch (err) {
     console.error(`[server] ${describeStartupFailure(err)}`);
     process.exit(1);
-  });
+  }
+  for (const line of formatSyncReport(report)) console.log(line);
+  start();
+}
+
+void boot();

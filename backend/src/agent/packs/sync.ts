@@ -21,6 +21,52 @@ export class PackSyncError extends Error {
   }
 }
 
+/**
+ * The store failed. `transient`: the database was unreachable or restarting, so waiting may fix it; a refusal
+ * (missing permission, a bad statement) is not transient and is never retried. The message is fixed text.
+ */
+export class PackStoreError extends PackSyncError {
+  constructor(
+    message: string,
+    readonly transient: boolean,
+    /** What the database or the network said, as a short fixed token: a Postgres code, "http_503", "timeout". Safe to log. */
+    readonly code: string = "unknown",
+  ) {
+    super(message);
+    this.name = "PackStoreError";
+  }
+}
+
+/**
+ * Pauses before each retry of a transient store failure, in milliseconds: 35 s of waiting, enough for a
+ * database that restarts while a deploy starts (Railway and Supabase often come up at the same moment).
+ */
+export const PACK_STORE_RETRY_DELAYS_MS: readonly number[] = [1000, 2000, 4000, 8000, 10_000, 10_000];
+
+/**
+ * How long after the process started a retry may still begin. Railway's healthcheck allows 60 s from the
+ * start; a retry that begins by 40 s ends within about 10 s more (each of its two calls is cut off at 5 s),
+ * so the sync gives up, and the deploy fails cleanly, before the healthcheck would. The budget is shared by
+ * all packs, as the healthcheck is.
+ */
+export const PACK_SYNC_BUDGET_MS = 40_000;
+
+export interface SyncRetry {
+  /** The pause before each retry; its length is the number of retries. Default PACK_STORE_RETRY_DELAYS_MS. */
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+  /** The clock for the time budget (tests). */
+  now?: () => number;
+  /** No retry begins later than this many ms after the process started, whatever delays remain. Default PACK_SYNC_BUDGET_MS. */
+  budgetMs?: number;
+  /** Time already spent before the sync began (the process's start-up), counted against the budget. Default 0. */
+  elapsedBeforeMs?: number;
+  /** Called before each wait: which try just failed, why (a short fixed token) and how long the wait is. */
+  onRetry?: (info: { attempt: number; delayMs: number; code: string }) => void;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** vertical_packs is a global catalogue (no tenant_id): packs are the same for every business. */
 export interface PackStore {
   /** True when the row went in, false when (key, version) already existed. Never overwrites. */
@@ -45,7 +91,7 @@ export async function readPackFiles(dir: string): Promise<PackFile[]> {
   try {
     names = (await readdir(dir, { withFileTypes: true })).filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => e.name).sort();
   } catch {
-    throw new PackSyncError(`The packs folder could not be read (${dir}). A deploy must include the repo's packs/ folder.`);
+    throw new PackSyncError("The packs folder could not be read. A deploy must include the repo's packs/ folder.");
   }
 
   const files: PackFile[] = [];
@@ -99,34 +145,60 @@ function changedParts(stored: unknown, file: unknown): string[] {
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => canonical(a[k]) !== canonical(b[k])).sort();
 }
 
-export async function syncPacks({ dir, store }: { dir: string; store: PackStore }): Promise<SyncReport> {
+export async function syncPacks({ dir, store, retry = {} }: { dir: string; store: PackStore; retry?: SyncRetry }): Promise<SyncReport> {
   const files = await readPackFiles(dir); // an invalid pack fails here, before the store is touched
+  const delays = retry.delaysMs ?? PACK_STORE_RETRY_DELAYS_MS;
+  const sleep = retry.sleep ?? defaultSleep;
+  const now = retry.now ?? Date.now;
+  const budgetMs = retry.budgetMs ?? PACK_SYNC_BUDGET_MS;
+  const startedAt = now() - (retry.elapsedBeforeMs ?? 0);
   const packs: SyncReport["packs"] = [];
   for (const pack of files) {
-    let outcome: SyncOutcome;
-    try {
-      const inserted = await store.insertIfAbsent({ key: pack.key, version: pack.version, definition: pack.definition, active: true });
-      if (inserted) {
-        outcome = "inserted";
-      } else {
-        const stored = await store.get(pack.key, pack.version);
-        if (stored === null) throw new PackSyncError(`${pack.file}: version ${pack.version} changed while syncing; start again.`);
-        const parts = changedParts(stored, pack.definition);
-        if (parts.length > 0) {
-          throw new PackSyncError(
-            `${pack.file}: version ${pack.version} of "${pack.key}" is already published with a different definition (${parts.join(", ")}). ` +
-              `A published version is never changed: set "version": ${pack.version + 1} to publish the change as version ${pack.version + 1}.`,
-          );
-        }
-        outcome = "unchanged";
-      }
-    } catch (error) {
-      if (error instanceof PackSyncError) throw error;
-      throw new PackSyncError("The pack store could not be reached or refused the write. Check the database connection and permissions.");
-    }
+    const outcome = await syncOne(pack, store);
     packs.push({ key: pack.key, version: pack.version, file: pack.file, outcome, warnings: pack.warnings });
   }
   return { packs };
+
+  /**
+   * One pack, retried while the store is briefly unavailable; everything else fails at once. The count of tries
+   * starts again for each pack; the time budget is shared. A try that timed out may still have reached the
+   * database, so the next try can run beside it: that is safe because the insert is ON CONFLICT DO NOTHING.
+   */
+  async function syncOne(pack: PackFile, target: PackStore): Promise<SyncOutcome> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await storeOne(pack, target);
+      } catch (error) {
+        // A changed published version, or a refusal waiting cannot fix: no retry.
+        if (error instanceof PackSyncError && !(error instanceof PackStoreError && error.transient)) throw error;
+        const delayMs = delays[attempt - 1];
+        if (attempt > delays.length || now() - startedAt + delayMs > budgetMs) {
+          const seconds = Math.max(1, Math.round((now() - startedAt) / 1000));
+          throw error instanceof PackStoreError
+            ? new PackStoreError(`${error.message} Tried ${attempt} times; gave up ${seconds} seconds after the server started.`, true, error.code)
+            : new PackSyncError("The pack store could not be reached or refused the write. Check the database connection and permissions.");
+        }
+        retry.onRetry?.({ attempt, delayMs, code: error instanceof PackStoreError ? error.code : "unknown" });
+        await sleep(delayMs);
+      }
+    }
+  }
+}
+
+async function storeOne(pack: PackFile, store: PackStore): Promise<SyncOutcome> {
+  // A retry after an insert whose answer was lost finds the row already there and compares it, which is correct.
+  const inserted = await store.insertIfAbsent({ key: pack.key, version: pack.version, definition: pack.definition, active: true });
+  if (inserted) return "inserted";
+  const stored = await store.get(pack.key, pack.version);
+  if (stored === null) throw new PackSyncError(`${pack.file}: version ${pack.version} changed while syncing; start again.`);
+  const parts = changedParts(stored, pack.definition);
+  if (parts.length > 0) {
+    throw new PackSyncError(
+      `${pack.file}: version ${pack.version} of "${pack.key}" is already published with a different definition (${parts.join(", ")}). ` +
+        `A published version is never changed: set "version": ${pack.version + 1} to publish the change as version ${pack.version + 1}.`,
+    );
+  }
+  return "unchanged";
 }
 
 /** What is printed after a sync: one line per pack, then any warnings. */
@@ -135,6 +207,11 @@ export function formatSyncReport(report: SyncReport): string[] {
     `[packs] ${p.key}@${p.version} ${p.outcome}`,
     ...p.warnings.map((w) => `[packs] ${p.key}@${p.version} warning: ${w.code}${w.path ? ` at ${w.path}` : ""}`),
   ]);
+}
+
+/** The line printed before each wait: the try number, why (a fixed token) and the wait. */
+export function formatRetry({ attempt, delayMs, code }: { attempt: number; delayMs: number; code: string }): string {
+  return `[packs] the pack store is unavailable (try ${attempt}, ${code}); trying again in ${Math.round(delayMs / 1000)}s`;
 }
 
 /** A pack error is fixed text and printed as it is; anything else is reported by its type only. */

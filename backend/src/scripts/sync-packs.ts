@@ -1,5 +1,5 @@
 import { createPackStore } from "../agent/packs/store";
-import { checkPacks, defaultPacksDir, describeStartupFailure, formatSyncReport, syncPacks } from "../agent/packs/sync";
+import { checkPacks, defaultPacksDir, describeStartupFailure, formatRetry, formatSyncReport, syncPacks } from "../agent/packs/sync";
 
 // pnpm packs:sync            validates packs/*.json and stores new versions in vertical_packs
 // pnpm packs:sync --check    validates only, with no database
@@ -18,7 +18,7 @@ async function main(): Promise<void> {
     }
     return;
   }
-  for (const line of formatSyncReport(await syncPacks({ dir, store: createPackStore() }))) console.log(line);
+  for (const line of formatSyncReport(await syncPacks({ dir, store: createPackStore(), retry: { onRetry: (info) => console.warn(formatRetry(info)) } }))) console.log(line);
 }
 
 main().catch((err: unknown) => {
