@@ -115,6 +115,20 @@ describe("createHttpServer", () => {
   });
 });
 
+describe("request log masking", () => {
+  it("logs the path through logPath, so secret path segments never reach the log", async () => {
+    const lines: string[] = [];
+    const { url } = await start(async () => new Response("ok"), {
+      log: (l) => lines.push(l),
+      logPath: (path) => path.replace(/^\/api\/connect-links\/[^/]+$/, "/api/connect-links/***"),
+    });
+    await fetch(`${url}/api/connect-links/secret-link-token?x=1`);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^GET \/api\/connect-links\/\*\*\* 200 \d+ms$/);
+    expect(lines[0]).not.toContain("secret-link-token");
+  });
+});
+
 describe("closeGracefully", () => {
   it("lets a request in flight finish, then stops listening", async () => {
     let release!: () => void;

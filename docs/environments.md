@@ -92,6 +92,20 @@ The CLI version is pinned in `package.json`, so everyone and CI run the same one
 Free projects pause after a week with no traffic; resume from the dashboard. Production
 gets its own project on the Pro plan (daily backups, no pausing) before beta.
 
+### Platform admins
+
+The people who work for us across businesses (`/api/admin/...` routes) are rows in
+`platform_admins` (migration 0016). Raja decides who is on it. They sign up like anyone else; then, in
+the Supabase SQL editor of each environment:
+
+```sql
+insert into public.platform_admins (user_id, note)
+select id, 'Raja (founder)' from auth.users where email = '<their sign-in email>';
+-- remove: delete from public.platform_admins where user_id = '<user id>';
+```
+
+The table is server only: nobody can read or change it from the browser.
+
 ## Inngest
 
 There is exactly one Inngest endpoint: the API's `/api/inngest` on Railway (`inngest/edge` adapter,

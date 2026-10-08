@@ -12,7 +12,7 @@ vi.mock("../billing/credits", async (importOriginal) => ({
   getBalance: (...args: unknown[]) => getBalance(...args),
 }));
 
-const { bodyLimitFor, createApp } = await import("./app");
+const { bodyLimitFor, createApp, logPathFor } = await import("./app");
 const { tenantRoute } = await import("./auth");
 const { MAX_BODY_BYTES } = await import("./node");
 
@@ -390,6 +390,20 @@ describe("path parameters, PATCH and DELETE", () => {
     expect(bodyLimitFor(`/api/kb/faqs/${FAQ}`, routes)).toBe(MAX_BODY_BYTES);
     expect(bodyLimitFor("/api/nope", routes)).toBe(MAX_BODY_BYTES);
     expect(bodyLimitFor("/api/templates")).toBe(MAX_BODY_BYTES);
+  });
+});
+
+describe("logPathFor", () => {
+  const routes: Route[] = [
+    { path: "/api/connect-links/:token", browser: true, secretParams: ["token"], methods: { GET: () => new Response(null) } },
+    { path: "/api/kb/faqs/:id", methods: { PATCH: () => new Response(null) } },
+  ];
+
+  it("shows a route's secret params as *** and leaves everything else", () => {
+    expect(logPathFor("/api/connect-links/Ab_c-123xyz", routes)).toBe("/api/connect-links/***");
+    expect(logPathFor("/api/kb/faqs/3f2a1b4c", routes)).toBe("/api/kb/faqs/3f2a1b4c");
+    expect(logPathFor("/api/templates")).toBe("/api/templates");
+    expect(logPathFor("/api/nope/anything", routes)).toBe("/api/nope/anything");
   });
 });
 

@@ -51,6 +51,18 @@ export function bodyLimitFor(pathname: string, routes: readonly Route[] = ROUTES
   return matchRoute(pathname, routes)?.route.maxBodyBytes ?? MAX_BODY_BYTES;
 }
 
+/** The path as the request log shows it: the route's secret params (a connect-link token) become `***`. */
+export function logPathFor(pathname: string, routes: readonly Route[] = ROUTES): string {
+  const match = matchRoute(pathname, routes);
+  const secret = match?.route.secretParams;
+  if (!match || !secret?.length) return pathname;
+  const pattern = match.route.path.split("/");
+  return pathname
+    .split("/")
+    .map((segment, i) => (pattern[i].startsWith(":") && secret.includes(pattern[i].slice(1)) ? "***" : segment))
+    .join("/");
+}
+
 function methodNotAllowed(route: Route): Response {
   const allow = [...Object.keys(route.methods), ...(route.browser ? ["OPTIONS"] : [])].join(", ");
   return new Response(null, { status: 405, headers: { allow } });

@@ -33,6 +33,8 @@ export interface Route {
   browser?: boolean;
   /** The largest body accepted, in bytes; bigger requests get 413 before the route runs. Default 1 MB. */
   maxBodyBytes?: number;
+  /** Path params that are secrets (a connect-link token): the request log shows them as `***`. */
+  secretParams?: readonly string[];
 }
 
 // Liveness for Railway's healthcheck. Reads nothing else, so it answers even when Supabase or Inngest
