@@ -4,7 +4,7 @@ import type { AuditEntry } from "../../lib/audit";
 import type { SendOutcome } from "../../notify/send";
 import { fakePipelineStore, HIDDEN, type FakeMessage } from "../../test-support/fake-pipeline-store";
 import { LlmError, type LlmClient, type LlmRequest, type LlmResult } from "../llm/anthropic";
-import { fixedText } from "./fixed-texts";
+import { consentNotice, fixedText } from "./fixed-texts";
 import type { StaffAlertPort, SystemNoticePort } from "./ports";
 import type { StepRunner, TurnContext } from "./process-message";
 import { answerAfterFailure, replyTurn, type ReplyDeps } from "./reply";
@@ -26,6 +26,7 @@ const at = (secondsAgo: number) => new Date(NOW - secondsAgo * 1000).toISOString
 const QUESTION = "Do you do home visits?";
 const CUSTOMER_WORDS = "home visits pannuveengala";
 
+const PRIVACY_URL = "https://example.test/privacy";
 const SENT: SendOutcome = { status: "sent", messageId: "m-out", providerMsgId: "wamid.OUT", creditsCharged: 1, usedTemplate: false };
 const llmResult = (text: string): LlmResult => ({ text, model: "claude-sonnet-5-5", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }, costUsd: 0.01, latencyMs: 2000, attempts: 1, requestId: null });
 
@@ -60,6 +61,8 @@ interface WorldOptions {
   mode?: "ai" | "human" | "external";
   optedOut?: boolean;
   language?: string | null;
+  /** When the notice was first shown to the contact; the default is "long ago", so most tests are about a contact who has seen it. */
+  consentAt?: string | null;
   agentSettings?: unknown;
   businessName?: string;
   question?: string | null;
@@ -79,7 +82,7 @@ function world(over: WorldOptions = {}) {
     tenants: [{ id: A, vertical: "sample-pack", verticalVersion: 1 }],
     messages,
     conversations: [{ id: CONV, tenantId: A, contactId: CONTACT, mode: over.mode ?? "ai" }],
-    contacts: [{ id: CONTACT, tenantId: A, language: over.language === undefined ? null : over.language, optedOut: over.optedOut ?? false }],
+    contacts: [{ id: CONTACT, tenantId: A, language: over.language === undefined ? null : over.language, optedOut: over.optedOut ?? false, consentAt: over.consentAt === undefined ? "2026-10-01T00:00:00Z" : over.consentAt }],
     leads: [{ id: LEAD, tenantId: A, contactId: CONTACT, stage: "engaged", createdAt: 1, fields: {} }],
     tenantInfo: { [A]: { name: over.businessName ?? "Skyline Homes", agentSettings: over.agentSettings ?? {} } },
     answered: over.answered ? [M1] : [],
@@ -107,7 +110,7 @@ function world(over: WorldOptions = {}) {
   const sendEvent = vi.fn<ReplyDeps["sendEvent"]>(async () => undefined);
   const systemNotice = { send: vi.fn(async (): Promise<{ status: "awaiting_notify_kind" }> => ({ status: "awaiting_notify_kind" })) };
   const staffAlert = { send: vi.fn(async (): Promise<{ status: "awaiting_notify_kind" }> => ({ status: "awaiting_notify_kind" })) };
-  const deps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice: systemNotice as SystemNoticePort, staffAlert: staffAlert as StaffAlertPort, now: () => Date.now() };
+  const deps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice: systemNotice as SystemNoticePort, staffAlert: staffAlert as StaffAlertPort, privacyPolicyUrl: PRIVACY_URL, now: () => Date.now() };
   const turn: TurnContext = {
     tenantId: A, conversationId: CONV, contactId: CONTACT, leadId: LEAD, leadCreated: false,
     messageIds: over.messages ? over.messages.map((m) => m.id).filter((id) => !id.startsWith("a0000000-0000-0000-0000-00000000010")) : [M1],
@@ -505,6 +508,125 @@ describe("never two replies", () => {
   });
 });
 
+describe("the privacy notice on a contact's first AI reply", () => {
+  const first = (over: WorldOptions = {}) => world({ consentAt: null, ...over });
+
+  it("is added to the first reply, after a blank line, as one line with the policy link last", async () => {
+    const w = first();
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    const text = sentText(w)!;
+    expect(text).toBe(`Yes, we do site visits. Shall we plan one?\n\n${consentNotice("en", PRIVACY_URL)}`);
+    expect(text.endsWith(PRIVACY_URL)).toBe(true);
+    expect(text.split("\n\n")[1]).not.toContain("\n"); // one line
+    expect(text).toContain("STOP");
+  });
+
+  it("is in the customer's language", async () => {
+    for (const language of ["ta", "ta-en", "hi"] as const) {
+      const w = first({ script: ["₹1", "₹2"] });
+      await replyTurn(runner().step, w.turn, understood(found, { language }), Date.now(), w.deps);
+      expect(sentText(w)).toBe(`${fixedText("fallback", language)}\n\n${consentNotice(language, PRIVACY_URL)}`);
+    }
+  });
+
+  it("goes on a fixed line too (a clarifying question, the safe fallback, the handover line): it is the first AI reply whatever it says", async () => {
+    for (const result of [{ status: "fallback", reason: "no_text" }, { status: "model_unavailable" }, understood({ outcome: "none" })] as UnderstandResult[]) {
+      const w = first();
+      await replyTurn(runner().step, w.turn, result, Date.now(), w.deps);
+      expect(sentText(w)).toContain(consentNotice("en", PRIVACY_URL));
+    }
+  });
+
+  it("is logged as notice_shown once, with the message that carried it, and sets consent_at", async () => {
+    const w = first();
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(w.consentLogs).toEqual([{ tenantId: A, contactId: CONTACT, event: "notice_shown", source: "first_message", messageId: "m-out" }]);
+    expect(w.contacts.get(CONTACT)?.consentAt).toBeTruthy();
+  });
+
+  it("is not on the second reply: the contact has seen it", async () => {
+    const w = first({ script: ["First reply.", "Second reply."] });
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    // the next turn of the same chat
+    const next: FakeMessage = { id: M2, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(1), body: "another question", meta: { agent: { extraction: { question: "Another?" } } } };
+    w.messages.set(M2, next);
+    await replyTurn(runner().step, { ...w.turn, messageIds: [M2] }, understood(found), Date.now(), w.deps);
+    expect(sentText(w, 1)).toBe("Second reply.");
+    expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("is not recorded when nothing was sent: a chat a person has, an opt-out, no credits", async () => {
+    for (const over of [{ mode: "human" as const }, { optedOut: true }, { send: () => ({ status: "skipped", reason: "insufficient_credits" }) as SendOutcome }]) {
+      const w = first(over);
+      await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+      expect(w.consentLogs).toEqual([]);
+      expect(w.contacts.get(CONTACT)?.consentAt ?? null).toBeNull();
+    }
+  });
+
+  it("is NOT recorded as shown when the send's outcome is unknown: the log must not say 'shown' for a message that may not have arrived; the next reply carries it again", async () => {
+    const w = first({ send: () => ({ status: "failed", error: { code: "upstream_failed", message: "x", retryable: true, outcomeUnknown: true } }) });
+    const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(out.reply).toEqual({ status: "sent_unknown" });
+    expect(w.consentLogs).toEqual([]);
+    expect(w.contacts.get(CONTACT)?.consentAt ?? null).toBeNull();
+  });
+
+  it("is not recorded, and not sent, when the customer sends STOP while the reply is being written", async () => {
+    const w = first();
+    w.complete.mockImplementationOnce(async () => {
+      w.contacts.get(CONTACT)!.optedOut = true; // the STOP lands while the model works
+      return llmResult("Yes, site visits are free.");
+    });
+    const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(out.reply).toEqual({ status: "not_sent", reason: "opted_out" });
+    expect(w.send).not.toHaveBeenCalled();
+    expect(w.consentLogs).toEqual([]);
+  });
+
+  it("is never logged twice: a repeated run finds the message answered", async () => {
+    const w = first();
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(w.send).toHaveBeenCalledOnce();
+    expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("is not a reason to fail: if recording it fails the reply stays sent, and the next reply carries the notice again", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const w = first({ script: ["First.", "Second."] });
+    w.state.failNext.add("recordNoticeShown");
+    const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(out.reply.status).toBe("sent");
+    expect(w.send).toHaveBeenCalledOnce();
+    w.messages.set(M2, { id: M2, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(1), body: "more", meta: { agent: { extraction: { question: "More?" } } } });
+    await replyTurn(runner().step, { ...w.turn, messageIds: [M2] }, understood(found), Date.now(), w.deps);
+    expect(sentText(w, 1)).toContain(consentNotice("en", PRIVACY_URL));
+  });
+
+  it("is not part of what the post-check reads or of the 600 characters: a full reply still gets it", async () => {
+    const long = `${"a".repeat(590)} site visits are free`.slice(0, 600);
+    const w = first({ script: [long] });
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(sentText(w)!.startsWith(long)).toBe(true);
+    expect(sentText(w)!.length).toBeGreaterThan(600);
+    expect(w.complete).toHaveBeenCalledOnce(); // not regenerated for being long with the notice
+  });
+
+  it("is on the safe line sent after a run gave up too", async () => {
+    const w = first({ language: "ta" });
+    await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);
+    expect(sentText(w)).toBe(`${fixedText("fallback", "ta")}\n\n${consentNotice("ta", PRIVACY_URL)}`);
+    expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("but not when that send's outcome is unknown", async () => {
+    const w = first({ send: () => ({ status: "failed", error: { code: "upstream_failed", message: "x", retryable: true, outcomeUnknown: true } }) });
+    expect(await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps)).toBe("sent");
+    expect(w.consentLogs).toEqual([]);
+  });
+});
+
 describe("failures between the steps of a handover", () => {
   it("a handover whose switch to a person failed is finished by the retry, and the event is sent again (its id makes it one event)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -617,6 +739,22 @@ describe("answerAfterFailure: when a run gave up", () => {
     expect(w.audits.map((a) => a.entityId)).toEqual([M1]);
     expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("nothing_to_do"); // safe to call twice
     expect(w.send).toHaveBeenCalledOnce();
+  });
+
+  it("a run that died before its STOP check: the customer who sent STOP is opted out and gets no reply and no notice", async () => {
+    const w = world({ consentAt: null, messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "STOP", meta: {} }] });
+    expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("opted_out");
+    expect(w.send).not.toHaveBeenCalled();
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
+    expect(w.consentLogs).toEqual([expect.objectContaining({ event: "opted_out", source: "stop_keyword" })]);
+    expect(w.systemNotice.send).toHaveBeenCalledWith(expect.objectContaining({ kind: "opt_out_confirmation" }));
+    expect(w.audits.map((a) => a.entityId)).toEqual([M1]);
+  });
+
+  it("the same, in a chat a person has", async () => {
+    const w = world({ mode: "human", messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "நிறுத்துங்கள்", meta: {} }] });
+    expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("opted_out");
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
   });
 
   it("does nothing for a message that was answered, a chat a person has, or a customer who opted out", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIXED_TEXTS, fixedText, SAFE_FALLBACK_EN, textLanguage, type FixedTextKey, type TextLanguage } from "./fixed-texts";
+import { consentNotice, FIXED_TEXTS, fixedText, SAFE_FALLBACK_EN, textLanguage, type FixedTextKey, type TextLanguage } from "./fixed-texts";
 
 // The fixed lines: no model, fixed words, one per language.
 
@@ -37,6 +37,26 @@ describe("every fixed line", () => {
 
   it("the stop hint names the word the customer must send", () => {
     for (const l of LANGS) expect(fixedText("stop_hint", l)).toContain("STOP");
+  });
+});
+
+describe("the privacy notice", () => {
+  it("has the link last, in every language, and says how to stop", () => {
+    for (const l of LANGS) {
+      const text = consentNotice(l, "https://example.test/privacy");
+      expect(text.endsWith("https://example.test/privacy")).toBe(true);
+      expect(text).toContain("STOP");
+      expect(text).not.toContain("{url}");
+      expect(text).not.toContain("\n"); // one line
+    }
+  });
+
+  it("puts the link in as plain text, whatever characters it has", () => {
+    expect(consentNotice("en", "https://example.test/p?a=$&b=$1")).toMatch(/https:\/\/example\.test\/p\?a=\$&b=\$1$/);
+  });
+
+  it("is a fixed line with a {url} to fill, and never comes from the model", () => {
+    for (const l of LANGS) expect(FIXED_TEXTS.consent_notice[l]).toContain("{url}");
   });
 });
 

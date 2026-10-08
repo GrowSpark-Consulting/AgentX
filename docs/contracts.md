@@ -37,6 +37,8 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0018_agent_merge_functions` | `merge_lead_fields`, `merge_message_agent_meta`: the agent's lead-field and message-meta merges (Dev 1, #65; service_role only) |
 | `0019_notify_staff_target` | `notify_staff_target(tenantId, userId)`: a member's alert number as a contact tagged `staff` with a `human`-mode conversation (service_role only, section 2) |
 
+| `0021_consent_functions` | `record_notice_shown` and `record_opt_out` (service_role only): the contact update and the `consent_logs` row in one transaction, once (Dev 1; after 0019 `notify_staff_target` and 0020 `whatsapp_webhook_tokens`) |
+
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
 - Seed: `supabase/seed/` (plans, 21 features, demo and isolation-test businesses, services, resources, hours).
@@ -438,6 +440,25 @@ right before the send; the marker is written before the rows, so a failure to wr
 reply. The handover's event is sent on every run of the step (its id makes it one event), so a retry after a failure still tells staff.
 
 **Reply-button ids (agreed 9 Oct, built on Day 3).** A booking confirmation's reply buttons carry the ids `booking:<bookingId>:confirm`, `booking:<bookingId>:reschedule` and `booking:<bookingId>:cancel` (WhatsApp allows 3 buttons, ids up to 256 characters). The pipeline, not the webhook, routes the tap: the webhook stores it as a customer message, and step 5 reads the id and calls `confirmBooking` / `rescheduleBooking` / `cancelBooking`.
+
+**Consent (DPDP): the notice and STOP.** *The notice:* the first AI reply to a contact (`contacts.consent_at` is null)
+carries one extra line after a blank line: who answers (an AI assistant), how to stop (reply STOP) and the privacy policy link
+last (`PRIVACY_POLICY_URL`, an optional https env var, default https://pakkaagent.in/privacy), in the reply's language
+(English, Tamil, Tanglish, Hindi; `fixed-texts.ts`). Every first reply carries it, a fixed line too; it is added after the
+post-check and is not part of the 600 characters. After a send (or one whose outcome is unknown) `record_notice_shown` sets
+`consent_at` and writes `consent_logs` `notice_shown` (source `first_message`, the outbound message id) in one transaction,
+once; a failure there is logged, never thrown, and the next reply carries the notice again. *STOP:* a step `stop-check` runs
+before the message is read by the model: if a message of the turn IS a STOP (the whole message, ignoring case, punctuation and
+emoji, is one of the fixed phrases in `consent/stop-words.ts`; "bus stop near the project" is not), `record_opt_out` sets
+`contacts.opted_out_at` and writes `consent_logs` `opted_out` (source `stop_keyword`, the message id), AT MOST ONE final confirmation
+goes through the system-notice port (the only message sent after opting out; only the call that recorded the opt-out sends it,
+and it only logs `awaiting_notify_kind` until Dev 2's kind exists), every message of the turn is marked answered, and the
+turn ends: nothing is read, updated or replied to. The check also runs for a chat a person has and one with the AI switched
+off (an opt-out never depends on a toggle; step `stop-check-gated`), and for the safe line sent after a run gave up. The gate
+(step 3) and `notify.send` (which checks `opted_out_at`) refuse every later message of that contact. The notice is recorded
+as shown only when the send is known to have gone out; an unknown outcome leaves `consent_at` null and the next reply
+carries it again. `consent_logs` rows go with the contact if the contact is deleted. A message the model reads as "wants to leave"
+(`opt_out` intent) without being one of the phrases gets the STOP hint, not an opt-out.
 
 A run that still fails after its 3 retries: `onFailure` logs its id and, if the customer's messages are still unanswered and
 the chat is still the assistant's, sends one safe line and marks them answered (`give-up.ts`). A sweep for customer messages

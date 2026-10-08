@@ -7,7 +7,7 @@ import type { Extraction } from "@pakka/types";
 //
 // The wording is Dev 1's (docs/task-notes, "Decisions"); Raja is welcome to change it, and a change is only an edit here.
 
-export type FixedTextKey = "fallback" | "clarify" | "handoff" | "stop_hint" | "credits_holding";
+export type FixedTextKey = "fallback" | "clarify" | "handoff" | "stop_hint" | "credits_holding" | "consent_notice" | "opt_out_confirmation";
 export type TextLanguage = "en" | "ta" | "ta-en" | "hi";
 
 /** The safe line when a reply cannot be trusted (docs/handover.md, post-check): exactly these words in English. */
@@ -39,6 +39,21 @@ export const FIXED_TEXTS: Record<FixedTextKey, Record<TextLanguage, string>> = {
     "ta-en": "Ippo automatic-a reply panna mudiyala. Engal team member seekkiram ungalai contact pannuvanga.",
     hi: "अभी हम अपने-आप जवाब नहीं दे पा रहे हैं। हमारी टीम का कोई सदस्य जल्द ही आपसे संपर्क करेगा।",
   },
+  // One line at the end of a contact's first AI reply (DPDP): who answers, where the privacy policy is, how to stop.
+  // `{url}` is the policy link (PRIVACY_POLICY_URL), last in the line so nothing sticks to it when it is made a link.
+  consent_notice: {
+    en: "This chat is answered by an AI assistant. Reply STOP to opt out. Privacy policy: {url}",
+    ta: "இந்த உரையாடலுக்கு AI உதவியாளர் பதிலளிக்கிறது. நிறுத்த STOP என்று அனுப்புங்கள். தனியுரிமைக் கொள்கை: {url}",
+    "ta-en": "Indha chat-ku AI assistant bathil solluthu. Nirutha STOP nu reply pannunga. Privacy policy: {url}",
+    hi: "इस चैट का जवाब AI असिस्टेंट देता है। बंद करने के लिए STOP लिखें। गोपनीयता नीति: {url}",
+  },
+  // The one last message after STOP (through the system-notice port).
+  opt_out_confirmation: {
+    en: "You've been opted out and won't get any more messages from us. Thank you.",
+    ta: "நீங்கள் விலகிவிட்டீர்கள். இனி எங்களிடமிருந்து செய்திகள் வராது. நன்றி.",
+    "ta-en": "Neenga vilagitteenga. Inime engalidam irundhu messages varaadhu. Nandri.",
+    hi: "आपको सूची से हटा दिया गया है। अब हमारी ओर से कोई संदेश नहीं आएगा। धन्यवाद।",
+  },
   stop_hint: {
     en: "If you'd like to stop receiving messages, reply STOP.",
     ta: "செய்திகள் வேண்டாம் என்றால் STOP என்று அனுப்புங்கள்.",
@@ -57,4 +72,9 @@ export function textLanguage(...candidates: (Extraction["language"] | string | n
 
 export function fixedText(key: FixedTextKey, language: TextLanguage): string {
   return FIXED_TEXTS[key][language];
+}
+
+/** The privacy notice with its link. The link is ours (env, https): it is put in as text, never interpreted. */
+export function consentNotice(language: TextLanguage, privacyPolicyUrl: string): string {
+  return FIXED_TEXTS.consent_notice[language].split("{url}").join(privacyPolicyUrl);
 }

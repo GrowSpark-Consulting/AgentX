@@ -1,6 +1,7 @@
 import { retrieveKb } from "../../kb/retrieve";
 import { inngest } from "../../inngest/client";
 import { writeAudit } from "../../lib/audit";
+import { serverEnv } from "../../lib/env";
 import { send } from "../../notify/send";
 import { llm } from "../llm";
 import type { PackSource } from "../packs/load";
@@ -52,6 +53,7 @@ export function replyDeps(store: PipelineStore): ReplyDeps {
     sendEvent: (event) => inngest.send(event),
     systemNotice: createSystemNoticePort((tenantId, kind, payload) => send(tenantId, kind, payload)),
     staffAlert: staffAlertPort,
+    privacyPolicyUrl: serverEnv().PRIVACY_POLICY_URL,
   };
 }
 

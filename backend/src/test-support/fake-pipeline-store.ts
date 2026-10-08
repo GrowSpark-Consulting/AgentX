@@ -17,8 +17,17 @@ export interface FakeMessage extends InboundMessage {
   body?: string | null;
   meta?: Record<string, unknown>;
 }
-export interface FakeContact extends ContactRow {
+export interface FakeContact extends Omit<ContactRow, "consentAt"> {
   tenantId: string;
+  /** The notice has been shown (an ISO time) or not (null, the default). */
+  consentAt?: string | null;
+}
+export interface FakeConsentLog {
+  tenantId: string;
+  contactId: string;
+  event: "notice_shown" | "opted_out";
+  source: string;
+  messageId: string | null;
 }
 export interface FakeConversation extends ConversationRow {
   tenantId: string;
@@ -69,6 +78,7 @@ export function fakePipelineStore(
   }
   const calls: string[] = [];
   const handoffs: FakeHandoff[] = [...(seed.handoffs ?? [])];
+  const consentLogs: FakeConsentLog[] = [];
   /** record_kb_gap's rows: one per business and normalised question, with the business-wide count. */
   const gaps = new Map<string, { tenantId: string; norm: string; question: string; contactId: string; askedCount: number }>();
   const state = { failNext: new Set<keyof PipelineStore>(), leadCounter: 0, handoffCounter: 0 };
@@ -97,7 +107,7 @@ export function fakePipelineStore(
       calls.push("getContact");
       maybeFail("getContact");
       const c = contacts.get(contactId);
-      return c && c.tenantId === tenantId ? ({ id: c.id, language: c.language, optedOut: c.optedOut, ...HIDDEN } as ContactRow) : null;
+      return c && c.tenantId === tenantId ? ({ id: c.id, language: c.language, optedOut: c.optedOut, consentAt: c.consentAt ?? null, ...HIDDEN } as ContactRow) : null;
     },
     async getTenant(tenantId) {
       calls.push("getTenant");
@@ -176,6 +186,24 @@ export function fakePipelineStore(
       const agent = m && m.tenantId === tenantId && m.conversationId === conversationId ? m.meta?.agent : undefined;
       return agent && typeof agent === "object" ? (structuredClone(agent) as Record<string, unknown>) : null;
     },
+    async recordNoticeShown(tenantId, contactId, messageId) {
+      calls.push("recordNoticeShown");
+      maybeFail("recordNoticeShown");
+      const c = contacts.get(contactId);
+      if (!c || c.tenantId !== tenantId || c.consentAt) return false;
+      c.consentAt = new Date().toISOString();
+      consentLogs.push({ tenantId, contactId, event: "notice_shown", source: "first_message", messageId });
+      return true;
+    },
+    async recordOptOut(tenantId, contactId, source, messageId) {
+      calls.push("recordOptOut");
+      maybeFail("recordOptOut");
+      const c = contacts.get(contactId);
+      if (!c || c.tenantId !== tenantId || c.optedOut) return false;
+      c.optedOut = true;
+      consentLogs.push({ tenantId, contactId, event: "opted_out", source, messageId });
+      return true;
+    },
     async getTenantReplyInfo(tenantId): Promise<TenantReplyInfo | null> {
       calls.push("getTenantReplyInfo");
       maybeFail("getTenantReplyInfo");
@@ -237,5 +265,5 @@ export function fakePipelineStore(
     },
   };
 
-  return { store, tenants, messages, conversations, contacts, leads, answered, handoffs, gaps, calls, state };
+  return { store, tenants, messages, conversations, contacts, leads, answered, handoffs, gaps, consentLogs, calls, state };
 }

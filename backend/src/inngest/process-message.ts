@@ -2,6 +2,7 @@ import { MESSAGE_RECEIVED_EVENT, MessageReceived } from "../agent/pipeline/event
 import { answerRunThatGaveUp } from "../agent/pipeline/give-up";
 import { runTurn } from "../agent/pipeline/process-message";
 import { replyTurn } from "../agent/pipeline/reply";
+import { stopCheck, stopCheckAfterGate } from "../agent/pipeline/stop";
 import { replyDeps, understandDeps } from "../agent/pipeline/runtime";
 import { createPipelineStore } from "../agent/pipeline/store";
 import { turnClock } from "../agent/pipeline/turn-deadline";
@@ -19,7 +20,7 @@ import { inngest } from "./client";
 //   to start looking: the run collects the customer's unanswered messages itself and answers them together.
 // - Every stage is a step: a failure retries that stage (3 retries) and never repeats what finished.
 //
-// The pipeline: resolve, batch, lead and gate (steps 2 and 3), understand the message and search the knowledge base
+// The pipeline: resolve, batch, lead and gate (steps 2 and 3), the STOP check, understand the message and search the knowledge base
 // (step 4), then reply and send (step 7 and the send): ONE reply per turn, through notify.send, recorded as answered
 // in the same step. The decide step (Day 3) will sit between 4 and 7; until then the action is fixed: answer from the
 // knowledge base's facts, or a safe line. Every way the run can end has an answer for the customer (plan.ts).
@@ -55,7 +56,21 @@ export const processMessage = inngest.createFunction(
     // A status and a reason only: no ids, no message text, no phone number.
     if (turn.status !== "ready") {
       console.log(`[pipeline] ${turn.status} (${turn.reason})`);
+      // A chat a person has, or one with the assistant switched off, still honours STOP: an opt-out never depends on a toggle.
+      if (turn.status === "gated_off" && (turn.reason === "not_ai_mode" || turn.reason === "feature_off")) {
+        const ids = MessageReceived.safeParse(event.data);
+        if (ids.success) {
+          const stop = await stopCheckAfterGate(steps, ids.data, replyDeps(store));
+          if (stop.status === "opted_out") console.log(`[pipeline] opted out while gated off (confirmation ${stop.confirmation})`);
+        }
+      }
       return turn;
+    }
+    // STOP first: a customer who asks to stop is opted out and is not read, answered or updated any further.
+    const stop = await stopCheck(steps, turn.turn, replyDeps(store));
+    if (stop.status === "opted_out") {
+      console.log(`[pipeline] opted out (confirmation ${stop.confirmation})`);
+      return { status: "opted_out" };
     }
     const understood = await understandTurn(steps, turn.turn, understandDeps(store, turnClock(startedAt).signal));
     console.log(

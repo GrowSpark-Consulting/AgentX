@@ -116,14 +116,14 @@ describe("getConversation", () => {
 
 describe("getContact", () => {
   it("reads the language and whether they opted out, and never the phone number or the name", async () => {
-    const { db, calls } = fakeDb(() => ({ data: { id: CONTACT, language: "ta-en", opted_out_at: null } }));
-    expect(await createPipelineStore(db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: "ta-en", optedOut: false });
+    const { db, calls } = fakeDb(() => ({ data: { id: CONTACT, language: "ta-en", opted_out_at: null, consent_at: null } }));
+    expect(await createPipelineStore(db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: "ta-en", optedOut: false, consentAt: null });
     tenantFilter(calls[0]);
     expect(calls[0].returning).not.toMatch(/phone|name/);
   });
 
   it("reports an opt-out", async () => {
-    const { db } = fakeDb(() => ({ data: { id: CONTACT, language: null, opted_out_at: "2026-10-01T00:00:00Z" } }));
+    const { db } = fakeDb(() => ({ data: { id: CONTACT, language: null, opted_out_at: "2026-10-01T00:00:00Z", consent_at: null } }));
     expect((await createPipelineStore(db).getContact(T, CONTACT))?.optedOut).toBe(true);
   });
 });
@@ -384,6 +384,40 @@ describe("saveAgentMeta and getAgentMeta", () => {
     expect(await createPipelineStore(fakeDb(read({ agent: { extraction: { intent: "question" } } })).db).getAgentMeta(T, CONV, MSG)).toEqual({ extraction: { intent: "question" } });
     expect(await createPipelineStore(fakeDb(read({})).db).getAgentMeta(T, CONV, MSG)).toBeNull();
     expect(await createPipelineStore(fakeDb(() => ({ data: null })).db).getAgentMeta(T, CONV, MSG)).toBeNull();
+  });
+});
+
+describe("the contact's consent", () => {
+  it("getContact says when the notice was first shown, or null", async () => {
+    const { db, calls } = fakeDb(() => ({ data: { id: CONTACT, language: "ta", opted_out_at: null, consent_at: "2026-10-09T10:00:00+00:00" } }));
+    expect(await createPipelineStore(db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: "ta", optedOut: false, consentAt: "2026-10-09T10:00:00+00:00" });
+    expect(calls[0].returning).toContain("consent_at");
+    expect(await createPipelineStore(fakeDb(() => ({ data: { id: CONTACT, language: null, opted_out_at: "2026-10-09T10:00:00+00:00", consent_at: null } })).db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: null, optedOut: true, consentAt: null });
+  });
+
+  it("recordNoticeShown calls record_notice_shown for this business and contact, and says whether it recorded", async () => {
+    const { db, calls } = fakeDb(() => ({ data: true }));
+    expect(await createPipelineStore(db).recordNoticeShown(T, CONTACT, MSG)).toBe(true);
+    expect(calls[0]).toMatchObject({ op: "rpc", fn: "record_notice_shown", args: { p_tenant_id: T, p_contact_id: CONTACT, p_message_id: MSG } });
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+    expect(await createPipelineStore(fakeDb(() => ({ data: false })).db).recordNoticeShown(T, CONTACT, null)).toBe(false);
+  });
+
+  it("recordOptOut calls record_opt_out with the source and the message", async () => {
+    const { db, calls } = fakeDb(() => ({ data: true }));
+    expect(await createPipelineStore(db).recordOptOut(T, CONTACT, "stop_keyword", MSG)).toBe(true);
+    expect(calls[0]).toMatchObject({ op: "rpc", fn: "record_opt_out", args: { p_tenant_id: T, p_contact_id: CONTACT, p_source: "stop_keyword", p_message_id: MSG } });
+    expect(await createPipelineStore(fakeDb(() => ({ data: false })).db).recordOptOut(T, CONTACT, "stop_keyword", null)).toBe(false);
+  });
+
+  it("both fail in fixed words: retried for a database that is down, not for a refused input", async () => {
+    for (const call of [
+      (s: ReturnType<typeof createPipelineStore>) => s.recordNoticeShown(T, CONTACT, null),
+      (s: ReturnType<typeof createPipelineStore>) => s.recordOptOut(T, CONTACT, "stop_keyword", null),
+    ]) {
+      await expect(call(createPipelineStore(fakeDb(() => ({ error: { code: "08006", message: "secret" } })).db))).rejects.toBeInstanceOf(AppError);
+      await expect(call(createPipelineStore(fakeDb(() => ({ error: { code: "P0001", message: "secret" } })).db))).rejects.toBeInstanceOf(NonRetriableError);
+    }
   });
 });
 

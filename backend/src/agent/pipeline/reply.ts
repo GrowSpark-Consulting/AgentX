@@ -2,13 +2,14 @@ import type { HandoffTrigger } from "@pakka/types";
 import { NonRetriableError } from "inngest";
 import { normaliseQuestion } from "../../kb/question";
 import type { AuditEntry } from "../../lib/audit";
+import { recordAnswered } from "./answered";
+import { applyStop } from "./stop";
 import { stripUnsafeCharacters } from "../../lib/text";
 import type { NotifyPayload, SendOutcome } from "../../notify/send";
 import type { LlmClient, LlmMessage } from "../llm/anthropic";
 import { LlmError } from "../llm/anthropic";
 import { buildReplyMessages, buildReplySystem, REPLY_PROMPT } from "../prompts/reply_v1";
-import { ANSWERED_ACTION } from "./events";
-import { fixedText, textLanguage } from "./fixed-texts";
+import { consentNotice, fixedText, textLanguage } from "./fixed-texts";
 import { parseReplySettings, type ReplySettings } from "./persona";
 import { planReply, type Plan, type PlanInput, type ReplyPlan } from "./plan";
 import { checkReply } from "./postcheck";
@@ -48,6 +49,8 @@ export interface ReplyDeps {
   sendEvent: (event: { id: string; name: string; data: Record<string, string> }) => Promise<unknown>;
   systemNotice: SystemNoticePort;
   staffAlert: StaffAlertPort;
+  /** The link in the privacy notice (PRIVACY_POLICY_URL, https). */
+  privacyPolicyUrl: string;
   now?: () => number;
 }
 
@@ -75,7 +78,6 @@ export interface ReplyOutcome {
 }
 
 const TAG = "[pipeline]";
-const AUDIT_TRIES = 3;
 const CORRECTION =
   "That reply cannot be sent. Use only the amounts, dates and times that are in <facts>, keep it under 600 characters and ask at most two questions. Write the reply again.";
 
@@ -230,11 +232,17 @@ async function sendReply(turn: TurnContext, understood: UnderstandResult, starte
   // The model can take seconds: look once more, right before the send, in case another run answered meanwhile.
   if (await store.isAnswered(turn.tenantId, lastMessageId, loaded.lastAt)) return { status: "already_answered" };
 
-  const outcome = await deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, text });
+  // The first AI reply to a contact carries the privacy notice (DPDP): who answers, how to stop, the policy link.
+  const noticeLanguage = plan.reply.mode === "fixed" ? plan.reply.language : textLanguage(plan.reply.language, loaded.input.contactLanguage);
+  const carriesNotice = contact.consentAt === null;
+  const outgoing = carriesNotice ? `${text}\n\n${consentNotice(noticeLanguage, deps.privacyPolicyUrl)}` : text;
+
+  const outcome = await deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, text: outgoing });
   switch (outcome.status) {
     case "sent":
       // The marker first (one cheap write), then the rows: if the rows cannot be written, a retry still sees the marker.
       await keep(deps, turn, { reply: { case: planned.case, source } }).catch(() => undefined);
+      if (carriesNotice) await noticeShown(turn, outcome.messageId, deps);
       await recordAnswered(turn, deps);
       return { status: "sent", source };
     case "skipped":
@@ -255,19 +263,15 @@ async function sendReply(turn: TurnContext, understood: UnderstandResult, starte
   }
 }
 
-/** `message.answered` for every message of the turn. A few tries each; a failure is logged, never thrown (see the top of this file). */
-async function recordAnswered(turn: TurnContext, deps: ReplyDeps): Promise<void> {
-  for (const messageId of turn.messageIds) {
-    let written = false;
-    for (let attempt = 1; attempt <= AUDIT_TRIES && !written; attempt++) {
-      try {
-        await deps.audit({ tenantId: turn.tenantId, actor: "ai", action: ANSWERED_ACTION, entity: "message", entityId: messageId });
-        written = true;
-      } catch {
-        // tried again
-      }
-    }
-    if (!written) console.error(`${TAG} could not record that message ${messageId} was answered (business ${turn.tenantId})`);
+/**
+ * The notice went out: set consent_at and log `notice_shown` (one transaction, once). A failure is logged and never thrown,
+ * like the answered rows: a retry would send the reply again. The cost of a failure is that the next reply carries the notice too.
+ */
+async function noticeShown(turn: TurnContext, messageId: string | null, deps: ReplyDeps): Promise<void> {
+  try {
+    await deps.store.recordNoticeShown(turn.tenantId, turn.contactId, messageId);
+  } catch {
+    console.error(`${TAG} could not record the privacy notice (business ${turn.tenantId})`);
   }
 }
 
@@ -320,7 +324,7 @@ async function openHandoff(turn: TurnContext, handoff: { trigger: HandoffTrigger
  * messages are still unanswered and the chat is still the assistant's, one safe line goes out and they are marked
  * answered. Best effort, never throws, and safe to call twice (it looks first).
  */
-export async function answerAfterFailure(ids: { tenantId: string; conversationId: string; messageId: string }, batchWindowMs: number, deps: ReplyDeps): Promise<"sent" | "nothing_to_do" | "not_sent"> {
+export async function answerAfterFailure(ids: { tenantId: string; conversationId: string; messageId: string }, batchWindowMs: number, deps: ReplyDeps): Promise<"sent" | "opted_out" | "nothing_to_do" | "not_sent"> {
   const { store } = deps;
   try {
     const message = await store.getMessage(ids.tenantId, ids.conversationId, ids.messageId);
@@ -329,12 +333,27 @@ export async function answerAfterFailure(ids: { tenantId: string; conversationId
     const pending = await store.recentUnanswered(ids.tenantId, ids.conversationId, since);
     if (pending.length === 0) return "nothing_to_do";
     const conversation = await store.getConversation(ids.tenantId, ids.conversationId);
-    if (!conversation || conversation.mode !== "ai") return "nothing_to_do";
+    if (!conversation) return "nothing_to_do";
     const contact = await store.getContact(ids.tenantId, conversation.contactId);
     if (!contact || contact.optedOut) return "nothing_to_do";
+    // The run may have died before its STOP check: a customer who asked to stop must not get a reply (or a privacy notice) now.
+    const stopped = await applyStop({ tenantId: ids.tenantId, conversationId: ids.conversationId, contactId: contact.id, messageIds: pending.map((m) => m.id) }, deps);
+    if (stopped) return "opted_out";
+    if (conversation.mode !== "ai") return "nothing_to_do";
 
-    const outcome = await deps.send(ids.tenantId, "ai_reply", { conversationId: ids.conversationId, text: fixedText("fallback", textLanguage(contact.language)) });
+    const language = textLanguage(contact.language);
+    const notice = contact.consentAt === null ? `\n\n${consentNotice(language, deps.privacyPolicyUrl)}` : "";
+    const outcome = await deps.send(ids.tenantId, "ai_reply", { conversationId: ids.conversationId, text: fixedText("fallback", language) + notice });
     if (outcome.status === "sent" || (outcome.status === "failed" && outcome.error.outcomeUnknown)) {
+      // A notice is recorded as shown only when the send is known to have gone out: an unknown outcome leaves consent_at
+      // null, so the next reply carries the notice again (a repeated notice costs nothing; a false "shown" would be a lie in the log).
+      if (notice && outcome.status === "sent") {
+        try {
+          await store.recordNoticeShown(ids.tenantId, contact.id, outcome.messageId);
+        } catch {
+          // logged by the store; the next reply carries the notice again
+        }
+      }
       await recordAnswered({ tenantId: ids.tenantId, conversationId: ids.conversationId, messageIds: pending.map((m) => m.id) } as TurnContext, deps);
       return "sent";
     }

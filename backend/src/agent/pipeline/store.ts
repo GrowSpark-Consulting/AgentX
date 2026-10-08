@@ -36,6 +36,8 @@ export interface ContactRow {
   id: string;
   language: string | null;
   optedOut: boolean;
+  /** When the privacy notice was first shown to this contact (null: not yet, so the next AI reply carries it). */
+  consentAt: string | null;
 }
 export interface TenantRow {
   id: string;
@@ -122,6 +124,10 @@ export interface PipelineStore {
   saveAgentMeta(tenantId: string, conversationId: string, messageId: string, agent: Record<string, unknown>): Promise<boolean>;
   getAgentMeta(tenantId: string, conversationId: string, messageId: string): Promise<Record<string, unknown> | null>;
 
+  /** record_notice_shown (0021): sets consent_at (if still null) and logs `notice_shown` in one transaction. True when this call recorded it. */
+  recordNoticeShown(tenantId: string, contactId: string, messageId: string | null): Promise<boolean>;
+  /** record_opt_out (0021): sets opted_out_at (if still null) and logs `opted_out` in one transaction. True when this call opted the contact out. */
+  recordOptOut(tenantId: string, contactId: string, source: "stop_keyword", messageId: string | null): Promise<boolean>;
   /** The business's name and agent settings, or null if it is gone. */
   getTenantReplyInfo(tenantId: string): Promise<TenantReplyInfo | null>;
   /**
@@ -157,7 +163,7 @@ const MessageRow = z.object({
   created_at: Iso,
 });
 const ConversationSchema = z.object({ id: z.string(), contact_id: z.string(), mode: z.enum(["ai", "human", "external"]) });
-const ContactSchema = z.object({ id: z.string(), language: z.string().nullable(), opted_out_at: z.string().nullable() });
+const ContactSchema = z.object({ id: z.string(), language: z.string().nullable(), opted_out_at: z.string().nullable(), consent_at: z.string().nullable() });
 const TenantSchema = z.object({ id: z.string(), vertical: z.string(), vertical_version: z.number().int() });
 const LeadSchema = z.object({ id: z.string(), stage: z.string() });
 const PendingSchema = z.object({ id: z.string(), kind: z.string().nullable() });
@@ -225,12 +231,12 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
 
     async getContact(tenantId, contactId) {
       const { data, error } = await run("read contact", (signal) =>
-        db.from("contacts").select("id, language, opted_out_at").eq("id", contactId).eq("tenant_id", tenantId).abortSignal(signal).maybeSingle(),
+        db.from("contacts").select("id, language, opted_out_at, consent_at").eq("id", contactId).eq("tenant_id", tenantId).abortSignal(signal).maybeSingle(),
       );
       if (error) fail("read contact", error);
       if (data === null) return null;
       const row = parse(ContactSchema, data, "read contact");
-      return { id: row.id, language: row.language, optedOut: row.opted_out_at !== null };
+      return { id: row.id, language: row.language, optedOut: row.opted_out_at !== null, consentAt: row.consent_at };
     },
 
     async getTenant(tenantId) {
@@ -370,6 +376,22 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
         db.rpc("merge_message_agent_meta", { p_tenant_id: tenantId, p_conversation_id: conversationId, p_message_id: messageId, p_agent: agent }).abortSignal(signal),
       );
       if (error) fail("save message meta", error);
+      return data === true;
+    },
+
+    async recordNoticeShown(tenantId, contactId, messageId) {
+      const { data, error } = await run("record privacy notice", (signal) =>
+        db.rpc("record_notice_shown", { p_tenant_id: tenantId, p_contact_id: contactId, p_message_id: messageId }).abortSignal(signal),
+      );
+      if (error) fail("record privacy notice", error);
+      return data === true;
+    },
+
+    async recordOptOut(tenantId, contactId, source, messageId) {
+      const { data, error } = await run("record opt-out", (signal) =>
+        db.rpc("record_opt_out", { p_tenant_id: tenantId, p_contact_id: contactId, p_source: source, p_message_id: messageId }).abortSignal(signal),
+      );
+      if (error) fail("record opt-out", error);
       return data === true;
     },
 
