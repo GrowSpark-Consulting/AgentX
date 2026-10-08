@@ -21,7 +21,8 @@ export function parseOrigins(list: string): string[] | null {
   return origins;
 }
 
-const serverEnvSchema = z.object({
+const serverEnvSchema = z
+  .object({
   // The frontend's address (Vercel). The API accepts browser requests from it (CORS).
   NEXT_PUBLIC_APP_URL: z.url(),
   // The Supabase project URL and anon/publishable key: the API verifies the caller's access token
@@ -29,6 +30,9 @@ const serverEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url({ protocol: /^https?$/, error: "must be the project's https API URL, e.g. https://<ref>.supabase.co" }),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: secret,
   SUPABASE_SERVICE_ROLE_KEY: secret,
+
+  // Set by Railway (the environment's name, e.g. staging); only labels traces. Unset locally.
+  RAILWAY_ENVIRONMENT_NAME: z.string().min(1).optional(),
 
   // The API server (backend/src/server). Railway sets PORT; locally the API runs on 4000.
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
@@ -49,9 +53,12 @@ const serverEnvSchema = z.object({
   EMBEDDINGS_BASE_URL: z.url({ protocol: /^https$/, error: "must be an https URL" }).default("https://ai.mongodb.com/v1"),
   EMBEDDINGS_MODEL: z.string().min(1).default("voyage-4"),
 
+  // The agent calls Anthropic on every message (extraction on Haiku, replies on Sonnet), so the server won't
+  // start without it. One key per environment.
+  ANTHROPIC_API_KEY: secret,
+
   // Optional until the module that uses them lands; make each one required in
   // the same PR that first reads it.
-  ANTHROPIC_API_KEY: secret.optional(),
 
   NEXT_PUBLIC_META_APP_ID: secret.optional(),
   META_APP_SECRET: secret.optional(),
@@ -87,8 +94,14 @@ const serverEnvSchema = z.object({
 
   RESEND_API_KEY: secret.optional(),
   SENTRY_DSN: z.url().optional(),
+  // LLM tracing. Both keys or neither: with neither, tracing is off and nothing is sent anywhere.
   LANGFUSE_PUBLIC_KEY: secret.optional(),
   LANGFUSE_SECRET_KEY: secret.optional(),
+  // The Langfuse project's address; the EU cloud (https://cloud.langfuse.com) when unset. https only: the keys are sent to it.
+  LANGFUSE_BASE_URL: z.url({ protocol: /^https$/, error: "must be an https URL, e.g. https://cloud.langfuse.com" }).optional(),
+  // "true" also sends the customer's words and the replies to Langfuse, with phone numbers and emails masked and
+  // each cut to 2,000 characters. Off unless it is exactly "true": by default a trace carries no message text.
+  LANGFUSE_CAPTURE_TEXT: z.enum(["true", "false"], { error: 'must be "true" or "false"' }).optional(),
 
   ENCRYPTION_KEY: z
     .string()
@@ -97,7 +110,12 @@ const serverEnvSchema = z.object({
       "must be 32 random bytes, base64 (openssl rand -base64 32)",
     )
     .optional(),
-});
+  })
+  // The two Langfuse keys go together: one alone would silently leave tracing off.
+  .refine((env) => (env.LANGFUSE_PUBLIC_KEY === undefined) === (env.LANGFUSE_SECRET_KEY === undefined), {
+    message: "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must be set together",
+    path: ["LANGFUSE_SECRET_KEY"],
+  });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 
