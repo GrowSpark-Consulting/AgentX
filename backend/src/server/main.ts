@@ -1,5 +1,5 @@
 import { EnvError, serverEnv, type ServerEnv } from "../lib/env";
-import { bodyLimitFor, createApp } from "./app";
+import { bodyLimitFor, createApp, logPathFor } from "./app";
 import { allowedOrigins, withCors } from "./cors";
 import { closeGracefully, createHttpServer } from "./node";
 
@@ -19,6 +19,7 @@ try {
 const origins = allowedOrigins(env);
 const server = createHttpServer(createApp({ allowedOrigins: origins }), {
   maxBodyBytes: (pathname) => bodyLimitFor(pathname),
+  logPath: (pathname) => logPathFor(pathname),
   // A body over the limit is refused before the app runs; CORS lets the frontend read that 413.
   onRejected: (request, response) => withCors(response, request, origins),
 });

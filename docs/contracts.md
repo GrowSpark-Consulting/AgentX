@@ -32,6 +32,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0013_inbound_messages` | `messages.kind`/`meta`, one open conversation per contact and channel, `store_inbound_message`, `apply_message_status` (service_role only; Dev 1, #50) |
 | `0014_connection_method_platform` | `whatsapp_connections.method` may be `platform` (our own test and demo numbers; Dev 1, #51) |
 | `0015_booking_engine` | `services.buffer_min`/`min_notice_min`, booking status `expired`, end after start, slot kinds need a resource, `hold_slot`, `confirm_booking`, `reschedule_booking`, `cancel_booking`, `release_expired_holds` (service_role only, section 4) |
+| `0016_platform_admins_and_link_tokens` | `platform_admins` (server only), `connect_links.token` → `token_hash` (SHA-256 hex; existing links rehashed) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -288,6 +289,20 @@ from allowed origins only (CORS). New route: `POST /api/onboarding/trial` `{ nam
 `StartTrialResult` (`@pakka/types`), with status 200 `ready`, 409 `has_business`, 422 `invalid` or
 `unavailable`, 500 `failed`; 401 envelope when signed out. It replaces the onboarding server action.
 
+**Who may call a route (`backend/src/server/auth.ts`, built):**
+
+- Members: `tenantRoute(handler, { status })`, the tenant from the token and `X-Pakka-Tenant`.
+- Platform team (`/api/admin/...`): `adminRoute(handler, { status })` verifies the token, then checks
+  `platform_admins` (0016); anyone else gets `forbidden`. The business is named in the body or path
+  (`tenantId`), never by `X-Pakka-Tenant`. Record `admin.actor` (`admin:<user id>`) in `audit_logs` and
+  `whatsapp_connections.connected_by`. Both answer with `status` (default 200), or 204 when the service
+  returns nothing.
+- Public (no login): a `browser: true` route whose handler doesn't authenticate; CORS and the origin
+  check still apply. List secret path segments in the route's `secretParams` (`["token"]`) so the request
+  log shows `***`. Connect-link tokens come from `newConnectLinkToken()` and are looked up by
+  `hashConnectLinkToken()` (`backend/src/lib/connect-link-token.ts`); `connect_links.token_hash` stores the
+  hash. Mark a link used in the same statement that checks it (`used_at is null and expires_at > now()`).
+
 **Error codes.** The list is `ERROR_CODES` in `packages/types/src/errors.ts`; the HTTP statuses are in
 `backend/src/lib/errors.ts`.
 
@@ -357,7 +372,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 12 | `isEnabled` also checks business status (paused, cancelled, trial ended) | Built in #18; confirm | Dev 1 + Dev 2 |
 | 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
 | 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**; schema, router and gap functions built (Shaaz); any team member can answer gaps (Raja); pending Dhatri, and Raja on the rest | Dev 1 |
-| 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed (next migration); `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. Roles on recheck and disconnect: Raja | Dev 1 |
+| 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed; `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. **Built:** `platform_admins`, `adminRoute`, hashed tokens (0016), `secretParams` log masking (section 6). Roles on recheck and disconnect: Raja | Dev 1 |
 
 ## 9. Knowledge base (PROPOSED, not agreed)
 

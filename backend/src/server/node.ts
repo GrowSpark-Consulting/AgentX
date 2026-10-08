@@ -84,7 +84,18 @@ interface ServerOptions {
   maxBodyBytes?: BodyLimit;
   /** Finishes a 413 sent before the app ran (the API adds its CORS headers, so browsers can read it). */
   onRejected?: (request: Request, response: Response) => Response;
+  /** How the request log shows a path (the API masks secret path params). The query string is never logged. */
+  logPath?: (pathname: string) => string;
   log?: (line: string) => void;
+}
+
+// The path the app routes on, parsed the same way as in toWebRequest, so logPath sees what the routes see.
+function pathnameOf(req: IncomingMessage): string {
+  try {
+    return new URL(`http://localhost${req.url ?? "/"}`).pathname;
+  } catch {
+    return (req.url ?? "/").split("?")[0];
+  }
 }
 
 async function respond(req: IncomingMessage, handle: FetchHandler, options: Required<ServerOptions>): Promise<Response> {
@@ -109,17 +120,19 @@ async function respond(req: IncomingMessage, handle: FetchHandler, options: Requ
 
 /**
  * An http.Server that runs `handle` for every request and logs one line per request: method, path
- * (never the query string: Meta's verify token travels in it), status and time.
+ * (never the query string: Meta's verify token travels in it; secret path segments masked by
+ * `logPath`), status and time.
  */
 export function createHttpServer(handle: FetchHandler, options: ServerOptions = {}): Server {
   const resolved = {
     maxBodyBytes: options.maxBodyBytes ?? MAX_BODY_BYTES,
     onRejected: options.onRejected ?? ((_request: Request, response: Response) => response),
+    logPath: options.logPath ?? ((pathname: string) => pathname),
     log: options.log ?? console.log,
   };
   return createServer((req, res) => {
     const started = Date.now();
-    const path = (req.url ?? "/").split("?")[0];
+    const path = resolved.logPath(pathnameOf(req));
     void (async () => {
       const response = await respond(req, handle, resolved);
       await sendWebResponse(res, response);

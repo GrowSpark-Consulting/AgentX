@@ -37,8 +37,9 @@ values
    'manual_byo', 'waba-a', 'pnid-a', 'secret-token-a', 'system_user', 'secret-app-a', 'admin:test'),
   ('60000000-0000-0000-0000-00000000000b', '10000000-0000-0000-0000-00000000000b', '50000000-0000-0000-0000-00000000000b',
    'manual_byo', 'waba-b', 'pnid-b', 'secret-token-b', 'system_user', 'secret-app-b', 'admin:test');
-insert into public.connect_links (token, tenant_id, created_by, expires_at) values
-  ('link-token-a', '10000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-00000000000a', now() + interval '1 day');
+insert into public.connect_links (token_hash, tenant_id, created_by, expires_at) values
+  (encode(sha256(convert_to('link-token-a', 'UTF8')), 'hex'), '10000000-0000-0000-0000-00000000000a',
+   '00000000-0000-0000-0000-00000000000a', now() + interval '1 day');
 insert into public.catalog_items (id, tenant_id, type, title) values
   ('70000000-0000-0000-0000-00000000000a', '10000000-0000-0000-0000-00000000000a', 'package', 'Item A'),
   ('70000000-0000-0000-0000-00000000000b', '10000000-0000-0000-0000-00000000000b', 'package', 'Item B');
@@ -108,8 +109,8 @@ select throws_ok('select * from public.whatsapp_connections', '42501', null,
   'a member cannot select every column of whatsapp_connections');
 select throws_ok($$update public.whatsapp_connections_public set status = 'active'$$, '42501', null,
   'a member cannot write through the public view');
-select throws_ok('select token from public.connect_links', '42501', null,
-  'a member cannot read connect link tokens');
+select throws_ok('select token_hash from public.connect_links', '42501', null,
+  'a member cannot read connect link token hashes');
 
 -- Own-tenant reads and writes
 select is((select count(*) from public.catalog_items), 1::bigint,
