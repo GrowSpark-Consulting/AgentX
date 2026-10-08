@@ -273,6 +273,7 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | Event | Payload |
 |---|---|
 | `whatsapp/message.received` | `{ tenantId, conversationId, messageId }` |
+| `kb/document.uploaded` | `{ tenantId, documentId }`; sent by `POST /api/kb/documents` (id `kb_document_uploaded:<documentId>`), starts the `kb-ingest` job |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
 | `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`) |
 | `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`) |
@@ -479,6 +480,28 @@ answer_kb_gap(p_tenant_id, p_gap_id, p_answer, p_answered_by, p_question default
   before the body is read. `tenantRoute(handler, { status })` passes `params`, reads JSON only for
   POST, PUT and PATCH, and answers 204 when the service returns nothing. `backend/src/server/` is
   Shaaz's (Dev 2): ask before changing it.
+- **Upload and delete: built (Day 2).** `POST /api/kb/documents`: owner or admin (staff get `forbidden`, before the
+  upload is read); the file is read in the request (it is not kept), its text goes to `kb_documents.body` as a
+  `processing` document, and `kb/document.uploaded` starts the `kb-ingest` job. Refused with `validation_failed` and
+  `fields.file`: not a form upload, no file, an empty file, over 5 MB, a kind that is not pdf/docx/txt/md, a file
+  that cannot be read, more text than the knowledge base holds (500 chunks), or a business that already has 100
+  documents (FAQs are not counted). A title over 200 characters is
+  `validation_failed` with `fields.title`; with no title the file name (without folders or extension) is used. If the
+  job is refused the document is saved as `failed` (only if it is still `processing`) and the answer is
+  `upstream_failed`; if Inngest simply does not answer in time the upload stands as `processing` and the sweep below
+  decides.
+  `DELETE /api/kb/documents/:id`: owner or admin; an upload or imported document (never an FAQ) of the business, its
+  chunks go with it; 204, or `not_found` (unknown id, another business's document, an FAQ, a malformed id).
+- **The ingest job** (`kb-ingest`, `backend/src/inngest/kb-ingest.ts`, logic in `backend/src/kb/ingest.ts`): one run
+  at a time per document and 5 at once in all, 3 retries per step. Steps: `load`, one `embed-N` per batch of 32
+  chunks, `store` (the
+  document's chunks are replaced, never added to, then it becomes `ready`). The same event twice changes nothing
+  (a `ready` document is skipped); a document that is missing, not the business's, or an FAQ is skipped. A document
+  with no text, too much text, a request the provider refuses (4xx other than 429, not retried) or an embeddings
+  outage ends `failed` with a short `error` the dashboard can show (never the provider's words). A document deleted
+  while the job runs is left deleted. **`kb-sweep`** (cron, every 10 minutes) fails any document still `processing`
+  after 30 minutes (its job never started or never finished), with "This file took too long to process. Upload it
+  again."
 - **Upload size:** a 5 MB file plus its multipart wrapping is more than 5 MB, so the upload route sets
   `maxBodyBytes: 6 * 1024 * 1024` and checks the file itself: over `5 * 1024 * 1024` bytes (the
   frontend's `UPLOAD_MAX_BYTES`) is `validation_failed` with `fields.file`. A body over 6 MB is refused
