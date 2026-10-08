@@ -102,6 +102,8 @@ export const KbDocumentRow = z.object({
   source_url: z.string().nullable(),
   title: z.string().nullable(),
   status: DocumentStatus,
+  /** Why the ingest job gave up (0011): a short sentence written for the owner, shown as it is. */
+  error: z.string().nullable(),
   created_at: Timestamp,
 });
 export type KbDocumentRow = z.input<typeof KbDocumentRow>;
@@ -113,6 +115,8 @@ export interface KbDocument {
   label: string;
   sourceType: string;
   status: DocumentStatus;
+  /** For a failed document: why, as the server wrote it, or null if it gave no reason. */
+  error: string | null;
   createdAt: string;
 }
 
@@ -138,8 +142,17 @@ export function toKbDocument(row: z.output<typeof KbDocumentRow>): KbDocument {
     label: (ext ?? SOURCE_LABEL[row.source_type] ?? "DOC").toUpperCase(),
     sourceType: row.source_type,
     status: row.status,
+    error: row.status === "failed" ? row.error?.trim() || null : null,
     createdAt: new Date(row.created_at).toISOString(),
   };
+}
+
+/** What a failed tile says when the server left no reason. */
+export const DOCUMENT_FAILED_FALLBACK = "Couldn’t be read. Upload it again or delete it.";
+
+/** The API keeps at most DOCUMENT_LIMIT documents per business (FAQs not counted); the list shows them all. */
+export function documentLimitReached(documents: readonly unknown[]): boolean {
+  return documents.length >= DOCUMENT_LIMIT;
 }
 
 /** "Uploaded · 7 Oct 2026" in the business's time zone. Unknown source types are shown as stored. */
@@ -162,7 +175,7 @@ export function hasProcessing(documents: readonly { status: DocumentStatus }[]):
 export async function listKbDocuments(client: SupabaseClient, tenantId: string): Promise<KbDocument[]> {
   const { data, error } = await client
     .from("kb_documents")
-    .select("id, tenant_id, source_type, source_url, title, status, created_at")
+    .select("id, tenant_id, source_type, source_url, title, status, error, created_at")
     .eq("tenant_id", tenantId)
     .neq("source_type", "manual")
     .order("created_at", { ascending: false })
@@ -207,6 +220,14 @@ export function validateUploadFile(file: { name: string; size: number } | null |
   return null;
 }
 
+/** The API's title limit, counted in characters (code points), after trimming. */
+export const UPLOAD_TITLE_MAX = 200;
+
+/** Why a title can't be sent, or null. An empty title is fine: the API names it after the file. */
+export function validateUploadTitle(title: string): string | null {
+  return [...title.trim()].length > UPLOAD_TITLE_MAX ? `Use at most ${UPLOAD_TITLE_MAX} characters` : null;
+}
+
 const UploadResponse = z.object({
   id: z.guid(),
   title: z.string(),
@@ -224,7 +245,7 @@ export async function uploadDocument(tenantId: string, file: File, title?: strin
   const parsed = UploadResponse.safeParse(await postForm(kbPath("documents"), form, { tenantId }).catch(unavailableIfMissing));
   if (!parsed.success) throw new KbDataError("upload");
   const r = parsed.data;
-  return toKbDocument({ id: r.id, tenant_id: tenantId, source_type: r.sourceType, source_url: null, title: r.title || file.name, status: r.status, created_at: r.createdAt });
+  return toKbDocument({ id: r.id, tenant_id: tenantId, source_type: r.sourceType, source_url: null, title: r.title || file.name, status: r.status, error: null, created_at: r.createdAt });
 }
 
 /** A 404 is passed on as is: the caller tells a deleted document from a missing route (explainNotFound). */

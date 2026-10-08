@@ -152,8 +152,8 @@ const SEED_FAQS = [
   ["Do you do home visits?", "Yes, within 5 km of the studio, for bookings over ₹2,000.", "2026-09-20T05:30:00Z"],
   ["Is there parking?", "Yes, two-wheeler parking at the back of the building.", "2026-09-21T05:30:00Z"],
 ];
-const kbDocument = (tenant_id, { source_type, source_url = null, title = null, body = null, status = "processing", created_at = new Date().toISOString() }) =>
-  ({ id: randomUUID(), tenant_id, source_type, source_url, title, body, status, created_at });
+const kbDocument = (tenant_id, { source_type, source_url = null, title = null, body = null, status = "processing", error = null, created_at = new Date().toISOString() }) =>
+  ({ id: randomUUID(), tenant_id, source_type, source_url, title, body, status, error, created_at });
 /**
  * { seed?, error?, docs?, docsError?, faqs?, role? }: seed adds services and resource types; docs adds
  * kb_documents; faqs adds two FAQs; role is the member's role (owner by default). error / docsError

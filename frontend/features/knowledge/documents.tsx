@@ -2,14 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "@/components/shared/states";
-import { formatError, type FormattedError } from "@/lib/errors";
+import { ApiError, formatError, type FormattedError } from "@/lib/errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { ConfirmDialog } from "./confirm-dialog";
 import { FlashStatus, useFlash } from "./flash";
 import {
   deleteDocument,
   describeKbWriteError,
+  DOCUMENT_FAILED_FALLBACK,
+  DOCUMENT_LIMIT,
   DOCUMENT_STATUS_TEXT,
+  documentLimitReached,
   documentMeta,
   explainNotFound,
   hasProcessing,
@@ -31,8 +34,10 @@ import { useDocumentWatch } from "./use-document-watch";
 // Reads the business's kb_documents under RLS. Upload (POST /api/kb/documents, multipart) and Delete
 // (DELETE /api/kb/documents/:id) go through the API, owners and admins only. An upload is accepted for
 // processing, not finished: the tile shows Processing until Realtime or polling sees it ready or
-// failed. The prototype's "sent 62 times" counts describe files sent to customers, a different
-// feature, and are not shown. Once a write finds the document routes aren't deployed yet, the section
+// failed. A failed tile shows kb_documents.error as the server wrote it and offers Upload again and
+// Delete (the file isn't kept, so there is no retry). A business keeps at most 100 documents: at the
+// limit Upload is off until one is deleted. The prototype's "sent 62 times" counts describe files sent
+// to customers, a different feature, and are not shown. Once a write finds the document routes aren't deployed yet, the section
 // says so and Upload and Delete are switched off (kb-content.ts, "Not deployed yet").
 
 type ListState = { status: "loading" } | { status: "error"; error: FormattedError } | { status: "ready"; documents: KbDocument[] };
@@ -98,7 +103,11 @@ export function Documents({ tenantId, timeZone, canWrite }: { tenantId: string; 
   }
 
   async function upload(file: File, title: string) {
-    const doc = await uploadDocument(tenantId, file, title).catch((err: unknown) => writeFailed(err, null));
+    const doc = await uploadDocument(tenantId, file, title).catch((err: unknown) => {
+      // upstream_failed: the document was saved, then marked failed when its job couldn't start. Show it.
+      if (err instanceof ApiError && err.body.error.code === "upstream_failed") void refresh();
+      return writeFailed(err, null);
+    });
     changes.current += 1;
     setList((prev) => (prev.status === "ready" ? { ...prev, documents: upsertDocument(prev.documents, doc) } : prev));
     setDialog({ kind: "none" });
@@ -113,6 +122,9 @@ export function Documents({ tenantId, timeZone, canWrite }: { tenantId: string; 
     flash(`Deleted ${doc.name}`);
   }
 
+  const atLimit = documentLimitReached(documents);
+  const uploadOff = !canWrite || writesUnavailable || list.status !== "ready" || atLimit;
+
   return (
     <section aria-labelledby="documents-heading" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: "2px solid var(--color-text)", paddingBottom: "8px", gap: "12px" }}>
@@ -123,14 +135,18 @@ export function Documents({ tenantId, timeZone, canWrite }: { tenantId: string; 
           type="button"
           className="btn btn-ghost"
           onClick={() => setDialog({ kind: "upload" })}
-          disabled={!canWrite || writesUnavailable || list.status !== "ready"}
+          disabled={uploadOff}
           aria-describedby={canWrite && writesUnavailable ? "documents-upload-note documents-unavailable" : "documents-upload-note"}
         >
           Upload
         </button>
       </div>
       <p id="documents-upload-note" className="app-hint" style={{ margin: 0 }}>
-        {canWrite ? "PDF, Word (.docx), text or Markdown, up to 5 MB. The AI uses a document once it’s ready." : "Only an owner or admin can upload or delete documents."}
+        {!canWrite
+          ? "Only an owner or admin can upload or delete documents."
+          : atLimit
+            ? `You have ${DOCUMENT_LIMIT} documents, the most a business can keep. Delete one to upload another.`
+            : "PDF, Word (.docx), text or Markdown, up to 5 MB. The AI uses a document once it’s ready."}
       </p>
 
       {canWrite && writesUnavailable ? (
@@ -177,9 +193,14 @@ export function Documents({ tenantId, timeZone, canWrite }: { tenantId: string; 
                   >
                     {DOCUMENT_STATUS_TEXT[d.status]}
                   </span>
-                  {d.status === "failed" ? <span style={{ fontSize: "12px", color: "var(--color-neutral-700)" }}>Couldn’t be read. Delete it and try another file.</span> : null}
+                  {d.status === "failed" ? <span style={{ fontSize: "12px", color: "var(--color-neutral-700)" }}>{d.error ?? DOCUMENT_FAILED_FALLBACK}</span> : null}
+                  {canWrite && d.status === "failed" ? (
+                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px", marginLeft: "auto" }} aria-label={`Upload ${d.name} again`} disabled={uploadOff} onClick={() => setDialog({ kind: "upload" })}>
+                      Upload again
+                    </button>
+                  ) : null}
                   {canWrite ? (
-                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px", marginLeft: "auto" }} aria-label={`Delete ${d.name}`} disabled={writesUnavailable} onClick={() => setDialog({ kind: "delete", doc: d })}>
+                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px", marginLeft: d.status === "failed" ? 0 : "auto" }} aria-label={`Delete ${d.name}`} disabled={writesUnavailable} onClick={() => setDialog({ kind: "delete", doc: d })}>
                       Delete
                     </button>
                   ) : null}

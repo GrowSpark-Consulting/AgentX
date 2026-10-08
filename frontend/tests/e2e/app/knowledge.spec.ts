@@ -4,7 +4,8 @@ import { mockKbApi, ROUTE_MISSING, type Gap, type KbApi } from "../support/kb-ap
 
 // The real Knowledge base at /dashboard/knowledge. Services, FAQs and documents are read from
 // mock-supabase.mjs under RLS; the knowledge-base API (docs/contracts.md section 9: FAQs, uploads,
-// gaps) is support/kb-api.ts, a contract-shaped stand-in for routes Dev 1 hasn't built. Every test
+// gaps) is support/kb-api.ts, a contract-shaped stand-in (the document routes mirror the built API;
+// the FAQ and gap routes aren't built yet). Every test
 // gets its own account and business (POST /__mock/services-account), so the desktop, tablet and phone
 // projects can add, edit and delete at the same time.
 
@@ -245,12 +246,12 @@ type StoredDoc = { id: string; tenant_id: string; source_type: string; title: st
 async function storedDocs(request: APIRequestContext, tenantId: string): Promise<StoredDoc[]> {
   return (await request.get(`${MOCK_SUPABASE_URL}/__mock/kb-documents?tenant=${tenantId}`)).json();
 }
-async function addDoc(request: APIRequestContext, row: { tenant_id: string; source_type: string; title: string; status: string; body?: string }): Promise<StoredDoc> {
+async function addDoc(request: APIRequestContext, row: { tenant_id: string; source_type: string; title: string; status: string; body?: string; error?: string }): Promise<StoredDoc> {
   return (await request.post(`${MOCK_SUPABASE_URL}/__mock/kb-documents`, { data: row })).json();
 }
-/** What the ingest job does when it finishes (or gives up on) a document. */
-async function setStatus(request: APIRequestContext, id: string, status: "ready" | "failed") {
-  await request.patch(`${MOCK_SUPABASE_URL}/__mock/kb-documents?id=${id}`, { data: { status } });
+/** What the ingest job does when it finishes (or gives up on) a document; `error` is its reason for failing. */
+async function setStatus(request: APIRequestContext, id: string, status: "ready" | "failed", error?: string) {
+  await request.patch(`${MOCK_SUPABASE_URL}/__mock/kb-documents?id=${id}`, { data: { status, error } });
 }
 async function kbReads(request: APIRequestContext, email: string): Promise<{ method: string; table: string; query: string }[]> {
   const log = (await (await request.get(`${MOCK_SUPABASE_URL}/__mock/rest-log?email=${email}`)).json()) as { method: string; table: string; query: string }[];
@@ -525,10 +526,11 @@ test.describe("Knowledge base · documents", () => {
     await openKnowledge(page, account);
     await expect(tile(page, "Scanned brochure.pdf")).toContainText("Processing");
 
-    await setStatus(request, doc.id, "failed");
+    // The job gives up and writes its reason (backend/src/kb/ingest.ts), which the tile shows as it is.
+    await setStatus(request, doc.id, "failed", "This document has no text to learn from.");
     await page.clock.runFor(3_000);
     await expect(tile(page, "Scanned brochure.pdf")).toContainText("Failed");
-    await expect(tile(page, "Scanned brochure.pdf")).toContainText("Couldn’t be read");
+    await expect(tile(page, "Scanned brochure.pdf")).toContainText("This document has no text to learn from.");
 
     // Nothing is processing any more: ten minutes later, no further reads.
     const before = (await kbReads(request, account.email)).length;
@@ -590,6 +592,92 @@ test.describe("Knowledge base · documents", () => {
     await expectNoHorizontalOverflow(page);
     await dialog(page).getByRole("button", { name: "Cancel" }).click();
     await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 0");
+  });
+
+  test("a failed document shows the server's reason, and offers Upload again and Delete", async ({ page, request, kb }) => {
+    // The new upload is processing, so the page subscribes to Realtime.
+    await mockRealtime(page);
+    const account = await newAccount(request);
+    const reason = "We couldn't reach the embeddings service. Try again in a moment.";
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: "Brochure.pdf", status: "failed", error: reason });
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: "Menu.pdf", status: "ready" });
+    await openKnowledge(page, account);
+    await expect(tile(page, "Brochure.pdf")).toContainText(reason);
+    await expect(tile(page, "Brochure.pdf")).not.toContainText("Couldn’t be read");
+    await expect(tile(page, "Brochure.pdf").getByRole("button", { name: "Delete Brochure.pdf" })).toBeVisible();
+    // Only failed tiles offer Upload again; the file isn't kept, so it opens the upload dialog.
+    await expect(tile(page, "Menu.pdf").getByRole("button", { name: /again/ })).toHaveCount(0);
+    await tile(page, "Brochure.pdf").getByRole("button", { name: "Upload Brochure.pdf again" }).click();
+    await expect(dialog(page)).toContainText("Upload a document");
+    await dialog(page).getByLabel("File").setInputFiles({ name: "Brochure.txt", mimeType: "text/plain", buffer: Buffer.from("Bridal package ₹25,000") });
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    // No title: named after the file without its extension, like the API does.
+    await expect(tile(page, "Brochure")).toHaveCount(2);
+    await expect(toast(page, "Brochure is processing")).toBeVisible();
+    expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/documents"]);
+    expectSignedCall(kb.writes()[0], account.tenantId);
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("a title over 200 characters is refused before sending, and the API's title error shows on the title field", async ({ page, request, kb }) => {
+    const account = await newAccount(request);
+    await openKnowledge(page, account);
+    await docsRegion(page).getByRole("button", { name: "Upload" }).click();
+    await dialog(page).getByLabel("File").setInputFiles({ name: "Prices.md", mimeType: "text/markdown", buffer: Buffer.from("# Prices") });
+    const title = dialog(page).getByLabel("Title (optional)");
+    await title.fill("x".repeat(201));
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page).getByText("Use at most 200 characters")).toBeVisible();
+    await expect(title).toHaveAttribute("aria-invalid", "true");
+    expect(kb.writes()).toEqual([]);
+
+    // Typing clears it; exactly 200 is allowed, and the API's own title error goes on the same field.
+    await title.fill("x".repeat(200));
+    await expect(dialog(page).getByText("Use at most 200 characters")).toHaveCount(0);
+    kb.fail("POST /api/kb/documents", { status: 400, code: "validation_failed", message: "Titles can be at most 200 characters.", fields: { title: "Use at most 200 characters." } });
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page).getByText("Use at most 200 characters.")).toBeVisible();
+    await expect(title).toHaveAttribute("aria-invalid", "true");
+    await expect(dialog(page).getByLabel("File")).not.toHaveAttribute("aria-invalid", "true");
+    expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/documents"]);
+    await expectDialogFits(page);
+  });
+
+  test("when the job can't start (upstream_failed), says so and shows the document the API saved as failed", async ({ page, request, kb }) => {
+    const account = await newAccount(request);
+    await openKnowledge(page, account);
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 0");
+    // What the API leaves behind: the upload saved, then marked failed because Inngest refused the event.
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: "Price list", status: "failed", error: "We couldn't start processing this file. Upload it again." });
+    kb.fail("POST /api/kb/documents", { status: 502, code: "upstream_failed", message: "We couldn't start processing this file. Upload it again." });
+
+    await docsRegion(page).getByRole("button", { name: "Upload" }).click();
+    await dialog(page).getByLabel("File").setInputFiles({ name: "Price list.md", mimeType: "text/markdown", buffer: Buffer.from("# Prices") });
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText("Couldn't upload the document");
+    await expect(dialog(page).getByRole("alert")).toContainText("We couldn't start processing this file. Upload it again.");
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 1");
+    await expect(tile(page, "Price list")).toContainText("Failed");
+    await expect(page.getByRole("status").filter({ hasText: /processing/ })).toHaveCount(0);
+  });
+
+  test("at 100 documents Upload is off and says why, until one is deleted", async ({ page, request, kb }) => {
+    const account = await newAccount(request);
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: "Old scan.pdf", status: "failed", error: "This document has no text to learn from." });
+    for (let i = 1; i < 100; i += 1) await addDoc(request, { tenant_id: account.tenantId, source_type: "upload", title: `Doc ${i}.txt`, status: "ready" });
+    await openKnowledge(page, account);
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 100");
+    await expect(docsRegion(page).getByRole("button", { name: "Upload", exact: true })).toBeDisabled();
+    await expect(docsRegion(page)).toContainText("You have 100 documents, the most a business can keep. Delete one to upload another.");
+    await expect(tile(page, "Old scan.pdf").getByRole("button", { name: "Upload Old scan.pdf again" })).toBeDisabled();
+
+    await tile(page, "Old scan.pdf").getByRole("button", { name: "Delete Old scan.pdf" }).click();
+    await dialog(page).getByRole("button", { name: "Delete document" }).click();
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 99");
+    await expect(docsRegion(page).getByRole("button", { name: "Upload", exact: true })).toBeEnabled();
+    await expect(docsRegion(page)).not.toContainText("the most a business can keep");
+    expect(kb.writes().map((c) => c.route)).toEqual(["DELETE /api/kb/documents/:id"]);
   });
 
   test("deletes a document after confirming", async ({ page, request, kb }) => {

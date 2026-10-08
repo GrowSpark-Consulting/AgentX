@@ -2,9 +2,12 @@ import type { APIRequestContext, Page, Route } from "@playwright/test";
 import { MOCK_SUPABASE_URL } from "./app";
 
 // The knowledge-base routes of docs/contracts.md section 9, emulated in the browser with page.route.
-// The real routes (backend/src/server/routes.ts, Dev 1) aren't built yet: today the API answers each of
-// them with ROUTE_MISSING below, which the page shows as "not available yet". These tests cover the
-// contract the page is built for. It speaks the contract only: paths, methods, bodies, status codes
+// POST /api/kb/documents and DELETE /api/kb/documents/:id are built (backend/src/kb/documents.ts, #60)
+// and this stand-in mirrors them: the title and 100-document checks, the default title, and their
+// messages. Uploading needs Inngest and the embeddings provider, which the e2e API doesn't have, so the
+// routes stay emulated here. The FAQ and gap routes aren't built yet: the API answers them with
+// ROUTE_MISSING below, which the page shows as "not available yet". The stand-in speaks the contract
+// only: paths, methods, bodies, status codes
 // (section 6) and the `{ error: { code, message, fields? } }` envelope. Rows live in mock-supabase.mjs, so the page's RLS
 // reads see what the "API" wrote. Like the real API, the business comes from X-Pakka-Tenant and the
 // member's role decides writes (owner and admin; staff may answer a gap); nothing is read from the body.
@@ -27,6 +30,9 @@ type StoredDoc = { id: string; tenant_id: string; source_type: string; title: st
 const UUID_SEGMENT = /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 const UPLOAD_TYPES = /\.(pdf|docx|txt|md)$/i;
+/** backend/src/kb/documents.ts: TITLE_MAX (code points) and MAX_DOCUMENTS (FAQs not counted). */
+const TITLE_MAX = 200;
+const MAX_DOCUMENTS = 100;
 
 export interface KbApi {
   calls: KbCall[];
@@ -106,14 +112,22 @@ export async function mockKbApi(page: Page, request: APIRequestContext, { role =
           return error(route, { status: 422, code: "validation_failed", message: "Send the file as multipart/form-data.", fields: { file: "Choose a file to upload." } });
         }
         const fileName = /name="file"; filename="([^"]*)"/.exec(raw)?.[1] ?? "";
-        const title = /name="title"\r\n\r\n([^\r]*)\r\n/.exec(raw)?.[1];
+        const title = /name="title"\r\n\r\n([^\r]*)\r\n/.exec(raw)?.[1]?.trim();
+        if (title && [...title].length > TITLE_MAX) {
+          return error(route, { status: 400, code: "validation_failed", message: `Titles can be at most ${TITLE_MAX} characters.`, fields: { title: `Use at most ${TITLE_MAX} characters.` } });
+        }
         if (!UPLOAD_TYPES.test(fileName)) {
           return error(route, { status: 422, code: "validation_failed", message: "Check the file.", fields: { file: "Upload a PDF, DOCX, TXT or MD file." } });
         }
         if (bytes.length > UPLOAD_MAX_BYTES + 4096) {
           return error(route, { status: 422, code: "validation_failed", message: "Check the file.", fields: { file: "Files can be at most 5 MB." } });
         }
-        const row = await insert({ tenant_id: tenant, source_type: "upload", title: title || fileName, status: "processing" });
+        if (docs.filter((d) => d.source_type !== "manual").length >= MAX_DOCUMENTS) {
+          const message = `You can keep up to ${MAX_DOCUMENTS} documents. Delete one you no longer need, then upload again.`;
+          return error(route, { status: 400, code: "validation_failed", message, fields: { file: message } });
+        }
+        // With no title, the file name without its extension (the API's titleFromName).
+        const row = await insert({ tenant_id: tenant, source_type: "upload", title: title || fileName.replace(/\.[^.]+$/, ""), status: "processing" });
         return json(route, 202, { id: row.id, title: row.title, sourceType: "upload", status: "processing", createdAt: row.created_at });
       }
       case "GET /api/kb/gaps":
