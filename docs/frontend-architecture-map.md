@@ -92,7 +92,7 @@ frontend/
 │   ├── onboarding/              onboarding-flow.tsx, step-*.tsx, meta-popup.tsx, primitives.tsx
 │   └── shared/                  empty until something is genuinely shared
 ├── features/
-│   ├── onboarding/{data,state}  onboarding mock data + state model
+│   ├── onboarding/{data,state,packs}  onboarding mock data, state model, active packs (vertical_packs)
 │   ├── leads/ calendar/ agent/ knowledge/ templates/ billing/ settings/ team/
 │   │                            one prototype screen each (pakka-<screen>.tsx), fixtures only
 │   ├── inbox/                   real Inbox: data.ts (RLS reads, view model), use-inbox-realtime.ts,
@@ -186,7 +186,10 @@ and an existing account that never set up a business is sent back to onboarding 
 on onboarding's Business step, once the user has typed its name and picked a trade:
 `lib/onboarding/trial.ts` calls `POST /api/onboarding/trial`, where the API runs `startTrialFor` and
 `createTrialTenant` with the token's user id and the trade's pack key, mapped on the server
-(`TRIAL_PACKS` in `@pakka/types`; trades without a pack can't start a trial). An account that already
+(`TRIAL_PACKS` in `@pakka/types`; trades without a pack can't start a trial). The step offers only the
+trades whose pack is active in `vertical_packs`, read by `onboarding/page.tsx` as the signed-in user
+(`features/onboarding/packs`: key and `definition->>label` only; the label names the card). If that
+read fails it offers none, never a built-in list. An account that already
 belongs to a business, in any role, gets no new one. Onboarding has no saved progress or "completed"
 flag yet.
 

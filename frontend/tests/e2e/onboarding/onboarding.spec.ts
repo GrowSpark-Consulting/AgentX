@@ -85,7 +85,7 @@ test("walks every step without overflow, and Back returns", async ({ page }) => 
   await expect(name).toHaveValue("");
   await expect(name).toHaveAttribute("placeholder", "Skyline Homes");
   await expect(next(page, "Continue")).toBeDisabled();
-  await option(page, "Salon").click();
+  await option(page, "Beauty parlour").click();
   await expect(name).toHaveValue("");
   await name.fill("   ");
   await expect(next(page, "Continue")).toBeDisabled();
@@ -260,7 +260,7 @@ test.describe("onboarding needs an account", () => {
     await expect(page.getByText(/6-digit code sent to \+91/)).toBeVisible();
     await expect(page.getByText(/sent to .*@/)).toHaveCount(0);
 
-    await walkTo(page, "Live", "Salon", { codeSent: true });
+    await walkTo(page, "Live", "Beauty parlour", { codeSent: true });
     await expect(page.getByRole("link", { name: "Go to my dashboard" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
   });

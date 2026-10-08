@@ -69,10 +69,16 @@ test.describe("dashboard for an account with no business (development)", () => {
 
     const calls = await restCalls(page, email);
     expect(calls.length).toBeGreaterThan(0);
-    // Only reads of the user's own memberships: no writes, no tenant-scoped tables, no made-up id.
+    // Only reads of the user's own memberships, and onboarding's read of the global pack catalogue (the
+    // trades it offers): no writes, no tenant-scoped tables, no made-up id.
     for (const call of calls) {
       expect(call.method).toBe("GET");
-      expect(call.table).toBe("memberships");
+      if (call.table === "vertical_packs") {
+        const query = new URLSearchParams(call.query);
+        expect([...query.entries()]).toEqual([["select", "key,label:definition->>label"], ["active", "eq.true"]]);
+      } else {
+        expect(call.table).toBe("memberships");
+      }
     }
     expect(JSON.stringify(calls)).not.toMatch(/tenant_id=eq\.(undefined|null|$)/);
   });
