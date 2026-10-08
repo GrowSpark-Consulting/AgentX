@@ -1,3 +1,4 @@
+import { registerWhatsAppSender } from "../channels/whatsapp/message-sender";
 import { EnvError, serverEnv, type ServerEnv } from "../lib/env";
 import { bodyLimitFor, createApp, logPathFor } from "./app";
 import { allowedOrigins, withCors } from "./cors";
@@ -15,6 +16,9 @@ try {
   console.error(err instanceof EnvError ? `[server] ${err.message}` : "[server] could not read the environment");
   process.exit(1);
 }
+
+// Before any request: notify.send (HTTP routes and Inngest functions alike) sends through WhatsApp.
+registerWhatsAppSender();
 
 const origins = allowedOrigins(env);
 const server = createHttpServer(createApp({ allowedOrigins: origins }), {

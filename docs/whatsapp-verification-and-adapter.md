@@ -43,7 +43,7 @@ deliveries will get errors. The callback check only needs the GET.
 **Open item:** clients on `manual_byo` set their own verify token in their own Meta app, which will not match
 ours. A decision for Raja before `manual_byo` goes live.
 
-# Part 2: WhatsApp adapter (`sendText` and `markRead`)
+# Part 2: WhatsApp adapter (`sendText`, `sendTemplate` and `markRead`)
 
 ## 2.1 What it is
 
@@ -60,21 +60,32 @@ type AdapterError = { code: ErrorCode; retryable: boolean; outcomeUnknown: boole
 type AdapterResult<T> = { ok: true; value: T } | { ok: false; error: AdapterError };
 
 sendText(connection, to, body, deps?): Promise<AdapterResult<SendResult>>        // SendResult = { providerMsgId }
+sendTemplate(connection, to, { name, language, params }, deps?): Promise<AdapterResult<SendResult>>
 markRead(connection, wamid, deps?):    Promise<AdapterResult<{ success: true }>>
 ```
 
-Both return a result and never throw. `to` is normalised to E.164 and sent with its `+` (Meta supports it and
-recommends it). The text must be 1 to 4096 characters. A bad number, text, phone number id or wamid gives
+All three return a result and never throw. `to` is normalised to E.164 and sent with its `+` (Meta supports it
+and recommends it). The text must be 1 to 4096 characters. A bad number, text, phone number id or wamid gives
 `validation_failed` before any network call.
 
-## 2.2 For Dev 2
+`sendTemplate` sends an approved template: its exact versioned name (`booking_confirmed_v1`), a language code
+(`en`, `ta`, `en_US`) and the body variables in `{{1}}…` order, as
+`components: [{ type: "body", parameters: [{ type: "text", text }] }]` (left out when there are none). A variable
+that is empty, over 1024 characters, or has a newline, a tab or more than 4 spaces in a row is refused with
+`validation_failed` before any network call (Meta would answer 132018). Header and button variables are not
+supported yet; the Day 4 staff alert's URL buttons will need them.
 
-**How it plugs in.** `notify.send` asks a `SenderFactory` (registered with `registerSender`, see
-`backend/src/notify/sender.ts`) for a `MessageSender` bound to one connection. `MessageSender` has `sendText`
-and `sendTemplate`, and `notify.send` expects it to **throw** on failure. So a later wrapper must load the
-connection, call this adapter, and throw on `ok: false`. Not built yet: the wrapper, `sendTemplate`, the
-connection loader and `registerSender` at startup. `notify.send` already checks the 24-hour window and picks
-free text or a template; the adapter does not.
+## 2.2 How `notify.send` uses it
+
+**How it plugs in (built by Dev 2, 8 Oct).** `backend/src/channels/whatsapp/message-sender.ts` is the
+`SenderFactory` that `server/main.ts` registers at startup (`registerWhatsAppSender()`), so `notify.send` no
+longer answers `not_available`. For each send it loads the connection with the service role (`phone_number_id`,
+`token_enc` and `status`, filtered by tenant and id; anything not `active` is `whatsapp_not_connected`) and
+returns a `MessageSender` bound to it. Its `sendText` and `sendTemplate` call this adapter and **throw** on
+`ok: false`: `OutsideWindowError` for 131047, otherwise a `SendError` carrying the adapter's `code`, `retryable`
+and `outcomeUnknown` (both in `backend/src/notify/sender.ts`). The token stays encrypted until the adapter
+decrypts it for the call. `notify.send` checks the 24-hour window and picks free text or a template; the adapter
+does not.
 
 **Errors.** The Meta code wins; the HTTP status is only the fallback. Only existing codes are used.
 
@@ -92,11 +103,14 @@ free text or a template; the adapter does not.
 could not be read. Timeout and network failure are also `retryable: true`. Error messages are fixed strings;
 Meta's own text is never passed on, and `meta` holds integers only.
 
-**Two open questions (sent to Shaaz):**
-1. `notify.send` turns every sender failure into a generic `upstream_failed` and refunds. Can it pass the error
-   code and the `retryable` flag through, so `outside_window`, `rate_limited` and a broken token are not lost?
-2. A timeout may mean Meta accepted the message, yet `notify.send` refunds when the sender throws. Refund, or hold
-   for reconciliation? (To be agreed with Raja too.)
+**The two questions sent to Shaaz, answered on 8 Oct:**
+1. Can `notify.send` pass the error code and the `retryable` flag through? **Yes, built.** A `failed` outcome
+   now keeps the sender's code (`outside_window`, `rate_limited`, `whatsapp_not_connected`, `validation_failed`,
+   `upstream_failed`) and always carries `retryable` and `outcomeUnknown`.
+2. Refund, or hold for reconciliation, after a timeout? **Dev 2 proposes holding, but it waits for Raja**
+   because it changes billing ([contracts.md](contracts.md), decision 16). Holding also needs a way to learn the
+   outcome later, such as Meta's status webhook. Until then `notify.send` refunds as before and reports
+   `outcomeUnknown: true`, so no caller sends the message again.
 
 ## 2.3 Token handling
 
@@ -125,17 +139,20 @@ shapes (`messages[0].id`, `{"success": true}`), and the error codes in the table
 
 | | Do |
 |---|---|
-| Dev 1 | The `MessageSender` wrapper, `sendTemplate`, the connection loader, `registerSender` at startup, and marking a connection `failed` on an expired token. The POST webhook handler, added as `POST` on `/api/webhooks/whatsapp` in `backend/src/server/routes.ts` (the request's raw body is available for the signature check). |
-| Dev 2 | Answer the two open questions above, then wire the registered factory into `notify.send`. Set `META_WEBHOOK_VERIFY_TOKEN` in the Railway staging environment (it must match the token Raja enters in the Meta app). |
-| Dev 3 | Nothing in the UI depends on this yet. Screens may later see `outside_window`, `rate_limited`, `whatsapp_not_connected`, `validation_failed` and `upstream_failed`, but until question 1 is settled `notify.send` still answers a generic `upstream_failed`. |
+| Dev 1 | Marking a connection `failed` when a send says its token no longer works (`whatsapp_not_connected`). Header and button variables in `sendTemplate` when the Day 4 staff alert needs them. (The POST webhook handler is done, #50.) |
+| Dev 2 | Done on 8 Oct: the `MessageSender` wrapper, `sendTemplate`, the connection loader, `registerSender` at startup and the answers above. Still to do: set `META_WEBHOOK_VERIFY_TOKEN` and `META_APP_SECRET` in Railway (the token must match the one Raja enters in the Meta app). |
+| Dev 3 | The test-message screen can now get the real send's errors: `outside_window` (409), `rate_limited` (429), `whatsapp_not_connected` (409), `validation_failed` (422) and `upstream_failed` (502), each with a message ready to show. |
 | Raja | Set the webhook callback URL and the verify token in the Meta app, add the staging DNS, and decide the `manual_byo` verify-token question. Both his setup and Dev 2's Railway variable are needed before Meta can verify the callback. |
 
 # Status
 
-Done: the webhook GET verification and the adapter with `sendText` and `markRead`. Tests:
+Done: the webhook GET verification and the adapter with `sendText`, `sendTemplate` and `markRead`. Tests:
 `verify-challenge.test.ts` (right and wrong mode, token and challenge, empty or missing token, different token
 lengths, the log line, no token in any response), the route test `backend/src/server/webhook.test.ts`
 (GET and POST only, other methods 405; 200 and 403; no CORS headers), `webhook-post.test.ts` (the POST route),
-`adapter.test.ts` (exact request, token handling, errors, timeouts, validation, `markRead`) and
-`meta-errors.test.ts` (the mapping table). The POST webhook route is built. **Next:** the `MessageSender` wrapper
-and `sendTemplate`, then the connection loader and `registerSender`.
+`adapter.test.ts` (exact request, token handling, errors, timeouts, validation, `sendTemplate`, `markRead`) and
+`meta-errors.test.ts` (the mapping table). The POST webhook route is built. Built on 8 Oct (Dev 2): the
+`MessageSender` wrapper, the connection loader and the startup registration, tested in
+`message-sender.test.ts`, including `notify.send` end to end through the registered sender with only the
+database and Meta faked. **Next:** marking a connection `failed` on a broken token, and template header and
+button variables.
