@@ -65,7 +65,7 @@ test.describe("Knowledge base · services", () => {
     const account = await newAccount(request, { seed: true });
     await openKnowledge(page, account);
     await expect(page.getByRole("heading", { name: "Services & prices · 3" })).toBeVisible();
-    await expect(table(page).getByRole("columnheader")).toHaveText(["Service", "Length", "Booked with", "Price range", "Status", "Actions"]);
+    await expect(table(page).getByRole("columnheader")).toHaveText(["Service", "Length", "Booking rules", "Booked with", "Price range", "Status", "Actions"]);
     const rows = table(page).locator("tbody tr");
     await expect(rows).toHaveCount(3);
     await expect(rows.nth(0)).toContainText("Bridal trial");

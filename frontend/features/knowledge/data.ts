@@ -8,10 +8,11 @@ import { formatError, type FormattedError } from "@/lib/errors";
 // also names the session's tenant. Rows are parsed with Zod and mapped to the view model below.
 //
 // Only real columns are edited: name, duration_min, price_min, price_max (integer rupees),
-// resource_type and active. The prototype's other columns (area, category, details, free-text
-// status) have no storage and are not shown.
+// resource_type, active, and (migration 0015) buffer_min and min_notice_min, which the slot engine
+// reads. The prototype's other columns (area, category, details, free-text status) have no storage
+// and are not shown.
 
-const SERVICE_COLUMNS = "id, tenant_id, name, duration_min, price_min, price_max, resource_type, active";
+const SERVICE_COLUMNS = "id, tenant_id, name, duration_min, price_min, price_max, resource_type, active, buffer_min, min_notice_min";
 
 /** int4, the column type of duration_min and the prices. */
 const INT_MAX = 2_147_483_647;
@@ -19,6 +20,13 @@ export const NAME_MAX = 120;
 export const RESOURCE_TYPE_MAX = 40;
 /** A week; longer bookings are date ranges, not a single block on the calendar. */
 export const DURATION_MAX = 7 * 24 * 60;
+/** services_buffer_min_check (0015): time kept clear on each side of a booking. */
+export const BUFFER_MAX = 240;
+/** services_min_notice_min_check (0015): a week. */
+export const MIN_NOTICE_MAX = 7 * 24 * 60;
+/** The column defaults in 0015, for a new service. */
+export const DEFAULT_BUFFER_MIN = 0;
+export const DEFAULT_MIN_NOTICE_MIN = 60;
 
 export const ServiceRow = z.object({
   id: z.guid(),
@@ -29,6 +37,8 @@ export const ServiceRow = z.object({
   price_max: z.number().int().nullable(),
   resource_type: z.string(),
   active: z.boolean(),
+  buffer_min: z.number().int(),
+  min_notice_min: z.number().int(),
 });
 export type ServiceRow = z.input<typeof ServiceRow>;
 
@@ -40,6 +50,10 @@ export interface Service {
   priceMax: number | null;
   resourceType: string;
   active: boolean;
+  /** Minutes kept free before and after each booking on the same resource. */
+  bufferMin: number;
+  /** How far ahead of now the earliest booking may start, in minutes. */
+  minNoticeMin: number;
 }
 
 export function toService(row: z.output<typeof ServiceRow>): Service {
@@ -51,6 +65,8 @@ export function toService(row: z.output<typeof ServiceRow>): Service {
     priceMax: row.price_max,
     resourceType: row.resource_type,
     active: row.active,
+    bufferMin: row.buffer_min,
+    minNoticeMin: row.min_notice_min,
   };
 }
 
@@ -64,9 +80,20 @@ export interface ServiceDraft {
   priceMax: string;
   resourceType: string;
   active: boolean;
+  bufferMin: string;
+  minNoticeMin: string;
 }
 
-export const EMPTY_DRAFT: ServiceDraft = { name: "", durationMin: "", priceMin: "", priceMax: "", resourceType: "", active: true };
+export const EMPTY_DRAFT: ServiceDraft = {
+  name: "",
+  durationMin: "",
+  priceMin: "",
+  priceMax: "",
+  resourceType: "",
+  active: true,
+  bufferMin: String(DEFAULT_BUFFER_MIN),
+  minNoticeMin: String(DEFAULT_MIN_NOTICE_MIN),
+};
 
 export function toDraft(s: Service): ServiceDraft {
   return {
@@ -76,8 +103,20 @@ export function toDraft(s: Service): ServiceDraft {
     priceMax: s.priceMax === null ? "" : String(s.priceMax),
     resourceType: s.resourceType,
     active: s.active,
+    bufferMin: String(s.bufferMin),
+    minNoticeMin: String(s.minNoticeMin),
   };
 }
+
+/** Whole minutes within [0, max]; the database checks the same range. */
+const Minutes = (empty: string, max: number, tooLong: string) =>
+  z
+    .string()
+    .trim()
+    .min(1, empty)
+    .regex(/^\d+$/, "Enter whole minutes, like 15")
+    .transform(Number)
+    .pipe(z.number().max(max, tooLong));
 
 /** Whole rupees; "1,500" and "₹1500" are accepted, blank means no price. */
 const Rupees = z.string().transform((value, ctx): number | null => {
@@ -118,6 +157,8 @@ export const ServiceInput = z
       .min(1, "Say who or what is booked, like staff")
       .max(RESOURCE_TYPE_MAX, `Keep this under ${RESOURCE_TYPE_MAX} characters`),
     active: z.boolean(),
+    bufferMin: Minutes("Enter the gap in minutes, or 0 for none", BUFFER_MAX, `Keep the gap to ${BUFFER_MAX} minutes (4 hours) or less`),
+    minNoticeMin: Minutes("Enter the notice in minutes, or 0 for none", MIN_NOTICE_MAX, "Keep the notice to 7 days (10,080 minutes) or less"),
   })
   .superRefine((v, ctx) => {
     if (v.priceMin !== null && v.priceMax !== null && v.priceMin > v.priceMax) {
@@ -131,6 +172,8 @@ export const ServiceInput = z
     price_max: v.priceMax,
     resource_type: v.resourceType,
     active: v.active,
+    buffer_min: v.bufferMin,
+    min_notice_min: v.minNoticeMin,
   }));
 export type ServiceInput = z.output<typeof ServiceInput>;
 
@@ -294,4 +337,11 @@ export function formatDuration(minutes: number): string {
   if (minutes >= 1440 && minutes % 1440 === 0) return minutes === 1440 ? "1 day" : `${minutes / 1440} days`;
   if (minutes >= 120 && minutes % 60 === 0) return `${minutes / 60} hours`;
   return `${minutes} min`;
+}
+
+/** The slot engine's rules for one service: "15 min gap · 60 min notice", "No gap · No notice". */
+export function formatBookingRules(s: Pick<Service, "bufferMin" | "minNoticeMin">): string {
+  const gap = s.bufferMin > 0 ? `${formatDuration(s.bufferMin)} gap` : "No gap";
+  const notice = s.minNoticeMin > 0 ? `${formatDuration(s.minNoticeMin)} notice` : "No notice";
+  return `${gap} · ${notice}`;
 }

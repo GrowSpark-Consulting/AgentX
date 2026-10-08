@@ -19,6 +19,9 @@ still runs on fixtures and remains the visual reference for every screen.
 | Document upload | **Blocked on Dev 1**: `POST /api/kb/documents` not built or specified | Upload shown switched off |
 | Sending, AI/Human switch, lead card | Not started (Dev 3 routes; send needs Dev 1's registered sender) | Controls shown switched off |
 | PostgreSQL / RLS verification | **Pending**: needs Docker | `0010_inbox_realtime.sql`, `inbox_rls.test.sql`, `services_rls.test.sql` not yet run |
+| `/dashboard/settings/booking` (Day 3) | Built: business hours, staff and resources (own hours, service-area pincodes), services (length, gap, minimum notice) | browser client → `tenants.business_hours`, `resources`, `services` under RLS (0002 member writes; 0015 `buffer_min`, `min_notice_min`). Owners and admins edit; staff read-only. The shapes are the slot engine's (`contracts.md` section 3) |
+| `/dashboard/leads`, `/dashboard/leads/[leadId]` (Day 3) | Built, read-only | browser client → `leads` + `contacts`; answers labelled from `vertical_packs` (by `tenants.vertical`, `vertical_version`); timeline from `conversations`, `handoffs`, `messages`, `bookings`. Score and temperature shown as stored, never computed |
+| `/dashboard/calendar` (Day 3) | Built, read-only | browser client → `bookings` (range query) + `resources`, in `tenants.timezone`. Lapsed holds show as expired; cancelled, moved and expired only on request; bookings with no resource in their own lane |
 
 What Dev 3 needs from Dev 1 for the blocked rows: [kb-contract-checklist.md](kb-contract-checklist.md).
 
@@ -148,6 +151,9 @@ ESLint refuses any other `@pakka/backend` import in `frontend/`.
 | `/dashboard/whatsapp` | Dev 3 | Connection panel reading `whatsapp_connections_public` |
 | `/dashboard/inbox` | Dev 3 | Real Inbox, read-only: RLS reads of `conversations`, `contacts`, `handoffs`, `messages`; one Realtime channel `inbox:<tenantId>` (needs migration 0010). Sending, AI/Human switch, lead card and suggested reply are not built |
 | `/dashboard/knowledge` | Dev 3 | Real Knowledge base: services CRUD under RLS; `kb_documents` list (read only). FAQs, unanswered questions, upload and website sync are shown as not available: no backend contract yet |
+| `/dashboard/leads`, `/dashboard/leads/[leadId]` | Dev 3 | Real Leads board by stage (temperature and minimum-score filters) and lead detail (answers, timeline), read-only, RLS reads |
+| `/dashboard/calendar[?view=week&date=&resource=]` | Dev 3 | Real Calendar, read-only: day and week, staff filter, times in the business's zone |
+| `/dashboard/settings/booking` | Dev 3 | Booking setup: business hours, staff and resources, services, RLS reads and writes |
 | `/dashboard/preview` | Dev 3 | Prototype dashboard (sample data), signed-in only |
 | `/connect/[token]`, `/h/[token]` | Dev 3 / Dev 1 | Reserved folders, no route yet |
 API routes are served by the API service (`backend/src/server/routes.ts`), not by Next.js:

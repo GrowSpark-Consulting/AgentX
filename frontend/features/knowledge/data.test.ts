@@ -5,6 +5,7 @@ import {
   describeWriteError,
   deleteService,
   EMPTY_DRAFT,
+  formatBookingRules,
   formatDuration,
   formatPriceRange,
   formatRupees,
@@ -33,6 +34,8 @@ const row = (over: Partial<ServiceRow> = {}): ServiceRow => ({
   price_max: 600,
   resource_type: "stylist",
   active: true,
+  buffer_min: 10,
+  min_notice_min: 60,
   ...over,
 });
 
@@ -44,6 +47,8 @@ const service = (over: Partial<Service> = {}): Service => ({
   priceMax: 600,
   resourceType: "stylist",
   active: true,
+  bufferMin: 10,
+  minNoticeMin: 60,
   ...over,
 });
 
@@ -80,7 +85,16 @@ describe("validating the form before anything is saved", () => {
     const result = validateDraft(draft({ name: "  Bridal trial ", priceMin: "2,500", priceMax: "₹5000", active: false }), [], null);
     expect(result).toEqual({
       ok: true,
-      input: { name: "Bridal trial", duration_min: 90, price_min: 2500, price_max: 5000, resource_type: "stylist", active: false },
+      input: {
+        name: "Bridal trial",
+        duration_min: 90,
+        price_min: 2500,
+        price_max: 5000,
+        resource_type: "stylist",
+        active: false,
+        buffer_min: 0,
+        min_notice_min: 60,
+      },
     });
   });
 
@@ -122,6 +136,39 @@ describe("validating the form before anything is saved", () => {
     expect(!result.ok && result.fields.priceMax).toBe("The highest price can't be below the lowest");
   });
 
+  it("starts a new service with the database's defaults: no gap, an hour's notice", () => {
+    expect(EMPTY_DRAFT).toMatchObject({ bufferMin: "0", minNoticeMin: "60" });
+  });
+
+  it("saves the gap between bookings and the minimum notice", () => {
+    const result = validateDraft(draft({ bufferMin: " 15 ", minNoticeMin: "1440" }), [], null);
+    expect(result.ok && result.input).toMatchObject({ buffer_min: 15, min_notice_min: 1440 });
+  });
+
+  it.each([
+    ["", "Enter the gap in minutes, or 0 for none"],
+    ["-5", "Enter whole minutes, like 15"],
+    ["7.5", "Enter whole minutes, like 15"],
+    ["241", "Keep the gap to 240 minutes (4 hours) or less"],
+  ])("rejects a gap of %j, as the database would (0–240)", (value, message) => {
+    const result = validateDraft(draft({ bufferMin: value }), [], null);
+    expect(!result.ok && result.fields.bufferMin).toBe(message);
+  });
+
+  it.each([
+    ["", "Enter the notice in minutes, or 0 for none"],
+    ["soon", "Enter whole minutes, like 15"],
+    ["10081", "Keep the notice to 7 days (10,080 minutes) or less"],
+  ])("rejects a minimum notice of %j, as the database would (0–10,080)", (value, message) => {
+    const result = validateDraft(draft({ minNoticeMin: value }), [], null);
+    expect(!result.ok && result.fields.minNoticeMin).toBe(message);
+  });
+
+  it("accepts the limits themselves", () => {
+    expect(validateDraft(draft({ bufferMin: "240", minNoticeMin: "10080" }), [], null).ok).toBe(true);
+    expect(validateDraft(draft({ bufferMin: "0", minNoticeMin: "0" }), [], null).ok).toBe(true);
+  });
+
   it("refuses a name another service already has, but not the service's own", () => {
     const existing = [service({ id: id(1), name: "Haircut" })];
     expect(!validateDraft(draft({ name: "haircut " }), existing, null).ok).toBe(true);
@@ -133,12 +180,18 @@ describe("validating the form before anything is saved", () => {
     const result = validateDraft(toDraft(s), [s], s.id);
     expect(result).toEqual({
       ok: true,
-      input: { name: "Haircut", duration_min: 30, price_min: null, price_max: 600, resource_type: "stylist", active: true },
+      input: { name: "Haircut", duration_min: 30, price_min: null, price_max: 600, resource_type: "stylist", active: true, buffer_min: 10, min_notice_min: 60 },
     });
   });
 });
 
 describe("display", () => {
+  it("writes a service's booking rules", () => {
+    expect(formatBookingRules({ bufferMin: 15, minNoticeMin: 120 })).toBe("15 min gap · 2 hours notice");
+    expect(formatBookingRules({ bufferMin: 0, minNoticeMin: 0 })).toBe("No gap · No notice");
+    expect(formatBookingRules({ bufferMin: 0, minNoticeMin: 1440 })).toBe("No gap · 1 day notice");
+  });
+
   it("writes rupees like the prototype", () => {
     expect(formatRupees(1500)).toBe("₹1,500");
     expect(formatRupees(8_800_000)).toBe("₹88 L");
@@ -182,13 +235,13 @@ describe("reads and writes", () => {
 
   it("creates for the session's business", async () => {
     const { client, calls } = fakeClient({ data: [row()], error: null });
-    const input = { name: "Haircut", duration_min: 30, price_min: 300, price_max: 600, resource_type: "stylist", active: true };
+    const input = { name: "Haircut", duration_min: 30, price_min: 300, price_max: 600, resource_type: "stylist", active: true, buffer_min: 10, min_notice_min: 60 };
     expect(await createService(client, TENANT, input)).toEqual(service());
     expect(calls).toContainEqual(["insert", [{ ...input, tenant_id: TENANT }]]);
   });
 
   it("updates only within the session's business, and never ignores an update that changed nothing", async () => {
-    const input = { name: "Haircut", duration_min: 30, price_min: null, price_max: null, resource_type: "stylist", active: true };
+    const input = { name: "Haircut", duration_min: 30, price_min: null, price_max: null, resource_type: "stylist", active: true, buffer_min: 0, min_notice_min: 60 };
     const ok = fakeClient({ data: [row({ price_min: null, price_max: null })], error: null });
     await updateService(ok.client, TENANT, id(1), input);
     expect(ok.calls).toContainEqual(["eq", ["id", id(1)]]);

@@ -7,6 +7,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import {
   createService,
   deleteService,
+  formatBookingRules,
   formatDuration,
   formatPriceRange,
   listResourceTypes,
@@ -24,7 +25,8 @@ import { ServiceFormDialog } from "./service-form-dialog";
 // pakka-knowledge.tsx): uppercase section title over a 2px rule with a ghost Add button, then the
 // .table in a horizontally scrolling wrapper, bold name and price cells and an outlined status chip.
 // Edit and Delete use the prototype's ghost buttons and its confirm dialog (features/settings).
-// The list changes only after the database confirms a write.
+// The list changes only after the database confirms a write. Also shown on the booking setup page,
+// where `canWrite` is false for staff (the page hides what a role can't change; RLS allows any member).
 
 type ListState = { status: "loading" } | { status: "error"; error: FormattedError } | { status: "ready"; services: Service[] };
 type DialogState = { kind: "none" } | { kind: "form"; service: Service | null } | { kind: "delete"; service: Service };
@@ -36,7 +38,7 @@ const rowButton = { padding: "2px 6px", whiteSpace: "nowrap" } as const;
 const visuallyHidden = { position: "absolute", width: "1px", height: "1px", overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" } as const;
 const toastStyle = { position: "fixed", left: "16px", bottom: "16px", zIndex: 60, background: "var(--color-text)", color: "var(--color-bg)", padding: "12px 16px", fontSize: "14px", fontWeight: "600", maxWidth: "calc(100vw - 32px)" } as const;
 
-export function ServicesEditor({ tenantId }: { tenantId: string }) {
+export function ServicesEditor({ tenantId, canWrite = true }: { tenantId: string; canWrite?: boolean }) {
   const [list, setList] = useState<ListState>({ status: "loading" });
   const [resourceTypes, setResourceTypes] = useState<string[]>([]);
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
@@ -95,9 +97,11 @@ export function ServicesEditor({ tenantId }: { tenantId: string }) {
         <h2 id="services-heading" style={sectionTitle}>
           Services &amp; prices{list.status === "ready" ? ` · ${services.length}` : ""}
         </h2>
-        <button type="button" className="btn btn-ghost" onClick={() => setDialog({ kind: "form", service: null })} disabled={list.status !== "ready"}>
-          Add
-        </button>
+        {canWrite ? (
+          <button type="button" className="btn btn-ghost" onClick={() => setDialog({ kind: "form", service: null })} disabled={list.status !== "ready"}>
+            Add
+          </button>
+        ) : null}
       </div>
 
       {list.status === "loading" ? <LoadingState compact title="Loading your services" /> : null}
@@ -110,29 +114,34 @@ export function ServicesEditor({ tenantId }: { tenantId: string }) {
         <EmptyState
           compact
           title="No services yet"
-          description="Add what customers can book, how long it takes and what it costs."
+          description={canWrite ? "Add what customers can book, how long it takes and what it costs." : "An owner or admin adds what customers can book."}
           action={
-            <button type="button" className="btn btn-primary" onClick={() => setDialog({ kind: "form", service: null })}>
-              Add a service
-            </button>
+            canWrite ? (
+              <button type="button" className="btn btn-primary" onClick={() => setDialog({ kind: "form", service: null })}>
+                Add a service
+              </button>
+            ) : undefined
           }
         />
       ) : null}
 
       {list.status === "ready" && services.length > 0 ? (
         <div style={{ overflowX: "auto" }}>
-          <table className="table" style={{ minWidth: "560px" }}>
+          <table className="table" style={{ minWidth: "680px" }}>
             <thead>
               <tr>
                 <th>Service</th>
                 <th>Length</th>
+                <th>Booking rules</th>
                 <th>Booked with</th>
                 <th>Price range</th>
                 <th>Status</th>
                 {/* relative: keeps the hidden label inside the table's scroll box, not the page's. */}
-                <th style={{ position: "relative" }}>
-                  <span style={visuallyHidden}>Actions</span>
-                </th>
+                {canWrite ? (
+                  <th style={{ position: "relative" }}>
+                    <span style={visuallyHidden}>Actions</span>
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -140,6 +149,7 @@ export function ServicesEditor({ tenantId }: { tenantId: string }) {
                 <tr key={s.id}>
                   <td style={{ fontWeight: "600" }}>{s.name}</td>
                   <td style={{ whiteSpace: "nowrap" }}>{formatDuration(s.durationMin)}</td>
+                  <td style={{ whiteSpace: "nowrap", color: "var(--color-neutral-700)" }}>{formatBookingRules(s)}</td>
                   <td>{s.resourceType}</td>
                   <td style={{ fontWeight: "600", whiteSpace: "nowrap" }}>{formatPriceRange(s.priceMin, s.priceMax)}</td>
                   <td>
@@ -156,14 +166,16 @@ export function ServicesEditor({ tenantId }: { tenantId: string }) {
                       {s.active ? "Active" : "Off"}
                     </span>
                   </td>
-                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                    <button type="button" className="btn btn-ghost" style={rowButton} aria-label={`Edit ${s.name}`} onClick={() => setDialog({ kind: "form", service: s })}>
-                      Edit
-                    </button>
-                    <button type="button" className="btn btn-ghost" style={rowButton} aria-label={`Delete ${s.name}`} onClick={() => setDialog({ kind: "delete", service: s })}>
-                      Delete
-                    </button>
-                  </td>
+                  {canWrite ? (
+                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button type="button" className="btn btn-ghost" style={rowButton} aria-label={`Edit ${s.name}`} onClick={() => setDialog({ kind: "form", service: s })}>
+                        Edit
+                      </button>
+                      <button type="button" className="btn btn-ghost" style={rowButton} aria-label={`Delete ${s.name}`} onClick={() => setDialog({ kind: "delete", service: s })}>
+                        Delete
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
