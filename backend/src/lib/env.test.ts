@@ -7,6 +7,7 @@ const base = {
   NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:54321",
   NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon",
   SUPABASE_SERVICE_ROLE_KEY: "service",
+  EMBEDDINGS_API_KEY: "test-embeddings-key",
 };
 
 describe("parseServerEnv", () => {
@@ -116,5 +117,24 @@ describe("embeddings settings", () => {
   it("accepts a Voyage-direct endpoint and rejects a base URL that isn't a URL", () => {
     expect(parseServerEnv({ ...base, EMBEDDINGS_BASE_URL: "https://api.voyageai.com/v1" }).EMBEDDINGS_BASE_URL).toBe("https://api.voyageai.com/v1");
     expect(() => parseServerEnv({ ...base, EMBEDDINGS_BASE_URL: "not a url" })).toThrow(/EMBEDDINGS_BASE_URL/);
+  });
+
+  it("requires https for the embeddings endpoint, since the key travels to it", () => {
+    for (const url of ["http://api.voyageai.com/v1", "http://localhost:9000/v1", "ftp://x.test/v1"]) {
+      expect(() => parseServerEnv({ ...base, EMBEDDINGS_BASE_URL: url })).toThrow(/EMBEDDINGS_BASE_URL/);
+    }
+  });
+
+  it("requires EMBEDDINGS_API_KEY, naming it without echoing anything", () => {
+    const withoutKey: Record<string, string | undefined> = { ...base, EMBEDDINGS_API_KEY: undefined };
+    expect(() => parseServerEnv(withoutKey)).toThrow(/EMBEDDINGS_API_KEY/);
+    expect(() => parseServerEnv({ ...base, EMBEDDINGS_API_KEY: "" })).toThrow(/EMBEDDINGS_API_KEY/);
+    try {
+      parseServerEnv(withoutKey);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(EnvError);
+      expect((e as EnvError).problems).toHaveLength(1);
+    }
   });
 });

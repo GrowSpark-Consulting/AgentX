@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase-admin";
+import { TimeoutError, withTimeout } from "../lib/timeout";
 import { embeddingsClient } from "./embeddings";
+
+/** How long the similarity search may take. It is an index lookup: seconds mean something is wrong. */
+export const KB_RPC_TIMEOUT_MS = 5000;
 
 /**
  * Lowest similarity (1 - cosine distance) at which a chunk counts as an answer. PROVISIONAL: a
@@ -41,13 +45,27 @@ export async function retrieveKb(tenantId: string, query: string, k = DEFAULT_K)
   if (!text) return [];
 
   const vector = await embeddingsClient().embedQuery(text);
-  const { data, error } = await supabaseAdmin().rpc("match_kb_chunks", {
-    p_tenant_id: tenantId,
-    p_query: JSON.stringify(vector),
-    p_k: Math.min(Math.max(Math.trunc(k), 1), MAX_K),
-  });
-  // The message names the function only: the query text is the customer's.
-  if (error) throw new Error("match_kb_chunks failed");
+  // The messages name the function only: the query text is the customer's. No retry: this is the live
+  // reply path, and the caller decides what a failed search means.
+  let result;
+  try {
+    result = await withTimeout(
+      (signal) =>
+        supabaseAdmin()
+          .rpc("match_kb_chunks", { p_tenant_id: tenantId, p_query: JSON.stringify(vector), p_k: Math.min(Math.max(Math.trunc(k), 1), MAX_K) })
+          .abortSignal(signal),
+      KB_RPC_TIMEOUT_MS,
+    );
+  } catch (err) {
+    // The class only: its text could carry the query or a connection string.
+    console.error(`[kb] match_kb_chunks threw ${err instanceof Error ? err.name : "unknown"}`);
+    throw new Error(err instanceof TimeoutError ? "match_kb_chunks timed out" : "match_kb_chunks failed");
+  }
+  const { data, error } = result;
+  if (error) {
+    console.error(`[kb] match_kb_chunks failed: code ${typeof error.code === "string" ? error.code.slice(0, 16) : "none"}`);
+    throw new Error("match_kb_chunks failed");
+  }
 
   return z
     .array(matchRow)
