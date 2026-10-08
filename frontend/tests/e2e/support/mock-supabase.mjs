@@ -18,7 +18,10 @@
 // check that nothing was written and no tenant-scoped table was read.
 // POST /rest/v1/rpc/create_trial_tenant (service role only) gives a user a trial business, membership,
 // credits and route code the way the SQL function does; GET /__mock/business?email=… reads them back.
+// POST /__mock/onboarding-account makes an account with no business and its own pack catalogue (or a
+// failing one), for the trades onboarding offers.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.MOCK_SUPABASE_PORT ?? 54399);
@@ -190,8 +193,17 @@ const CONTACTS = [];
 const LEADS = [];
 /** bookings rows (0001, 0002, 0015). Members read them; only the booking engine writes. */
 const BOOKINGS = [];
-/** vertical_packs rows: { key, version, active, definition }. */
+/**
+ * vertical_packs rows: { key, version, active, definition }. The launch packs are the repo's own
+ * packs/*.json, stored as the API's startup sync stores them (active, definition = the file), so that
+ * sync finds them unchanged; they are what onboarding offers. sample-pack labels the Day 3 screens.
+ */
+const PACKS_DIR = new URL("../../../../packs/", import.meta.url);
 const PACKS = [
+  ...readdirSync(PACKS_DIR)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => JSON.parse(readFileSync(new URL(f, PACKS_DIR), "utf8")))
+    .map((definition) => ({ key: definition.key, version: definition.version, active: true, definition })),
   {
     key: "sample-pack", version: 1, active: true,
     definition: {
@@ -324,6 +336,31 @@ function filters(url) {
   }
   return (r) => checks.every((check) => check(r));
 }
+/**
+ * A vertical_packs row as PostgREST's `select` returns it: columns, `*`, and `alias:definition->>field`
+ * (the JSON value as text, null when missing). null for a column the table doesn't have.
+ */
+function selectPack(row, select) {
+  const out = {};
+  for (const item of select.split(",").map((c) => c.trim()).filter(Boolean)) {
+    if (item === "*") {
+      Object.assign(out, row);
+      continue;
+    }
+    const colon = item.indexOf(":");
+    const alias = colon >= 0 ? item.slice(0, colon) : null;
+    const expr = colon >= 0 ? item.slice(colon + 1) : item;
+    const json = /^definition->>([a-z_]+)$/.exec(expr);
+    if (json) {
+      const value = row.definition[json[1]];
+      out[alias ?? json[1]] = value == null ? null : typeof value === "string" ? value : JSON.stringify(value);
+    } else if (expr in row) out[alias ?? expr] = row[expr];
+    else return null;
+  }
+  return out;
+}
+/** The pack catalogue as this user's requests see it: the table, or the account's own stand-in. */
+const packsFor = (email) => (email && USERS[email]?.packs) || PACKS;
 /** Rows the app can't parse, for the error states (a 5xx would also log a console error, which the suite forbids). */
 const day3Rows = (email, table, rows) => (USERS[email].day3Error === table ? [{ id: "not-a-row", internal: "boom" }] : rows);
 
@@ -388,6 +425,11 @@ function createTrialTenant({ p_user_id, p_name, p_vertical, p_timezone }) {
   const email = Object.keys(USERS).find((e) => idOf(e) === p_user_id);
   if (!email) return fail(`create_trial_tenant: unknown user ${p_user_id}`);
   trialCalls.set(email, (trialCalls.get(email) ?? 0) + 1);
+  // Until the pack loader has written vertical_packs, any well-formed key is accepted.
+  const packs = packsFor(email);
+  if (packs.length > 0 && !packs.some((p) => p.key === p_vertical && p.active)) {
+    return fail(`create_trial_tenant: ${p_vertical} is not an active pack`);
+  }
 
   const owned = USERS[email].memberships.find(([, role]) => role === "owner")?.[0];
   if (owned) {
@@ -585,6 +627,14 @@ ${choose("Cancel", "cancel=1")}
     const of = (rows) => rows.filter((r) => r.tenant_id === tenantId);
     return send(res, 200, { tenant: TENANT_EXTRA.get(tenantId) ?? null, resources: of(RESOURCES), services: of(SERVICES), bookings: of(BOOKINGS), leads: of(LEADS) });
   }
+  if (path === "/__mock/onboarding-account" && req.method === "POST") {
+    // { packs?: vertical_packs rows, packsError?: boolean } → { email }: an account with no business
+    // whose pack catalogue is `packs` instead of the table, or whose reads of it fail (password PASSWORD).
+    const { packs, packsError = false } = await readBody(req);
+    const email = `ob-${randomUUID()}@test.local`;
+    USERS[email] = { memberships: [], view: { status: 200, body: [] }, ...(packs ? { packs } : {}), packsError };
+    return send(res, 200, { email });
+  }
   if (path === "/__mock/services-account" && req.method === "POST") {
     // { seed?: boolean, error?: boolean } → { email, tenantId }; the password is PASSWORD.
     return send(res, 200, createServicesAccount(await readBody(req)));
@@ -722,9 +772,33 @@ ${choose("Cancel", "cancel=1")}
       return send(res, 200, CALENDARS.filter((c) => own.has(c.tenant_id)).filter(filters(url)).map((c) => pick(c, columns)));
     }
     if (table === "vertical_packs") {
-      // A global catalogue every signed-in user reads.
-      if (!email) return send(res, 200, []);
-      return send(res, 200, PACKS.filter(filters(url)).map((p) => ({ definition: p.definition })));
+      // A global catalogue every signed-in user reads (0001); only the server writes it.
+      const service = (req.headers.authorization ?? "") === `Bearer ${SERVICE_ROLE_KEY}`;
+      if (service && req.method === "POST") {
+        // The API's startup pack sync: INSERT … ON CONFLICT (key, version) DO NOTHING, returning only
+        // the rows that went in.
+        const body = await readBody(req);
+        const inserted = [];
+        for (const row of Array.isArray(body) ? body : [body]) {
+          if (PACKS.some((p) => p.key === row.key && p.version === row.version)) continue;
+          const stored = { key: row.key, version: row.version, active: row.active ?? false, definition: row.definition };
+          PACKS.push(stored);
+          inserted.push(stored);
+        }
+        return send(res, 201, inserted.map((p) => selectPack(p, url.searchParams.get("select") ?? "*")));
+      }
+      if (!email && !service) return send(res, 200, []);
+      if (req.method !== "GET") return send(res, 403, { code: "42501", details: null, hint: null, message: "permission denied for table vertical_packs" });
+      if (email && USERS[email].packsError) {
+        // Server-side read (the onboarding page), so this 5xx never reaches the browser console. A 500,
+        // not a 503: supabase-js retries 503s, which would only slow the test down.
+        return send(res, 500, { code: "XX000", details: null, hint: null, message: "boom" });
+      }
+      const rows = packsFor(email).filter(filters(url)).map((p) => selectPack(p, url.searchParams.get("select") ?? "*"));
+      if (rows.some((r) => r === null)) {
+        return send(res, 400, { code: "42703", details: null, hint: null, message: "column of vertical_packs does not exist" });
+      }
+      return send(res, 200, rows);
     }
     if (table === "leads") {
       if (!email) return send(res, 200, []);

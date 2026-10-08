@@ -5,7 +5,8 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { CHECKS, INDUSTRIES, POPUP_STEPS, ROUTES, STEP_LABELS, TOTAL_STEPS, type CheckKind } from "@/features/onboarding/data";
+import { CHECKS, INDUSTRIES, POPUP_STEPS, PROFILES, ROUTES, STEP_LABELS, TOTAL_STEPS, type CheckKind } from "@/features/onboarding/data";
+import { offeredTrades, type ActivePack, type OfferedTrade } from "@/features/onboarding/packs";
 import {
   industryKey,
   initialState,
@@ -27,8 +28,19 @@ import { StepLive } from "@/components/onboarding/step-live";
 const IMPORT_TICK_MS = 550;
 const CHECK_TICK_MS = 650;
 
-export function OnboardingFlow() {
-  const [s, setRaw] = React.useState<OnboardingState>(initialState);
+/** Starts on the default trade if it is offered, otherwise on the first offered one, with its profile. */
+function initialStateFor(trades: OfferedTrade[]): OnboardingState {
+  if (trades.length === 0 || trades.some((t) => t.index === initialState.ind)) return initialState;
+  const ind = trades[0].index;
+  const profile = PROFILES[INDUSTRIES[ind].key];
+  return { ...initialState, ind, staff: profile.staff.map((p) => ({ ...p })), site: profile.site };
+}
+
+/** activePacks: the active vertical packs, or null when they couldn't be read (no trade is offered). */
+export function OnboardingFlow({ activePacks }: { activePacks: ActivePack[] | null }) {
+  const trades = React.useMemo(() => offeredTrades(activePacks ?? []), [activePacks]);
+  const [s, setRaw] = React.useState<OnboardingState>(() => initialStateFor(trades));
+  const tradeOffered = trades.some((t) => t.index === s.ind);
 
   /** Class-style setState: shallow-merge a patch or an updater's result. */
   const set = React.useCallback((patch: Patch) => {
@@ -102,6 +114,7 @@ export function OnboardingFlow() {
   /* ── Business step: the API creates the trial business (or finds the account's business) ── */
   const [savingBusiness, startSavingBusiness] = React.useTransition();
   const submitBusiness = () => {
+    if (!tradeOffered) return;
     startSavingBusiness(async () => {
       const result = await startTrial({ name: s.biz, industry: industryKey(s) });
       if (result.status === "ready") {
@@ -129,7 +142,7 @@ export function OnboardingFlow() {
 
   const nextOff =
     (st === 0 && s.otpSent && s.otp.length < 6) ||
-    (st === 1 && (!s.biz.trim() || !INDUSTRIES[s.ind]?.packKey || savingBusiness)) ||
+    (st === 1 && (!s.biz.trim() || !tradeOffered || savingBusiness)) ||
     (st === 2 && s.imp !== "done");
 
   const nextLabel =
@@ -221,7 +234,7 @@ export function OnboardingFlow() {
       <main className="flex-1 py-[clamp(28px,5vw,56px)] px-[clamp(16px,4vw,40px)] flex flex-col">
         <div className="max-w-[680px] w-full flex flex-col gap-6">
           {st === 0 && <StepVerifyPhone s={s} set={set} />}
-          {st === 1 && <StepBusiness s={s} set={set} />}
+          {st === 1 && <StepBusiness s={s} set={set} trades={trades} packsFailed={activePacks === null} />}
           {st === 2 && <StepTeach s={s} set={set} onImport={startImport} />}
           {st === 3 && <StepTry s={s} />}
           {st === 4 && (
