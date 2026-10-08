@@ -25,9 +25,10 @@ insert into public.contacts (id, tenant_id, phone) values
   ('e2000000-0000-0000-0000-00000000000a', 'e0000000-0000-0000-0000-00000000000a', '+919800000201');
 insert into public.leads (id, tenant_id, contact_id) values
   ('e3000000-0000-0000-0000-00000000000a', 'e0000000-0000-0000-0000-00000000000a', 'e2000000-0000-0000-0000-00000000000a');
-insert into public.bookings (tenant_id, lead_id, service_id, start_at, end_at, status) values
+-- kind 'callback': a time-slot booking needs a resource (0015), a callback does not.
+insert into public.bookings (tenant_id, lead_id, service_id, kind, start_at, end_at, status) values
   ('e0000000-0000-0000-0000-00000000000a', 'e3000000-0000-0000-0000-00000000000a', 'e1000000-0000-0000-0000-0000000000a2',
-   '2026-11-02 10:00+05:30', '2026-11-02 11:00+05:30', 'confirmed');
+   'callback', '2026-11-02 10:00+05:30', '2026-11-02 11:00+05:30', 'confirmed');
 
 -- Owner A ---------------------------------------------------------------------------------------------
 

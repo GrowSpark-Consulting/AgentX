@@ -29,6 +29,9 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0010_inbox_realtime` | `messages`, `conversations`, `handoffs` in the Realtime publication; `conversations.last_message_at` kept by a trigger |
 | `0011_knowledge_base` | `kb_documents.status`/`error`/`body`, one FAQ per question, `kb_gaps`, `kb_documents` in Realtime, `match_kb_chunks` (section 9) |
 | `0012_kb_gap_functions` | `kb_gaps.summary`/`answered_by`/`answered_at`, `record_kb_gap`, `answer_kb_gap` (service_role only, section 9) |
+| `0013_inbound_messages` | `messages.kind`/`meta`, one open conversation per contact and channel, `store_inbound_message`, `apply_message_status` (service_role only; Dev 1, #50) |
+| `0014_connection_method_platform` | `whatsapp_connections.method` may be `platform` (our own test and demo numbers; Dev 1, #51) |
+| `0015_booking_engine` | `services.buffer_min`/`min_notice_min`, booking status `expired`, end after start, slot kinds need a resource, `hold_slot`, `confirm_booking`, `reschedule_booking`, `cancel_booking`, `release_expired_holds` (service_role only, section 4) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -142,8 +145,8 @@ because the 24-hour window has closed (131047, the adapter's `outside_window`), 
 
 | Column | Shape | Status |
 |---|---|---|
-| `tenants.business_hours`, `resources.working_hours` | `{ "mon": [{ "start": "10:00", "end": "19:00" }], … }`. Keys `mon`–`sun`; local time in `tenants.timezone`; several intervals allow split shifts; a missing day or `[]` means closed | Proposed (used by the seed) |
-| `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits only) | Proposed (used by the seed) |
+| `tenants.business_hours`, `resources.working_hours` | `{ "mon": [{ "start": "10:00", "end": "19:00" }], … }`. Keys `mon`–`sun`; local time in `tenants.timezone`; several intervals allow split shifts; a missing day or `[]` means closed. A resource with no days set uses the business's hours | Fixed: read by `findSlots` (`WeeklyHours` in `backend/src/booking/slots.ts`) |
+| `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits); a resource with no area serves every pincode | Fixed: read by `findSlots` |
 | `tenant_features.settings` | Reminders: `{ "offset_minutes": 1440 }`; other features `{}` | Proposed |
 | `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
 | `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
@@ -185,10 +188,46 @@ writeAudit({ tenantId, actor, action, entity?, entityId?, diff? }): Promise<void
 
 ```ts
 notify.send(tenantId, kind: NotificationKind, payload: NotifyPayload): Promise<SendOutcome>   // Dev 2
-findSlots(tenantId, { serviceId, resourceType, from, to, pincode? }): Promise<Slot[]>          // Dev 2
-holdSlot / confirmBooking / rescheduleBooking / cancelBooking                                 // Dev 2
 buildLeadCard(leadId): Promise<LeadCard>                                                      // Dev 1
 ```
+
+**Booking functions (built, Day 3; `backend/src/booking/`, server only):**
+
+```ts
+// bookings.ts
+findSlots(tenantId, { serviceId, resourceType?, from, to, pincode? }): Promise<Slot[]>
+holdSlot(tenantId, slot: { start, end, resourceId?, serviceId? }, leadId, { kind?, details? }?): Promise<Booking>
+confirmBooking(tenantId, bookingId): Promise<Booking>
+rescheduleBooking(tenantId, bookingId, newSlot: { start, end, resourceId? }): Promise<Booking>
+cancelBooking(tenantId, bookingId, reason?): Promise<void>
+// time.ts
+localWindow(timeZone, { day: 'today' | 'tomorrow' | 'YYYY-MM-DD', part?: 'morning' | 'afternoon' | 'evening' | 'any' }, now?)
+  -> { date, from, to }        // "tomorrow evening" in the business's time zone, as UTC
+// Slot = { start, end, resourceId, resourceName, serviceId, label }   start/end ISO UTC; label "Fri 9 Oct, 5:00 pm"
+```
+
+- `findSlots` gives up to 3 times spread across the window (first, middle, last). It respects the resource's
+  working hours (else the business's), the service's `duration_min`, `buffer_min` (kept clear on both
+  sides of a booking) and `min_notice_min`, and held or confirmed bookings (an expired hold no longer
+  counts). Start times are every 30 minutes from opening; each time comes with the least busy free resource
+  of the service's `resource_type`. With `pincode`, only resources whose `service_area.pincodes` has it, or
+  that have no area set. The window is at most 14 days. Google free/busy comes with the calendar sync (Day 4).
+- `holdSlot` holds for 10 minutes (`status 'held'`). `kind` defaults to `slot`; `slot`, `site_visit` and
+  `field_visit` need a resource and a service; `callback`, `date_range` and `reservation` may have no resource
+  and then never clash. A lead holds one time at a time: a new hold releases its earlier one
+  (`cancel_reason 'replaced'`). An expired hold stops blocking at once.
+- `confirmBooking` confirms a hold (also one past its expiry while still held) and moves the lead to `booked`
+  unless it is further along. A repeat is harmless. Emits `booking.confirmed`.
+- `rescheduleBooking` works on a confirmed booking: the old row becomes `rescheduled`, a new confirmed row
+  takes the new time (`details.rescheduled_from`). Emits `booking.changed` (old) and `booking.confirmed` (new).
+- `cancelBooking` cancels a held or confirmed booking (`details.cancel_reason`). A repeat is harmless. Emits
+  `booking.changed`.
+- **Errors:** a taken time is `slot_taken` (409, the exclusion constraint's 23P01); an unknown or other
+  business's lead, service, resource or booking is `not_found`; a hold that expired or a booking in the wrong
+  state is `conflict`; bad times, kinds or resources are `validation_failed`.
+- **Jobs:** `release-holds` (Inngest cron, every minute) marks holds past their expiry `expired`.
+- **Double booking:** blocked by the database: `scripts/db/hold-slot-concurrency.sh` (CI) runs 20 holds for one
+  slot at the same moment; exactly one wins.
 
 **`notify.send` behaviour (Proposed, test message Agreed):**
 
@@ -227,8 +266,8 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 |---|---|
 | `whatsapp/message.received` | `{ tenantId, conversationId, messageId }` |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
-| `booking.confirmed` | `{ tenantId, bookingId }` |
-| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }` |
+| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`) |
+| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`) |
 | `handoff.opened` | `{ tenantId, handoffId, conversationId }` |
 | `handoff.own_number` | `{ tenantId, handoffId }` |
 | `tenant.trial_started` | `{ tenantId }` |
