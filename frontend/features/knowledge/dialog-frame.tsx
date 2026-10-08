@@ -10,12 +10,15 @@ export function DialogFrame({
   title,
   onClose,
   busy,
+  width = 460,
   children,
 }: {
   title: string;
   onClose: () => void;
   /** While true, the backdrop and Escape don't close it (a save or delete is in flight). */
   busy: boolean;
+  /** Most dialogs are the prototype's 460px; a form with a weekly timetable needs more. */
+  width?: number;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -36,7 +39,7 @@ export function DialogFrame({
         aria-modal="true"
         aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
-        style={{ background: "var(--color-bg)", width: "min(460px,100%)", maxHeight: "100%", overflowY: "auto" }}
+        style={{ background: "var(--color-bg)", width: `min(${width}px,100%)`, maxHeight: "100%", overflowY: "auto" }}
       >
         <div id={titleId} className="dialog-title">
           {title}

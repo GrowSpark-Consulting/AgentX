@@ -26,7 +26,7 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 // Rows -------------------------------------------------------------------------------------------
 
 /** Postgres timestamps from PostgREST ("…T…+00:00") and Realtime ("… …+00") as ISO 8601 UTC. */
-const Timestamp = z.string().transform((value, ctx) => {
+export const Timestamp = z.string().transform((value, ctx) => {
   let s = value.trim().replace(" ", "T");
   if (/[+-]\d\d$/.test(s)) s += ":00";
   const ms = Date.parse(s);

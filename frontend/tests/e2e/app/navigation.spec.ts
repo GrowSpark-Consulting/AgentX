@@ -10,7 +10,11 @@ import { mockKbApi } from "../support/kb-api";
 const SECTIONS = [
   { link: "Home", path: "/dashboard", heading: "Test Realty" },
   { link: "Inbox", path: "/dashboard/inbox", heading: "Inbox" },
+  { link: "Leads", path: "/dashboard/leads", heading: "Leads" },
+  // The calendar's heading is the day it shows (today, in the business's time zone).
+  { link: "Calendar", path: "/dashboard/calendar", heading: /^(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day \d{1,2} [A-Z][a-z]{2}$/ },
   { link: "Knowledge base", path: "/dashboard/knowledge", heading: "Knowledge base" },
+  { link: "Booking setup", path: "/dashboard/settings/booking", heading: "Booking setup" },
   { link: "Send test message", path: "/dashboard/messages/test", heading: "Send a test message" },
   { link: "Create template", path: "/dashboard/templates/new", heading: "Create a message template" },
   { link: "WhatsApp", path: "/dashboard/whatsapp", heading: "WhatsApp connection" },
@@ -69,8 +73,8 @@ test.describe("dashboard navigation", () => {
 test.describe("dashboard navigation, signed out", () => {
   test.use({ storageState: SIGNED_OUT });
 
-  // auth.spec.ts covers the other sections; these two pages came later.
-  for (const path of ["/dashboard/inbox", "/dashboard/knowledge"]) {
+  // auth.spec.ts covers the other sections; these pages came later.
+  for (const path of ["/dashboard/inbox", "/dashboard/knowledge", "/dashboard/leads", "/dashboard/calendar", "/dashboard/settings/booking"]) {
     test(`${path} sends a signed-out visitor to sign-in`, async ({ page }) => {
       await page.goto(path);
       // The dashboard layout does the redirect and can't read the URL, so every page asks for /dashboard.
