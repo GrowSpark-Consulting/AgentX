@@ -16,7 +16,10 @@ export interface ShellIdentity {
 const NAV = [
   { href: "/dashboard", label: "Home", d: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10" },
   { href: "/dashboard/inbox", label: "Inbox", d: "M7.9 20A9 9 0 1 0 4 16.1L2 22z" },
+  { href: "/dashboard/leads", label: "Leads", d: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M9 3v18 M15 3v18" },
+  { href: "/dashboard/calendar", label: "Calendar", d: "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M16 2v4 M8 2v4 M3 10h18" },
   { href: "/dashboard/knowledge", label: "Knowledge base", d: "M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" },
+  { href: "/dashboard/settings/booking", label: "Booking setup", d: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2" },
   { href: "/dashboard/messages/test", label: "Send test message", d: "M7.9 20A9 9 0 1 0 4 16.1L2 22z" },
   { href: "/dashboard/templates/new", label: "Create template", d: "M4 4h16v12H5.2L4 17.2z M8 8h8 M8 12h5" },
   { href: "/dashboard/whatsapp", label: "WhatsApp", d: "M5 2h14a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z M12 18h.01" },
@@ -24,6 +27,11 @@ const NAV = [
 ] as const;
 
 const ROLE_LABEL = { owner: "Owner", admin: "Admin", staff: "Staff" } as const;
+
+/** A section's own page and the pages under it (a lead under Leads); Home only for itself. */
+function isCurrent(pathname: string, href: string): boolean {
+  return pathname === href || (href !== "/dashboard" && pathname.startsWith(`${href}/`));
+}
 
 export function AppShell({ identity, children }: { identity: ShellIdentity; children: ReactNode }) {
   const { email, business } = identity;
@@ -74,7 +82,7 @@ export function AppShell({ identity, children }: { identity: ShellIdentity; chil
               key={item.href}
               href={item.href}
               className="app-nav-link"
-              aria-current={pathname === item.href ? "page" : undefined}
+              aria-current={isCurrent(pathname, item.href) ? "page" : undefined}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d={item.d} />

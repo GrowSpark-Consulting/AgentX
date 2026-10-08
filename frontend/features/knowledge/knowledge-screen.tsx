@@ -18,7 +18,9 @@ import {
   deleteFaq,
   describeKbWriteError,
   dismissGap,
+  explainNotFound,
   faqChanges,
+  KbUnavailableError,
   listFaqs,
   listGaps,
   updateFaq,
@@ -35,7 +37,8 @@ import { ServicesEditor } from "./services-editor";
 // of content). Services and documents are owned by their sections; FAQs and unanswered questions live
 // here because answering a question adds an FAQ. FAQs are an RLS read; questions come from
 // GET /api/kb/gaps; every write goes through the API (kb-content.ts) and changes the list only after
-// it answers. Owners and admins write; every member, staff too, can answer a question.
+// it answers. Owners and admins write; every member, staff too, can answer a question. While the KB
+// routes aren't deployed, a section says so (kb-content.ts, "Not deployed yet") instead of failing.
 // Website sync (POST /api/onboarding/import-site, Dev 1) is not built and has no button here.
 
 /** A section's state; Try again is attached when rendering. */
@@ -45,6 +48,8 @@ type FaqDialog = { kind: "none" } | { kind: "form"; faq: FaqItem | null } | { ki
 export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string; timeZone: string; role: Role }) {
   const canWrite = canWriteKnowledge(role);
   const [faqs, setFaqs] = useState<Loaded<FaqItem>>({ status: "loading" });
+  /** Set once an FAQ write finds the FAQ routes aren't deployed; the list (an RLS read) still shows. */
+  const [faqWritesUnavailable, setFaqWritesUnavailable] = useState(false);
   const [gaps, setGaps] = useState<Loaded<GapItem>>({ status: "loading" });
   const [dialog, setDialog] = useState<FaqDialog>({ kind: "none" });
   const [toast, flash] = useFlash();
@@ -63,7 +68,8 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
       listGaps(tenantId, signal).then(
         (items) => setGaps({ status: "ready", items }),
         (err: unknown) => {
-          if (!signal?.aborted) setGaps({ status: "error", message: formatError(err).message });
+          if (signal?.aborted) return;
+          setGaps(err instanceof KbUnavailableError ? { status: "unavailable" } : { status: "error", message: formatError(err).message });
         },
       ),
     [tenantId],
@@ -95,38 +101,49 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
     if (editing) {
       const changes = faqChanges(editing, input);
       if (Object.keys(changes).length === 0) return setDialog({ kind: "none" });
-      addToFaqs(await updateFaq(tenantId, editing.id, changes).catch(refreshAfterFailedSave));
+      addToFaqs(await updateFaq(tenantId, editing.id, changes).catch((err: unknown) => faqWriteFailed(err, editing.id)));
       setDialog({ kind: "none" });
       flash("Saved the FAQ");
     } else {
-      addToFaqs(await createFaq(tenantId, input).catch(refreshAfterFailedSave));
+      addToFaqs(await createFaq(tenantId, input).catch((err: unknown) => faqWriteFailed(err, null)));
       setDialog({ kind: "none" });
       flash("Added to FAQs");
     }
   }
 
-  /** upstream_failed on a save leaves the row stored as failed (contracts.md section 9): show it. */
-  function refreshAfterFailedSave(err: unknown): never {
-    if (formatError(err).code === "upstream_failed") void loadFaqs();
-    throw err;
+  /**
+   * A refused FAQ write, before the dialog shows it. A 404 for an FAQ that's still listed means the
+   * route isn't deployed (explainNotFound), and the section then says so. upstream_failed leaves the
+   * row stored as failed (contracts.md section 9), so the list is read again to show it.
+   */
+  async function faqWriteFailed(err: unknown, id: string | null): Promise<never> {
+    const explained = id ? await explainNotFound(err, async () => (await listFaqs(getSupabaseBrowserClient(), tenantId)).some((f) => f.id === id)) : err;
+    if (explained instanceof KbUnavailableError) setFaqWritesUnavailable(true);
+    if (formatError(explained).code === "upstream_failed") void loadFaqs();
+    throw explained;
+  }
+
+  /** A refused answer or dismissal: a 404 for a question the API still lists means the route is missing. */
+  async function gapWriteFailed(err: unknown, id: string): Promise<never> {
+    throw await explainNotFound(err, async () => (await listGaps(tenantId)).some((g) => g.id === id));
   }
 
   async function removeFaq(faq: FaqItem) {
-    await deleteFaq(tenantId, faq.id);
+    await deleteFaq(tenantId, faq.id).catch((err: unknown) => faqWriteFailed(err, faq.id));
     setFaqs((prev) => (prev.status === "ready" ? { ...prev, items: prev.items.filter((f) => f.id !== faq.id) } : prev));
     setDialog({ kind: "none" });
     flash("Deleted the FAQ");
   }
 
   async function answer(gap: GapItem, a: string) {
-    const faq = await answerGap(tenantId, gap.id, a);
+    const faq = await answerGap(tenantId, gap.id, a).catch((err: unknown) => gapWriteFailed(err, gap.id));
     addToFaqs(faq);
     dropGap(gap.id);
     flash("Added to FAQs");
   }
 
   async function dismiss(gap: GapItem) {
-    await dismissGap(tenantId, gap.id);
+    await dismissGap(tenantId, gap.id).catch((err: unknown) => gapWriteFailed(err, gap.id));
     dropGap(gap.id);
     setDialog({ kind: "none" });
     flash("Dismissed the question");
@@ -144,6 +161,7 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
       <FaqList
         source={faqSource}
         canWrite={canWrite}
+        writesUnavailable={faqWritesUnavailable}
         onAdd={() => setDialog({ kind: "form", faq: null })}
         onEdit={(faq) => setDialog({ kind: "form", faq })}
         onDelete={(faq) => setDialog({ kind: "delete", faq })}

@@ -59,6 +59,19 @@ const USERS = {
   // Same active number, seen by an admin and by staff: what each may do differs, the data doesn't.
   "wa-admin@test.local": { memberships: [[T.interiors, "admin"]], view: { status: 200, body: [connection(T.interiors.id, "active")] } },
   "wa-staff@test.local": { memberships: [[T.interiors, "staff"]], view: { status: 200, body: [connection(T.interiors.id, "active")] } },
+  // Our own number (method platform, migration 0014), seeded with --skip-check so it has no number or
+  // name yet, next to a client's own number on the same business.
+  "wa-platform@test.local": {
+    memberships: [[T.interiors, "owner"]],
+    view: {
+      status: 200,
+      body: [
+        { ...connection(T.interiors.id, "active"), id: "30000000-0000-0000-0000-000000000002", method: "platform", waba_id: "500000000000001",
+          phone_number_id: "600000000000001", display_phone: null, verified_name: null, coexistence: false, quality_rating: null, messaging_limit: null },
+        { ...connection(T.interiors.id, "active"), method: "manual_byo", coexistence: false },
+      ],
+    },
+  },
 };
 
 // Inbox rows for T.inbox (conversations, contacts, handoffs, messages), with times relative to when the
@@ -91,25 +104,36 @@ const INBOX = {
     [3, cid(1), "out", "system", "Handed to team · asked for a person", ago(21)],
     [4, cid(1), "in", "customer", "Can I talk to someone about the price?", ago(20)],
     [5, cid(2), "in", "customer", "Hi, OMR 2BHK price enna?", ago(121)],
+    // Inbound kinds as the webhook stores them (migration 0013; docs/task-notes/2026-10-08-feat-agent-webhook-post.md).
+    [9, cid(2), "in", "customer", "This one, near the lake?", ago(120.9), "image", { id: "media-9", mime: "image/jpeg" }],
+    [10, cid(2), "in", "customer", null, ago(120.8), "image", { id: "media-10", mime: "image/webp" }],
+    [11, cid(2), "in", "customer", "My salary slip", ago(120.7), "document", { id: "media-11", mime: "application/pdf" }],
+    [12, cid(2), "in", "customer", null, ago(120.6), "audio", { id: "media-12", mime: "audio/ogg; codecs=opus" }],
+    [13, cid(2), "in", "customer", "12.9791,80.2209 Phoenix Marketcity Velachery Main Road, Chennai", ago(120.5), "location"],
+    [14, cid(2), "in", "customer", null, ago(120.4), "unsupported", null, { unsupportedType: "sticker" }],
+    [15, cid(2), "in", "customer", "Book a site visit", ago(120.3), "interactive", null, { buttonId: "book_visit" }],
     [6, cid(2), "out", "ai", "Hi Priya! 2BHKs on OMR start from ₹62 L.", ago(120)],
     [7, cid(3), "in", "customer", "Visit ku varen, parking iruka?", ago(3 * 24 * 60)],
     [8, cid(3), "out", "staff", "Yes ma’am, visitor parking is at the site office.", ago(3 * 24 * 60 - 5)],
-  ].map(([n, conversation_id, direction, sender, body, created_at]) => ({
-    id: mid(n), tenant_id: T.inbox.id, conversation_id, direction, sender, body, media: null, template_name: null,
+  ].map(([n, conversation_id, direction, sender, body, created_at, kind = null, media = null, meta = kind ? {} : null]) => ({
+    id: mid(n), tenant_id: T.inbox.id, conversation_id, direction, sender, kind, body, media, meta, template_name: null,
     delivery_status: null, created_at,
   })),
 };
-// Knowledge base services (0001 services, 0002 member writes). Each Knowledge test creates its own
-// account and business through POST /__mock/services-account, so the parallel projects never edit
-// each other's rows. Rows: { id, tenant_id, name, duration_min, price_min, price_max, resource_type, active }.
+// Knowledge base services (0001 services, 0002 member writes, 0015 buffer_min and min_notice_min). Each
+// Knowledge test creates its own account and business through POST /__mock/services-account, so the
+// parallel projects never edit each other's rows. Rows: { id, tenant_id, name, duration_min, price_min,
+// price_max, resource_type, active, buffer_min, min_notice_min }.
 const SERVICES = [];
-/** tenant id → resource types (resources.type) offered as suggestions. */
-const RESOURCE_TYPES = new Map();
+/** resources rows (0001, member writes in 0002): { id, tenant_id, type, name, working_hours, service_area, active }. */
+const RESOURCES = [];
 const SEED_SERVICES = [
   ["Haircut", 30, 300, 600, "stylist", true],
   ["Bridal trial", 90, 2500, 5000, "stylist", true],
   ["Hair spa", 60, null, null, "chair", false],
 ];
+const resourceRow = (tenant_id, { name, type, working_hours = {}, service_area = null, active = true, id = randomUUID() }) =>
+  ({ id, tenant_id, type, name, working_hours, service_area, active });
 /**
  * kb_documents rows (0001, status/body from 0011), read-only for members:
  * { id, tenant_id, source_type, source_url, title, body, status, created_at }. FAQs are the manual rows
@@ -138,9 +162,9 @@ function createServicesAccount({ seed = false, error = false, docs = false, docs
   USERS[email] = { memberships: [[t, role]], view: { status: 200, body: [] }, servicesError: error, kbDocumentsError: docsError };
   if (seed) {
     for (const [name, duration_min, price_min, price_max, resource_type, active] of SEED_SERVICES) {
-      SERVICES.push({ id: randomUUID(), tenant_id: t.id, name, duration_min, price_min, price_max, resource_type, active });
+      SERVICES.push({ id: randomUUID(), tenant_id: t.id, name, duration_min, price_min, price_max, resource_type, active, buffer_min: 0, min_notice_min: 60 });
     }
-    RESOURCE_TYPES.set(t.id, ["chair", "stylist"]);
+    RESOURCES.push(resourceRow(t.id, { name: "Chair 1", type: "chair" }), resourceRow(t.id, { name: "Stylist A", type: "stylist" }));
   }
   if (docs) {
     for (const [source_type, source_url, title, created_at, status] of SEED_DOCUMENTS) {
@@ -154,8 +178,154 @@ function createServicesAccount({ seed = false, error = false, docs = false, docs
   }
   return { email, tenantId: t.id };
 }
-const SERVICE_COLUMNS = ["id", "tenant_id", "name", "duration_min", "price_min", "price_max", "resource_type", "active"];
+const SERVICE_COLUMNS = ["id", "tenant_id", "name", "duration_min", "price_min", "price_max", "resource_type", "active", "buffer_min", "min_notice_min"];
 const pickService = (s) => Object.fromEntries(SERVICE_COLUMNS.map((k) => [k, s[k]]));
+
+// Day 3 (leads, calendar, booking setup). Each test makes its own business through
+// POST /__mock/day3-account, so the desktop, tablet and phone projects never share rows. The business's
+// pack key is made up ("sample-pack"): the screens must work for any pack. Times are fixed (the week of
+// Monday 12 Oct 2026, Asia/Kolkata), so tests open the calendar on that date.
+const CONTACTS = [];
+/** leads rows (0001): { id, tenant_id, contact_id, stage, score, temperature, fields, owner_user_id, created_at, updated_at }. */
+const LEADS = [];
+/** bookings rows (0001, 0002, 0015). Members read them; only the booking engine writes. */
+const BOOKINGS = [];
+/** vertical_packs rows: { key, version, active, definition }. */
+const PACKS = [
+  {
+    key: "sample-pack", version: 1, active: true,
+    definition: {
+      key: "sample-pack", version: 1,
+      fields: [
+        { key: "area", label: "Preferred area", type: "text", required: true },
+        { key: "budget", label: "Budget", type: "range_inr", required: true },
+        { key: "timeline", label: "When are you planning", type: "date_range_or_month", required: false },
+      ],
+    },
+  },
+];
+/** tenant id → { business_hours, vertical_version } for businesses made during a run. */
+const TENANT_EXTRA = new Map();
+/** google_calendar_connections rows (0017). Members may read every column but the token. */
+const CALENDARS = [];
+const CALENDAR_READABLE = ["id", "tenant_id", "resource_id", "google_email", "calendar_id", "scope", "status", "last_error", "created_at", "updated_at"];
+const ist = (date, hhmm) => new Date(`${date}T${hhmm}:00+05:30`).toISOString();
+
+/**
+ * { seed?, role?, error? } → { email, tenantId, ids }. seed adds the sample business below; error names
+ * a table ("leads", "bookings", "resources", "tenants") whose reads return rows the app can't parse.
+ */
+function createDay3Account({ seed = false, role = "owner", error = null } = {}) {
+  const email = `d3-${randomUUID()}@test.local`;
+  const t = tenant(randomUUID(), "Sample Business", "sample-pack");
+  USERS[email] = { memberships: [[t, role]], view: { status: 200, body: [] }, day3Error: error };
+  TENANT_EXTRA.set(t.id, { business_hours: {}, vertical_version: 1 });
+  const ids = {};
+  if (!seed) return { email, tenantId: t.id, ids };
+
+  const week = (start, end) => Object.fromEntries(["mon", "tue", "wed", "thu", "fri", "sat"].map((d) => [d, [{ start, end }]]));
+  TENANT_EXTRA.get(t.id).business_hours = { ...week("09:30", "19:00"), sun: [{ start: "10:00", end: "14:00" }] };
+  const asha = resourceRow(t.id, { name: "Asha", type: "staff", working_hours: { ...week("10:00", "18:00"), sun: [] } });
+  const ravi = resourceRow(t.id, { name: "Ravi", type: "staff", service_area: { pincodes: ["600041", "600096"] } });
+  const room = resourceRow(t.id, { name: "Room 2", type: "room", active: false });
+  RESOURCES.push(asha, ravi, room);
+  Object.assign(ids, { asha: asha.id, ravi: ravi.id, room: room.id });
+  // Ravi's calendar works; Room 2's token was refused by Google; Asha has none.
+  const calendar = (resource, google_email, status) => ({
+    id: randomUUID(), tenant_id: t.id, resource_id: resource.id, google_email, calendar_id: "primary", refresh_token_enc: "v1.never-sent-to-the-browser",
+    scope: "calendar.events calendar.freebusy email", status, last_error: status === "connected" ? null : "invalid_grant", created_at: ist("2026-10-09", "10:00"), updated_at: ist("2026-10-09", "10:00"),
+  });
+  CALENDARS.push(calendar(ravi, "ravi@example.com", "connected"), calendar(room, "rooms@example.com", "needs_reconnect"));
+  const consult = { id: randomUUID(), tenant_id: t.id, name: "Consultation", duration_min: 60, price_min: null, price_max: null, resource_type: "staff", active: true, buffer_min: 15, min_notice_min: 120 };
+  const follow = { id: randomUUID(), tenant_id: t.id, name: "Follow-up", duration_min: 30, price_min: 0, price_max: 0, resource_type: "staff", active: true, buffer_min: 0, min_notice_min: 60 };
+  SERVICES.push(consult, follow);
+  ids.consult = consult.id;
+
+  const person = (key, name, phone, stage, score, temperature, fields, updated) => {
+    const contact = { id: randomUUID(), tenant_id: t.id, name, phone };
+    CONTACTS.push(contact);
+    const lead = { id: randomUUID(), tenant_id: t.id, contact_id: contact.id, stage, score, temperature, fields, owner_user_id: null, created_at: ist("2026-10-10", "10:00"), updated_at: updated };
+    LEADS.push(lead);
+    ids[key] = lead.id;
+    return lead;
+  };
+  const karthik = person("karthik", "Karthik R", "+919812345621", "qualified", 82, "hot", { area: "Velachery", budget: { min: 6000000, max: 8000000 }, parking_needed: true }, ist("2026-10-11", "09:00"));
+  const priya = person("priya", "Priya S", "+919900000037", "new", 55, "warm", { area: "OMR" }, ist("2026-10-11", "08:00"));
+  const lakshmi = person("lakshmi", "Lakshmi V", "+919400000008", "booked", 30, "cold", {}, ist("2026-10-11", "07:00"));
+  const unnamed = person("unnamed", null, "+919000000052", "engaged", null, null, {}, ist("2026-10-11", "06:00"));
+  const deepa = person("deepa", "Deepa N", "+919700000063", "won", 90, "hot", { area: "Adyar" }, ist("2026-10-11", "05:00"));
+
+  const booking = (key, lead, { resource = null, service = null, kind = "slot", status = "confirmed", date = "2026-10-12", start, end, hold = null, details = {} }) => {
+    const b = {
+      id: randomUUID(), tenant_id: t.id, lead_id: lead.id, resource_id: resource?.id ?? null, service_id: service?.id ?? null, kind, status,
+      start_at: ist(date, start), end_at: ist(date, end), hold_expires_at: hold, details, created_at: ist("2026-10-11", "09:30"), calendar_event_id: null,
+    };
+    BOOKINGS.push(b);
+    ids[key] = b.id;
+  };
+  booking("confirmed", karthik, { resource: asha, service: consult, start: "10:00", end: "11:00" });
+  booking("held", priya, { resource: ravi, service: follow, status: "held", start: "11:30", end: "12:00", hold: "2099-01-01T00:00:00.000Z" });
+  booking("lapsed", lakshmi, { resource: asha, service: consult, status: "held", start: "14:00", end: "15:00", hold: "2026-10-01T00:00:00.000Z" });
+  booking("callback", unnamed, { kind: "callback", start: "16:00", end: "16:15" });
+  booking("cancelled", deepa, { resource: ravi, service: consult, status: "cancelled", start: "12:00", end: "13:00", details: { cancel_reason: "replaced" } });
+  booking("wednesday", karthik, { resource: ravi, service: consult, date: "2026-10-14", start: "15:00", end: "16:00" });
+  booking("completed", lakshmi, { resource: asha, service: consult, status: "completed", date: "2026-10-13", start: "10:00", end: "11:00" });
+
+  // Karthik's chat: customer, AI, customer, a system note, and a handover a teammate picked up.
+  const conversationId = randomUUID();
+  ids.karthikChat = conversationId;
+  INBOX.conversations.push({
+    id: conversationId, tenant_id: t.id, contact_id: karthik.contact_id, mode: "human", status: "open",
+    last_customer_msg_at: ist("2026-10-11", "08:40"), created_at: ist("2026-10-11", "08:30"),
+    contacts: { name: "Karthik R", phone: "+919812345621", language: "en" },
+    handoffs: [{ id: randomUUID(), trigger: "asked_human", resolved_at: null, picked_at: ist("2026-10-11", "08:50") }],
+  });
+  const chat = [
+    ["in", "customer", "Hi, is a 3BHK available in Velachery?", "08:30"],
+    ["out", "ai", "Yes, there are a few. What budget are you looking at?", "08:31"],
+    ["in", "customer", "60 to 80 L", "08:40"],
+    ["out", "system", "Handed to team · asked for a person", "08:41"],
+  ];
+  for (const [direction, sender, body, at] of chat) {
+    INBOX.messages.push({
+      id: randomUUID(), tenant_id: t.id, conversation_id: conversationId, direction, sender, kind: sender === "customer" ? "text" : null,
+      body, media: null, meta: null, template_name: null, delivery_status: null, created_at: ist("2026-10-11", at),
+    });
+  }
+  return { email, tenantId: t.id, ids };
+}
+
+const pick = (row, columns) => Object.fromEntries(columns.filter((c) => c in row).map((c) => [c, row[c]]));
+const contactOf = (contactId) => {
+  const c = CONTACTS.find((x) => x.id === contactId);
+  return c ? { name: c.name, phone: c.phone } : null;
+};
+/** A bookings row with the embeds the dashboard selects (services, resources, leads → contacts). */
+const bookingWithEmbeds = (b) => ({
+  ...b,
+  services: b.service_id ? { name: SERVICES.find((s) => s.id === b.service_id)?.name ?? "" } : null,
+  resources: b.resource_id ? { name: RESOURCES.find((r) => r.id === b.resource_id)?.name ?? "" } : null,
+  leads: { contacts: contactOf(LEADS.find((l) => l.id === b.lead_id)?.contact_id) },
+});
+/** The PostgREST filters the mock understands (eq, in, lt, gt), applied after RLS. */
+function filters(url) {
+  const checks = [];
+  for (const [column, raw] of url.searchParams) {
+    if (["select", "order", "limit", "offset"].includes(column) || column.includes(".")) continue;
+    const dot = raw.indexOf(".");
+    const op = raw.slice(0, dot);
+    const value = raw.slice(dot + 1);
+    if (op === "eq") checks.push((r) => String(r[column]) === value);
+    else if (op === "in") {
+      const set = new Set(value.slice(1, -1).split(",").map((v) => v.replace(/^"|"$/g, "")));
+      checks.push((r) => set.has(String(r[column])));
+    } else if (op === "lt") checks.push((r) => Date.parse(r[column]) < Date.parse(value));
+    else if (op === "gt") checks.push((r) => Date.parse(r[column]) > Date.parse(value));
+  }
+  return (r) => checks.every((check) => check(r));
+}
+/** Rows the app can't parse, for the error states (a 5xx would also log a console error, which the suite forbids). */
+const day3Rows = (email, table, rows) => (USERS[email].day3Error === table ? [{ id: "not-a-row", internal: "boom" }] : rows);
 
 /** A conversations row as the inbox's select returns it: open handoffs, newest non-system message. */
 const inboxListRow = ({ handoffs, ...c }) => ({
@@ -165,7 +335,7 @@ const inboxListRow = ({ handoffs, ...c }) => ({
     .filter((m) => m.conversation_id === c.id && m.sender !== "system")
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
     .slice(0, 1)
-    .map(({ id, sender, body, media, template_name, created_at }) => ({ id, sender, body, media, template_name, created_at })),
+    .map(({ id, sender, kind, body, media, meta, template_name, created_at }) => ({ id, sender, kind, body, media, meta, template_name, created_at })),
 });
 const idOf = (email) => `00000000-0000-0000-0000-${String(Object.keys(USERS).indexOf(email) + 1).padStart(12, "0")}`;
 const userJson = (email) => ({ id: idOf(email), aud: "authenticated", role: "authenticated", email, app_metadata: { provider: USERS[email]?.provider ?? "email" }, user_metadata: {}, identities: [{ provider: USERS[email]?.provider ?? "email" }], created_at: "2026-10-01T00:00:00Z" });
@@ -406,6 +576,15 @@ ${choose("Cancel", "cancel=1")}
     }));
     return send(res, 200, { memberships, trialCalls: trialCalls.get(email) ?? 0 });
   }
+  if (path === "/__mock/day3-account" && req.method === "POST") {
+    return send(res, 200, createDay3Account(await readBody(req)));
+  }
+  if (path === "/__mock/day3") {
+    // A business's rows as stored, for checking writes: ?tenant=<id>.
+    const tenantId = url.searchParams.get("tenant");
+    const of = (rows) => rows.filter((r) => r.tenant_id === tenantId);
+    return send(res, 200, { tenant: TENANT_EXTRA.get(tenantId) ?? null, resources: of(RESOURCES), services: of(SERVICES), bookings: of(BOOKINGS), leads: of(LEADS) });
+  }
   if (path === "/__mock/services-account" && req.method === "POST") {
     // { seed?: boolean, error?: boolean } → { email, tenantId }; the password is PASSWORD.
     return send(res, 200, createServicesAccount(await readBody(req)));
@@ -514,16 +693,103 @@ ${choose("Cancel", "cancel=1")}
       const ascending = url.searchParams.get("order") === "created_at.asc";
       return send(res, 200, [...rows].sort((a, b) => (ascending ? 1 : -1) * a.created_at.localeCompare(b.created_at)));
     }
-    if (table === "services" || table === "resources") {
+    if (table === "tenants") {
+      // RLS as in 0001/0002: members read their own businesses and may update only name, timezone,
+      // business_hours and agent_settings.
+      if (!email) return send(res, 200, []);
+      const ownTenants = USERS[email].memberships.map(([t]) => t).filter(filters(url));
+      const row = (t) => ({ ...t, business_hours: TENANT_EXTRA.get(t.id)?.business_hours ?? {}, vertical_version: TENANT_EXTRA.get(t.id)?.vertical_version ?? 1 });
+      if (req.method === "PATCH") {
+        const patch = await readBody(req);
+        if (Object.keys(patch).some((k) => !["name", "timezone", "business_hours", "agent_settings"].includes(k))) {
+          return send(res, 403, { code: "42501", details: null, hint: null, message: "permission denied for table tenants" });
+        }
+        for (const t of ownTenants) {
+          if ("business_hours" in patch) TENANT_EXTRA.set(t.id, { vertical_version: 1, ...TENANT_EXTRA.get(t.id), business_hours: patch.business_hours });
+        }
+        return send(res, 200, ownTenants.map(row));
+      }
+      return send(res, 200, day3Rows(email, "tenants", ownTenants.map(row)));
+    }
+    if (table === "google_calendar_connections") {
+      // 0017: members read their own businesses' rows, every column but refresh_token_enc; only the server writes.
+      if (!email) return send(res, 200, []);
+      const columns = (url.searchParams.get("select") ?? "*").split(",").map((c) => c.trim());
+      if (req.method !== "GET" || columns.some((c) => !CALENDAR_READABLE.includes(c))) {
+        return send(res, 401, { code: "42501", details: null, hint: null, message: "permission denied for table google_calendar_connections" });
+      }
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      return send(res, 200, CALENDARS.filter((c) => own.has(c.tenant_id)).filter(filters(url)).map((c) => pick(c, columns)));
+    }
+    if (table === "vertical_packs") {
+      // A global catalogue every signed-in user reads.
+      if (!email) return send(res, 200, []);
+      return send(res, 200, PACKS.filter(filters(url)).map((p) => ({ definition: p.definition })));
+    }
+    if (table === "leads") {
+      if (!email) return send(res, 200, []);
+      if (req.method !== "GET") return send(res, 403, { code: "42501", details: null, hint: null, message: "permission denied for table leads" });
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const rows = LEADS.filter((l) => own.has(l.tenant_id))
+        .filter(filters(url))
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        .map((l) => ({ ...l, contacts: contactOf(l.contact_id) }));
+      return send(res, 200, day3Rows(email, "leads", rows));
+    }
+    if (table === "bookings") {
+      // Members read; only the booking engine (service role) writes.
+      if (!email) return send(res, 200, []);
+      if (req.method !== "GET") return send(res, 403, { code: "42501", details: null, hint: null, message: "permission denied for table bookings" });
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const rows = BOOKINGS.filter((b) => own.has(b.tenant_id))
+        .filter(filters(url))
+        .sort((a, b) => a.start_at.localeCompare(b.start_at))
+        .map(bookingWithEmbeds);
+      return send(res, 200, day3Rows(email, "bookings", rows));
+    }
+    if (table === "resources") {
+      // RLS as in 0001/0002: members read and write their own businesses' rows only.
+      if (!email) return send(res, 200, []);
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      const COLUMNS = ["id", "tenant_id", "type", "name", "working_hours", "service_area", "active"];
+      const mine = () => RESOURCES.filter((r) => own.has(r.tenant_id)).filter(filters(url));
+      if (req.method === "GET") {
+        return send(res, 200, day3Rows(email, "resources", mine().sort((a, b) => a.name.localeCompare(b.name)).map((r) => pick(r, COLUMNS))));
+      }
+      if (req.method === "POST") {
+        const body = await readBody(req);
+        const rows = Array.isArray(body) ? body : [body];
+        if (rows.some((r) => !own.has(r.tenant_id))) {
+          return send(res, 403, { code: "42501", details: null, hint: null, message: 'new row violates row-level security policy for table "resources"' });
+        }
+        const created = rows.map((r) => resourceRow(r.tenant_id, { ...r, id: randomUUID() }));
+        RESOURCES.push(...created);
+        return send(res, 201, created.map((r) => pick(r, COLUMNS)));
+      }
+      if (req.method === "PATCH") {
+        const patch = await readBody(req);
+        const updated = mine();
+        for (const r of updated) Object.assign(r, patch, { id: r.id, tenant_id: r.tenant_id });
+        return send(res, 200, updated.map((r) => pick(r, COLUMNS)));
+      }
+      if (req.method === "DELETE") {
+        const removed = mine();
+        // bookings.resource_id references resources with no cascade: Postgres refuses the delete.
+        if (removed.some((r) => BOOKINGS.some((b) => b.resource_id === r.id))) {
+          return send(res, 409, {
+            code: "23503", details: 'Key is still referenced from table "bookings".', hint: null,
+            message: 'update or delete on table "resources" violates foreign key constraint "bookings_resource_id_fkey" on table "bookings"',
+          });
+        }
+        for (const r of removed) RESOURCES.splice(RESOURCES.indexOf(r), 1);
+        return send(res, 200, removed.map((r) => ({ id: r.id })));
+      }
+    }
+    if (table === "services") {
       // RLS as in 0001/0002: members read and write their own businesses' rows only. Filters: eq.
       if (!email) return send(res, 200, []);
       const own = new Set(USERS[email].memberships.map(([t]) => t.id));
       const eq = (column) => url.searchParams.get(column)?.replace(/^eq\./, "") ?? null;
-      if (table === "resources") {
-        const tenantId = eq("tenant_id");
-        const types = own.has(tenantId) ? (RESOURCE_TYPES.get(tenantId) ?? []) : [];
-        return send(res, 200, types.map((type) => ({ type })));
-      }
       // Rows the app can't parse (a 5xx would also log a browser console error, which the suite forbids).
       if (USERS[email].servicesError) return send(res, 200, [{ id: "not-a-service", internal: "boom" }]);
       const matches = (s) =>
@@ -537,7 +803,7 @@ ${choose("Cancel", "cancel=1")}
         if (rows.some((r) => !own.has(r.tenant_id))) {
           return send(res, 403, { code: "42501", details: null, hint: null, message: 'new row violates row-level security policy for table "services"' });
         }
-        const created = rows.map((r) => ({ active: true, price_min: null, price_max: null, ...r, id: randomUUID() }));
+        const created = rows.map((r) => ({ active: true, price_min: null, price_max: null, buffer_min: 0, min_notice_min: 60, ...r, id: randomUUID() }));
         SERVICES.push(...created);
         return send(res, 201, created.map(pickService));
       }
@@ -559,14 +825,18 @@ ${choose("Cancel", "cancel=1")}
       if (USERS[email].inboxError) return send(res, 200, [{ id: "not-a-conversation", internal: "boom" }]);
       // RLS: only the user's own businesses; then the query's own filters.
       const own = new Set(USERS[email].memberships.map(([t]) => t.id));
-      const eq = (column) => url.searchParams.get(column)?.replace(/^eq\./, "") ?? null;
-      const rows = (table === "conversations" ? INBOX.conversations : INBOX.messages).filter(
-        (r) => own.has(r.tenant_id) && (!eq("tenant_id") || r.tenant_id === eq("tenant_id")) &&
-          (!eq("conversation_id") || r.conversation_id === eq("conversation_id")),
-      );
+      const rows = (table === "conversations" ? INBOX.conversations : INBOX.messages).filter((r) => own.has(r.tenant_id)).filter(filters(url));
+      const limit = Number(url.searchParams.get("limit") ?? Infinity);
+      if (table === "conversations" && url.searchParams.has("contact_id")) {
+        // The lead timeline: one contact's conversations with every handover, open or closed.
+        return send(res, 200, rows.map(({ handoffs, ...c }) => ({
+          ...c,
+          handoffs: handoffs.map(({ id, trigger, picked_at = null, resolved_at }) => ({ id, trigger, picked_at, resolved_at })),
+        })));
+      }
       return table === "conversations"
         ? send(res, 200, rows.map(inboxListRow))
-        : send(res, 200, [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+        : send(res, 200, [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit));
     }
     return send(res, 404, { code: "PGRST205", details: null, hint: null, message: `Could not find the table 'public.${table}' in the schema cache` });
   }

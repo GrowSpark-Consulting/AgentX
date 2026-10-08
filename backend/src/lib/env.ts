@@ -41,14 +41,17 @@ const serverEnvSchema = z.object({
     .transform((v) => parseOrigins(v) ?? [])
     .optional(),
 
+  // The knowledge base reads this on every upload and every answer, so the server won't start without it.
+  EMBEDDINGS_API_KEY: secret,
+  // The Atlas endpoint for Voyage models (our key is an Atlas model API key). A Voyage-direct key
+  // would need https://api.voyageai.com/v1 instead. 1024 dimensions, to match kb_chunks.embedding.
+  // https only: the key is sent to it, in every environment.
+  EMBEDDINGS_BASE_URL: z.url({ protocol: /^https$/, error: "must be an https URL" }).default("https://ai.mongodb.com/v1"),
+  EMBEDDINGS_MODEL: z.string().min(1).default("voyage-4"),
+
   // Optional until the module that uses them lands; make each one required in
   // the same PR that first reads it.
   ANTHROPIC_API_KEY: secret.optional(),
-  EMBEDDINGS_API_KEY: secret.optional(),
-  // The Atlas endpoint for Voyage models (our key is an Atlas model API key). A Voyage-direct key
-  // would need https://api.voyageai.com/v1 instead. 1024 dimensions, to match kb_chunks.embedding.
-  EMBEDDINGS_BASE_URL: z.url({ protocol: /^https?$/ }).default("https://ai.mongodb.com/v1"),
-  EMBEDDINGS_MODEL: z.string().min(1).default("voyage-4"),
 
   NEXT_PUBLIC_META_APP_ID: secret.optional(),
   META_APP_SECRET: secret.optional(),
@@ -69,6 +72,8 @@ const serverEnvSchema = z.object({
 
   GOOGLE_CLIENT_ID: secret.optional(),
   GOOGLE_CLIENT_SECRET: secret.optional(),
+  // Exactly as registered in the Google Cloud OAuth client: <API origin>/api/calendar/google/callback.
+  GOOGLE_REDIRECT_URI: z.url({ protocol: /^https?$/ }).optional(),
 
   RAZORPAY_KEY_ID: secret.optional(),
   RAZORPAY_KEY_SECRET: secret.optional(),

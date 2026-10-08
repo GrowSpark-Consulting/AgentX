@@ -1,6 +1,7 @@
 import { inngest } from "../../inngest/client";
 import { serverEnv } from "../../lib/env";
 import { AppError } from "../../lib/errors";
+import { stripUnsafeCharacters } from "../../lib/text";
 import { applyMessageStatus, findConnections, storeInboundMessage, WebhookDbError, type ConnectionRow, type StoreInboundArgs } from "./inbound-db";
 import { parseWebhook, type ParsedMessage } from "./parse";
 import { verifySignature } from "./signature";
@@ -25,16 +26,20 @@ const TAG = "[whatsapp-webhook]";
 
 const unauthenticated = () => new AppError("unauthenticated", "The request could not be verified.");
 
-function toStorable(msg: ParsedMessage): Pick<StoreInboundArgs, "kind" | "body" | "media" | "meta"> {
+/** Customer text with NUL, control characters and lone surrogates removed: one of them would fail the insert, and Meta would resend the batch. */
+const clean = (text: string | undefined) => (text === undefined ? undefined : stripUnsafeCharacters(text));
+
+function toStorable(parsed: ParsedMessage): Pick<StoreInboundArgs, "kind" | "body" | "media" | "meta"> {
+  const msg = { ...parsed, text: clean(parsed.text) };
   switch (msg.type) {
     case "unsupported":
       return { kind: "unsupported", body: null, meta: { unsupportedType: msg.unsupportedType ?? "unknown" } };
     case "interactive":
-      return { kind: "interactive", body: msg.text ?? null, meta: { buttonId: msg.buttonId } };
+      return { kind: "interactive", body: msg.text ?? null, meta: { buttonId: clean(msg.buttonId) } };
     case "image":
     case "audio":
     case "document":
-      return { kind: msg.type, body: msg.text ?? null, media: msg.media, meta: {} };
+      return { kind: msg.type, body: msg.text ?? null, media: msg.media && { id: stripUnsafeCharacters(msg.media.id), mime: stripUnsafeCharacters(msg.media.mime) }, meta: {} };
     default:
       return { kind: msg.type, body: msg.text ?? null, meta: {} };
   }
@@ -109,7 +114,7 @@ export async function handleWhatsAppWebhook(request: Request): Promise<Response>
           tenantId: connection.tenantId,
           channelId: connection.channelId,
           phone: message.from,
-          contactName: message.contactName,
+          contactName: clean(message.contactName),
           providerMsgId: message.providerMsgId,
           sentAt: message.timestamp,
           ...toStorable(message),

@@ -51,7 +51,7 @@ Lock the choice only when all of these are done:
   project owns the key. Do not assume Voyage's own pricing applies.
 - **Cohere terms:** the key used is a trial key; confirm terms and get a production key if Cohere is chosen.
 - **Config:** if Voyage is chosen, the app needs the Atlas base URL as configuration (the eval script uses
-  `VOYAGE_BASE_URL`). `EMBEDDINGS_API_KEY` is the only embeddings variable in the env schema today.
+  `VOYAGE_BASE_URL`). The env schema now has `EMBEDDINGS_API_KEY` (required), `EMBEDDINGS_BASE_URL` (https, default Atlas) and `EMBEDDINGS_MODEL`.
 
 ## Next steps
 - [ ] Raja: confirm the Atlas organisation and project that own the Voyage key, and its pricing.

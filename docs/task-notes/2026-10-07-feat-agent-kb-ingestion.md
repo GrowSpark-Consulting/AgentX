@@ -15,8 +15,9 @@ Technical details:
 - **Embeddings client** (`backend/src/kb/embeddings.ts`): Voyage `voyage-4`, 1024 dimensions (matches
   `kb_chunks.embedding vector(1024)`), documents and queries sent with different `input_type`, 64 texts per
   request, every answer checked with Zod (1024 numbers per row, one row per input). A provider error
-  becomes `upstream_failed` and never carries the provider's body or the key. A missing
-  `EMBEDDINGS_API_KEY` is `not_available` and names the variable; nothing is skipped silently.
+  becomes `upstream_failed` and never carries the provider's body or the key. `EMBEDDINGS_API_KEY` is
+  required in the env schema, so the server does not start without it (since fix/kb-hardening; see
+  2026-10-08-fix-kb-hardening.md).
 - **Text extraction** (`extract.ts`): pdf (`unpdf`), docx (`mammoth`, raw text), txt and md (UTF-8). The type
   comes from the file name and is confirmed from the file's first bytes. A file with no readable text (a
   scan) or one that can't be parsed is `validation_failed` with `fields.file`, with a fixed message (the

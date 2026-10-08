@@ -8,7 +8,7 @@ vi.mock("../lib/supabase-admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock("../features/is-enabled", () => ({ isEnabled }));
 
 const { send, TEST_MESSAGES_PER_HOUR } = await import("./send");
-const { OutsideWindowError, registerSender } = await import("./sender");
+const { OutsideWindowError, registerSender, SendError } = await import("./sender");
 
 const TENANT = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 const CONVERSATION = "3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f601";
@@ -61,7 +61,10 @@ describe("test_message", () => {
 
   it(`allows ${TEST_MESSAGES_PER_HOUR} an hour per business`, async () => {
     rpcHandlers.notify_target = () => ok([target({ recent_test_messages: TEST_MESSAGES_PER_HOUR })]);
-    await expect(send(TENANT, "test_message", payload)).resolves.toMatchObject({ status: "failed", error: { code: "rate_limited" } });
+    await expect(send(TENANT, "test_message", payload)).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "rate_limited", retryable: true, outcomeUnknown: false },
+    });
     expect(sender.sendText).not.toHaveBeenCalled();
   });
 
@@ -109,13 +112,65 @@ describe("customer messages", () => {
     expect(sender.sendText).not.toHaveBeenCalled();
   });
 
-  it("refunds the credits when WhatsApp rejects the message", async () => {
-    sender.sendText.mockRejectedValue(new Error("131026 undeliverable"));
+  it("refunds the credits when WhatsApp rejects the message, keeping the sender's code", async () => {
+    sender.sendText.mockRejectedValue(new SendError("validation_failed", "The number or the text is not valid."));
     const outcome = await send(TENANT, "ai_reply", { conversationId: CONVERSATION, text: "Hi" });
-    expect(outcome).toMatchObject({ status: "failed", error: { code: "upstream_failed" } });
+    expect(outcome).toEqual({
+      status: "failed",
+      error: { code: "validation_failed", message: "The number or the text is not valid.", retryable: false, outcomeUnknown: false },
+    });
     const spent = calls("spend_credits")[0];
     expect(calls("refund_credits")[0]).toMatchObject({ p_tenant_id: TENANT, p_ref_id: spent.p_ref_id });
     expect(calls("notify_record")).toHaveLength(0);
+  });
+
+  it("passes a rate limit through as retryable", async () => {
+    sender.sendText.mockRejectedValue(new SendError("rate_limited", "WhatsApp is limiting messages right now.", { retryable: true }));
+    await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, text: "Hi" })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "rate_limited", retryable: true, outcomeUnknown: false },
+    });
+    expect(calls("refund_credits")).toHaveLength(1);
+  });
+
+  // Decision 16 in docs/contracts.md: holding the credit instead of refunding waits for Raja.
+  it("refunds an unknown outcome for now, says so, and does not send again", async () => {
+    sender.sendText.mockRejectedValue(
+      new SendError("upstream_failed", "WhatsApp did not answer in time.", { retryable: true, outcomeUnknown: true }),
+    );
+    await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, text: "Hi" })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "upstream_failed", retryable: true, outcomeUnknown: true },
+    });
+    expect(sender.sendText).toHaveBeenCalledTimes(1);
+    expect(sender.sendTemplate).not.toHaveBeenCalled();
+    expect(calls("refund_credits")).toHaveLength(1);
+    expect(calls("notify_record")).toHaveLength(0);
+  });
+
+  it("answers upstream_failed for an unexpected sender error and logs it without credentials", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    sender.sendText.mockRejectedValue(new Error("socket hang up, Authorization: Bearer EAAGsyntheticTokenValue123456"));
+    await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, text: "Hi" })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "upstream_failed", message: "WhatsApp did not accept the message, so it was not sent.", retryable: false },
+    });
+    expect(calls("refund_credits")).toHaveLength(1);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0][0])).toContain("[notify] unexpected sender error");
+    expect(String(log.mock.calls[0][0])).not.toContain("EAAGsyntheticTokenValue123456");
+    log.mockRestore();
+  });
+
+  it("stops before spending when the connection can't be used", async () => {
+    registerSender(async () => {
+      throw new SendError("whatsapp_not_connected", "This business has no connected WhatsApp number, so the message was not sent.");
+    });
+    await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, text: "Hi" })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "whatsapp_not_connected", retryable: false },
+    });
+    expect(calls("spend_credits")).toHaveLength(0);
   });
 
   it("skips and refunds an AI reply when WhatsApp says the window has closed", async () => {
@@ -148,7 +203,7 @@ describe("customer messages", () => {
   it("does not retry when a template send is refused", async () => {
     sender.sendTemplate.mockRejectedValue(new OutsideWindowError());
     const outcome = await send(TENANT, "reminder_24h", { conversationId: CONVERSATION, templateParams: ["4 pm"] });
-    expect(outcome).toMatchObject({ status: "failed", error: { code: "upstream_failed" } });
+    expect(outcome).toMatchObject({ status: "failed", error: { code: "outside_window", retryable: false } });
     expect(sender.sendTemplate).toHaveBeenCalledTimes(1);
     expect(calls("refund_credits")).toHaveLength(1);
   });
@@ -194,7 +249,7 @@ describe("before the adapter exists", () => {
     registerSender(undefined);
     await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, text: "Hi" })).resolves.toMatchObject({
       status: "failed",
-      error: { code: "not_available" },
+      error: { code: "not_available", retryable: false, outcomeUnknown: false },
     });
     expect(calls("spend_credits")).toHaveLength(0);
   });

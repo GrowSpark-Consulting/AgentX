@@ -29,6 +29,11 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0010_inbox_realtime` | `messages`, `conversations`, `handoffs` in the Realtime publication; `conversations.last_message_at` kept by a trigger |
 | `0011_knowledge_base` | `kb_documents.status`/`error`/`body`, one FAQ per question, `kb_gaps`, `kb_documents` in Realtime, `match_kb_chunks` (section 9) |
 | `0012_kb_gap_functions` | `kb_gaps.summary`/`answered_by`/`answered_at`, `record_kb_gap`, `answer_kb_gap` (service_role only, section 9) |
+| `0013_inbound_messages` | `messages.kind`/`meta`, one open conversation per contact and channel, `store_inbound_message`, `apply_message_status` (service_role only; Dev 1, #50) |
+| `0014_connection_method_platform` | `whatsapp_connections.method` may be `platform` (our own test and demo numbers; Dev 1, #51) |
+| `0015_booking_engine` | `services.buffer_min`/`min_notice_min`, booking status `expired`, end after start, slot kinds need a resource, `hold_slot`, `confirm_booking`, `reschedule_booking`, `cancel_booking`, `release_expired_holds` (service_role only, section 4) |
+| `0016_platform_admins_and_link_tokens` | `platform_admins` (server only), `connect_links.token` → `token_hash` (SHA-256 hex; existing links rehashed) |
+| `0017_google_calendar` | `google_calendar_connections`: one per resource, refresh token encrypted, `status connected \| needs_reconnect`; members read everything but the token (section 6) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -113,7 +118,7 @@ type NotificationKind =               // decides toggle, template and credit cos
 type SendOutcome =
   | { status: 'sent'; messageId: string; providerMsgId: string; creditsCharged: number; usedTemplate: boolean }
   | { status: 'skipped'; reason: 'feature_off' | 'opted_out' | 'insufficient_credits' | 'outside_window' | 'conversation_not_ai' }
-  | { status: 'failed'; error: { code: string; message: string } };
+  | { status: 'failed'; error: { code: string; message: string; retryable: boolean; outcomeUnknown: boolean } };
 
 type NotifyPayload = {
   conversationId?: string;   // customer messages
@@ -129,12 +134,18 @@ type NotifyPayload = {
 `NotificationKind` covers `ai_reply`, `staff_reply`, `test_message` and the customer automations;
 staff-facing kinds arrive with their jobs.
 
-**Adapter plug-in (Dev 1):** `registerSender(factory)`, where
+**Adapter plug-in (built by Dev 2, 8 Oct):** `registerSender(factory)`, where
 `factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params) }`
-and both return `{ providerMsgId }`. Until it is registered, `notify.send` answers `not_available`
-before spending credits. Both throw when WhatsApp refuses the message. When Meta refuses free text
-because the 24-hour window has closed (131047, the adapter's `outside_window`), `sendText` throws
-`OutsideWindowError` from `backend/src/notify/sender.ts`; any other refusal can throw a plain `Error`.
+and both return `{ providerMsgId }`. `server/main.ts` registers the WhatsApp factory at startup
+(`registerWhatsAppSender()`, `backend/src/channels/whatsapp/message-sender.ts`). It loads the connection with
+the service role; one that is not `active` is `whatsapp_not_connected`, before any credits are spent. With no
+factory registered, `notify.send` answers `not_available`, also before spending.
+Both methods throw a `SendError` (`backend/src/notify/sender.ts`) when WhatsApp refuses the message: a code
+from `ERROR_CODES` plus `retryable` and `outcomeUnknown` (the message may have gone out anyway). When Meta
+refuses free text because the 24-hour window has closed (131047), `sendText` throws `OutsideWindowError`, a
+`SendError` with code `outside_window`, and `notify.send` sends the approved template instead. Every other code
+passes through in the `failed` outcome. A plain `Error` is unexpected: it is logged (redacted) and answered as
+`upstream_failed`.
 
 `FeatureKey` lives in `backend/src/billing/credit-costs.ts` for now and moves here with the above.
 
@@ -142,8 +153,8 @@ because the 24-hour window has closed (131047, the adapter's `outside_window`), 
 
 | Column | Shape | Status |
 |---|---|---|
-| `tenants.business_hours`, `resources.working_hours` | `{ "mon": [{ "start": "10:00", "end": "19:00" }], … }`. Keys `mon`–`sun`; local time in `tenants.timezone`; several intervals allow split shifts; a missing day or `[]` means closed | Proposed (used by the seed) |
-| `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits only) | Proposed (used by the seed) |
+| `tenants.business_hours`, `resources.working_hours` | `{ "mon": [{ "start": "10:00", "end": "19:00" }], … }`. Keys `mon`–`sun`; local time in `tenants.timezone`; several intervals allow split shifts; a missing day or `[]` means closed. A resource with no days set uses the business's hours | Fixed: read by `findSlots` (`WeeklyHours` in `backend/src/booking/slots.ts`) |
+| `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits); a resource with no area serves every pincode | Fixed: read by `findSlots` |
 | `tenant_features.settings` | Reminders: `{ "offset_minutes": 1440 }`; other features `{}` | Proposed |
 | `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
 | `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
@@ -185,10 +196,46 @@ writeAudit({ tenantId, actor, action, entity?, entityId?, diff? }): Promise<void
 
 ```ts
 notify.send(tenantId, kind: NotificationKind, payload: NotifyPayload): Promise<SendOutcome>   // Dev 2
-findSlots(tenantId, { serviceId, resourceType, from, to, pincode? }): Promise<Slot[]>          // Dev 2
-holdSlot / confirmBooking / rescheduleBooking / cancelBooking                                 // Dev 2
 buildLeadCard(leadId): Promise<LeadCard>                                                      // Dev 1
 ```
+
+**Booking functions (built, Day 3; `backend/src/booking/`, server only):**
+
+```ts
+// bookings.ts
+findSlots(tenantId, { serviceId, resourceType?, from, to, pincode? }): Promise<Slot[]>
+holdSlot(tenantId, slot: { start, end, resourceId?, serviceId? }, leadId, { kind?, details? }?): Promise<Booking>
+confirmBooking(tenantId, bookingId): Promise<Booking>
+rescheduleBooking(tenantId, bookingId, newSlot: { start, end, resourceId? }): Promise<Booking>
+cancelBooking(tenantId, bookingId, reason?): Promise<void>
+// time.ts
+localWindow(timeZone, { day: 'today' | 'tomorrow' | 'YYYY-MM-DD', part?: 'morning' | 'afternoon' | 'evening' | 'any' }, now?)
+  -> { date, from, to }        // "tomorrow evening" in the business's time zone, as UTC
+// Slot = { start, end, resourceId, resourceName, serviceId, label }   start/end ISO UTC; label "Fri 9 Oct, 5:00 pm"
+```
+
+- `findSlots` gives up to 3 times spread across the window (first, middle, last). It respects the resource's
+  working hours (else the business's), the service's `duration_min`, `buffer_min` (kept clear on both
+  sides of a booking) and `min_notice_min`, and held or confirmed bookings (an expired hold no longer
+  counts). Start times are every 30 minutes from opening; each time comes with the least busy free resource
+  of the service's `resource_type`. With `pincode`, only resources whose `service_area.pincodes` has it, or
+  that have no area set. The window is at most 14 days. Google free/busy comes with the calendar sync (Day 4).
+- `holdSlot` holds for 10 minutes (`status 'held'`). `kind` defaults to `slot`; `slot`, `site_visit` and
+  `field_visit` need a resource and a service; `callback`, `date_range` and `reservation` may have no resource
+  and then never clash. A lead holds one time at a time: a new hold releases its earlier one
+  (`cancel_reason 'replaced'`). An expired hold stops blocking at once.
+- `confirmBooking` confirms a hold (also one past its expiry while still held) and moves the lead to `booked`
+  unless it is further along. A repeat is harmless. Emits `booking.confirmed`.
+- `rescheduleBooking` works on a confirmed booking: the old row becomes `rescheduled`, a new confirmed row
+  takes the new time (`details.rescheduled_from`). Emits `booking.changed` (old) and `booking.confirmed` (new).
+- `cancelBooking` cancels a held or confirmed booking (`details.cancel_reason`). A repeat is harmless. Emits
+  `booking.changed`.
+- **Errors:** a taken time is `slot_taken` (409, the exclusion constraint's 23P01); an unknown or other
+  business's lead, service, resource or booking is `not_found`; a hold that expired or a booking in the wrong
+  state is `conflict`; bad times, kinds or resources are `validation_failed`.
+- **Jobs:** `release-holds` (Inngest cron, every minute) marks holds past their expiry `expired`.
+- **Double booking:** blocked by the database: `scripts/db/hold-slot-concurrency.sh` (CI) runs 20 holds for one
+  slot at the same moment; exactly one wins.
 
 **`notify.send` behaviour (Proposed, test message Agreed):**
 
@@ -227,8 +274,8 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 |---|---|
 | `whatsapp/message.received` | `{ tenantId, conversationId, messageId }` |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
-| `booking.confirmed` | `{ tenantId, bookingId }` |
-| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }` |
+| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`) |
+| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`) |
 | `handoff.opened` | `{ tenantId, handoffId, conversationId }` |
 | `handoff.own_number` | `{ tenantId, handoffId }` |
 | `tenant.trial_started` | `{ tenantId }` |
@@ -248,6 +295,20 @@ one of the caller's own memberships (the same rule as the `pakka_tenant` cookie)
 from allowed origins only (CORS). New route: `POST /api/onboarding/trial` `{ name, industry }` →
 `StartTrialResult` (`@pakka/types`), with status 200 `ready`, 409 `has_business`, 422 `invalid` or
 `unavailable`, 500 `failed`; 401 envelope when signed out. It replaces the onboarding server action.
+
+**Who may call a route (`backend/src/server/auth.ts`, built):**
+
+- Members: `tenantRoute(handler, { status })`, the tenant from the token and `X-Pakka-Tenant`.
+- Platform team (`/api/admin/...`): `adminRoute(handler, { status })` verifies the token, then checks
+  `platform_admins` (0016); anyone else gets `forbidden`. The business is named in the body or path
+  (`tenantId`), never by `X-Pakka-Tenant`. Record `admin.actor` (`admin:<user id>`) in `audit_logs` and
+  `whatsapp_connections.connected_by`. Both answer with `status` (default 200), or 204 when the service
+  returns nothing.
+- Public (no login): a `browser: true` route whose handler doesn't authenticate; CORS and the origin
+  check still apply. List secret path segments in the route's `secretParams` (`["token"]`) so the request
+  log shows `***`. Connect-link tokens come from `newConnectLinkToken()` and are looked up by
+  `hashConnectLinkToken()` (`backend/src/lib/connect-link-token.ts`); `connect_links.token_hash` stores the
+  hash. Mark a link used in the same statement that checks it (`used_at is null and expires_at > now()`).
 
 **Error codes.** The list is `ERROR_CODES` in `packages/types/src/errors.ts`; the HTTP statuses are in
 `backend/src/lib/errors.ts`.
@@ -275,8 +336,28 @@ other origins get no CORS headers.
 - `POST /api/templates` `{ name, category, language, body, examples, header?, footer?, buttons?, connectionId? }`
   → `{ id, name, language, status: "pending" | "draft" }`; owner or admin.
 - The test route sends through `notify.send`: `outside_window` (409) when the number has not
-  messaged in 24 hours, `conflict` (409) when it opted out, and `notify.send`'s own codes otherwise.
-  Both routes answer `not_available` until Dev 1's adapter is registered.
+  messaged in 24 hours, `conflict` (409) when it opted out, and `notify.send`'s codes otherwise. Since the
+  WhatsApp sender is registered (8 Oct), these include the real send's: `rate_limited` (429),
+  `whatsapp_not_connected` (409), `validation_failed` (422) and `upstream_failed` (502). The template route
+  still answers `not_available` until submission to Meta is built.
+
+**Google Calendar per staff member (built, Day 3; `backend/src/booking/google-calendar.ts`):**
+
+- `GET /api/calendar/google/connect?resourceId=…` → `{ url }`: Google's consent link (offline access,
+  scopes `calendar.events`, `calendar.freebusy`, `email`). Owner or admin; a resource of the business. The
+  dashboard sends the browser to `url`. `not_available` (501) until `GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` are set on Railway.
+- `GET /api/calendar/google/callback`: Google sends the browser here. No login: a 10-minute state signed
+  with a key derived from `ENCRYPTION_KEY` says who asked, for which business and resource. It stores
+  the refresh token encrypted, sets `resources.google_calendar_id`, writes `google_calendar.connected` to
+  `audit_logs`, and always answers with a redirect to
+  `${NEXT_PUBLIC_APP_URL}/dashboard?google_calendar=connected|denied|failed|not_available&resource=<id>`.
+- The dashboard reads `google_calendar_connections` (`google_email`, `status`, `last_error`) under RLS. On
+  `needs_reconnect` (Google refused the saved token: access revoked, or the 7-day expiry while the consent
+  screen is in Testing), show "Reconnect", which is the same connect link.
+- `getGoogleAccessToken(tenantId, resourceId)` gives the calendar sync (Day 4) a fresh access token, or
+  null when there is no working connection. Until a resource is connected, the bookings table stays the
+  source of truth.
 
 **Read routes (Proposed, screen-contracts Q1).** Entitlements and balances are computed on the
 server, so these are routes, not SQL views:
@@ -306,7 +387,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 |---|---|---|---|
 | 1 | Template status table | **Agreed** (section 1) | Dev 1 + Dev 2 |
 | 2 | Refund when a send fails after spending | **Agreed**: `refund_credits` (0008), same buckets and expiry, once per message | Dev 2 |
-| 3 | `NotificationKind`, `SendOutcome`, `NotifyPayload` | Proposed (`test_message` Agreed) | Dev 1 + Dev 2 |
+| 3 | `NotificationKind`, `SendOutcome`, `NotifyPayload` | Proposed (`test_message` Agreed). **Agreed 8 Oct:** a `failed` outcome keeps the sender's code and carries `retryable` and `outcomeUnknown` | Dev 1 + Dev 2 |
 | 4 | Event payloads: ids only, fixed ids for re-sendable events | Proposed | All |
 | 5 | Read routes vs views (screen-contracts Q1) | Proposed: routes | Dev 2 + Dev 3 |
 | 6 | Prices (screen-contracts Q6) | Handover v1.0 prices, seeded; Raja to confirm | Raja |
@@ -318,7 +399,8 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 12 | `isEnabled` also checks business status (paused, cancelled, trial ended) | Built in #18; confirm | Dev 1 + Dev 2 |
 | 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
 | 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**; schema, router and gap functions built (Shaaz); any team member can answer gaps (Raja); pending Dhatri, and Raja on the rest | Dev 1 |
-| 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed (next migration); `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. Roles on recheck and disconnect: Raja | Dev 1 |
+| 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed; `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. **Built:** `platform_admins`, `adminRoute`, hashed tokens (0016), `secretParams` log masking (section 6). Roles on recheck and disconnect: Raja | Dev 1 |
+| 16 | A send whose outcome is unknown (a timeout, a network failure or an unreadable answer from Meta) | **Proposed by Dev 2 (8 Oct):** hold the credit until Meta's status says sent or failed, instead of refunding. Needs Raja, because it changes billing, and a way to match Meta's status webhook to the send. Until then `notify.send` refunds (decision 2) and reports `outcomeUnknown: true`, so no caller sends the message again | Raja |
 
 ## 9. Knowledge base (PROPOSED, not agreed)
 

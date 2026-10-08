@@ -58,3 +58,5 @@ jobs:
       - run: pnpm exec supabase test db
       # 50 parallel spend_credits calls on separate connections must never overdraw.
       - run: bash scripts/db/spend-credits-concurrency.sh
+      # 20 parallel holds on one slot: exactly one wins; callbacks with no person never clash.
+      - run: bash scripts/db/hold-slot-concurrency.sh

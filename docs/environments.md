@@ -92,6 +92,20 @@ The CLI version is pinned in `package.json`, so everyone and CI run the same one
 Free projects pause after a week with no traffic; resume from the dashboard. Production
 gets its own project on the Pro plan (daily backups, no pausing) before beta.
 
+### Platform admins
+
+The people who work for us across businesses (`/api/admin/...` routes) are rows in
+`platform_admins` (migration 0016). Raja decides who is on it. They sign up like anyone else; then, in
+the Supabase SQL editor of each environment:
+
+```sql
+insert into public.platform_admins (user_id, note)
+select id, 'Raja (founder)' from auth.users where email = '<their sign-in email>';
+-- remove: delete from public.platform_admins where user_id = '<user id>';
+```
+
+The table is server only: nobody can read or change it from the browser.
+
 ## Inngest
 
 There is exactly one Inngest endpoint: the API's `/api/inngest` on Railway (`inngest/edge` adapter,
@@ -111,6 +125,22 @@ Marketplace integration** (remove it if it is installed): it would try to sync t
 - In production mode the endpoint answers 401 to anything Inngest didn't sign, including GET.
 - Smoke test after any new environment: send `system/ping` from the Inngest UI; a
   `system-ping` run should show status Completed.
+
+## Google Calendar
+
+Staff members connect their own Google Calendar from the dashboard (one connection per resource;
+`docs/contracts.md` section 6). One-time setup, per Google Cloud project (Raja owns the account):
+
+1. console.cloud.google.com → new project → **APIs & Services → Library** → enable **Google Calendar API**.
+2. **OAuth consent screen**: External, app name and support email, scopes `openid`, `email`,
+   `.../auth/calendar.events`, `.../auth/calendar.freebusy`. Leave it in **Testing** and add the testers'
+   Google accounts as test users. In Testing, Google ends access after 7 days; the connection then shows
+   "Reconnect". Publishing needs Google's verification (later).
+3. **Credentials → Create OAuth client ID** → Web application. Authorized redirect URIs:
+   `https://<API host>/api/calendar/google/callback` (staging: the Railway API origin) and
+   `http://localhost:4000/api/calendar/google/callback` for local work.
+4. Railway (API service): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` set to exactly
+   the redirect URI registered above. Until all three are set, connect answers `not_available`.
 
 ## Vercel (frontend)
 
@@ -164,7 +194,7 @@ database fails the deploy the same way (`pnpm packs:sync [--check]` runs the sam
 Variables per environment (names in `backend/.env.example`): `NEXT_PUBLIC_APP_URL` (the frontend's
 origin for this environment; always allowed by CORS), `CORS_ALLOWED_ORIGINS` (other exact origins,
 comma-separated, never `*`), `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-`SUPABASE_SERVICE_ROLE_KEY`, `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ENCRYPTION_KEY`,
+`SUPABASE_SERVICE_ROLE_KEY`, `EMBEDDINGS_API_KEY` (required), `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ENCRYPTION_KEY`,
 `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_SERVE_ORIGIN`, and the rest of the file as
 modules land. Optional: `RAILPACK_NODE_VERSION=22` to build on the same Node as CI (`.nvmrc`).
 

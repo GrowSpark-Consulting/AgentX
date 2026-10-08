@@ -1,6 +1,6 @@
 import type { APIRequestContext, Page, WebSocketRoute } from "@playwright/test";
 import { appAlert, expect, expectNoHorizontalOverflow, mainNav, MOCK_SUPABASE_URL, SIGNED_OUT, signIn, test as base } from "../support/app";
-import { mockKbApi, type Gap, type KbApi } from "../support/kb-api";
+import { mockKbApi, ROUTE_MISSING, type Gap, type KbApi } from "../support/kb-api";
 
 // The real Knowledge base at /dashboard/knowledge. Services, FAQs and documents are read from
 // mock-supabase.mjs under RLS; the knowledge-base API (docs/contracts.md section 9: FAQs, uploads,
@@ -65,7 +65,7 @@ test.describe("Knowledge base · services", () => {
     const account = await newAccount(request, { seed: true });
     await openKnowledge(page, account);
     await expect(page.getByRole("heading", { name: "Services & prices · 3" })).toBeVisible();
-    await expect(table(page).getByRole("columnheader")).toHaveText(["Service", "Length", "Booked with", "Price range", "Status", "Actions"]);
+    await expect(table(page).getByRole("columnheader")).toHaveText(["Service", "Length", "Booking rules", "Booked with", "Price range", "Status", "Actions"]);
     const rows = table(page).locator("tbody tr");
     await expect(rows).toHaveCount(3);
     await expect(rows.nth(0)).toContainText("Bridal trial");
@@ -449,6 +449,7 @@ test.describe("Knowledge base · FAQs", () => {
     await faqs(page).getByRole("button", { name: "Delete FAQ: Do you do home visits?" }).click();
     await dialog(page).getByRole("button", { name: "Delete FAQ" }).click();
     await expect(dialog(page).getByRole("alert")).toContainText("This FAQ no longer exists");
+    await expect(dialog(page).getByRole("alert")).not.toContainText("not available yet");
     await expect(dialog(page).getByRole("button", { name: "Delete FAQ" })).toBeEnabled();
     await expect(toast(page, "Deleted")).toHaveCount(0);
     await expectDialogFits(page);
@@ -689,21 +690,132 @@ test.describe("Knowledge base · questions the AI couldn't answer", () => {
     await gapsRegion(page).getByRole("button", { name: "Try again" }).click();
     await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
 
-    kb.fail("POST /api/kb/gaps/:id/answer", { status: 404, code: "not_found", message: "Not found." });
+    // Closed by someone else meanwhile: the API no longer lists it, so its answer route says not_found.
     await gapsRegion(page).getByRole("button", { name: "Add answer: Do you do keratin?" }).click();
     await gapsRegion(page).getByLabel("Answer to “Do you do keratin?”").fill("Yes.");
+    kb.setGaps(GAPS.filter((g) => g.question !== "Do you do keratin?"));
     await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
     await expect(gapsRegion(page).getByRole("alert")).toContainText("This question no longer exists");
+    await expect(gapsRegion(page).getByRole("alert")).not.toContainText("not available yet");
     await expect(gapsRegion(page).getByLabel("Answer to “Do you do keratin?”")).toHaveValue("Yes.");
     await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
 
-    // An FAQ with the same question was added meanwhile: conflict, and the question stays open.
-    kb.fail("POST /api/kb/gaps/:id/answer", null);
+    // Asked again, it's open again (record_kb_gap reopens an answered question). An FAQ with the same
+    // question was added meanwhile: conflict, and the question stays open.
+    kb.setGaps(GAPS);
     await addDoc(request, { tenant_id: account.tenantId, source_type: "manual", title: "Do you do keratin?", body: "Yes.", status: "ready" });
     await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
     await expect(gapsRegion(page).getByRole("alert")).toContainText("already answered, or one of your FAQs already asks it");
     await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
     await expect(toast(page, "Added to FAQs")).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+  });
+});
+
+// Today's main: the API has none of the knowledge-base routes and answers each with ROUTE_MISSING.
+test.describe("Knowledge base · routes not deployed yet", () => {
+  test.use({ storageState: SIGNED_OUT });
+  const UNAVAILABLE = "Knowledge base is not available yet.";
+
+  test("says the knowledge base isn't available yet, changes nothing, and the rest of the page works", async ({ page, request, kb }) => {
+    for (const route of ["GET /api/kb/gaps", "POST /api/kb/faqs", "POST /api/kb/documents"]) kb.fail(route, ROUTE_MISSING);
+    const account = await newAccount(request, { seed: true, faqs: true, docs: true });
+    await openKnowledge(page, account);
+
+    // Questions: a calm notice, not an error with Try again.
+    await expect(gapsRegion(page)).toContainText(UNAVAILABLE);
+    await expect(gapsRegion(page)).toContainText("The knowledge-base service is still being connected.");
+    await expect(gapsRegion(page).getByRole("alert")).toHaveCount(0);
+    await expect(gapsRegion(page).getByRole("button", { name: "Try again" })).toHaveCount(0);
+    // Everything read under RLS still shows.
+    await expect(table(page).locator("tbody tr")).toHaveCount(3);
+    await expect(faqs(page).getByRole("heading")).toHaveText("FAQs · 2");
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 2");
+
+    // Adding an FAQ: refused as not available, never as "no longer exists"; what was typed stays.
+    await faqs(page).getByRole("button", { name: "Add", exact: true }).click();
+    await dialog(page).getByLabel("Question").fill("Do you take card payments?");
+    await dialog(page).getByLabel("Answer").fill("Yes.");
+    await dialog(page).getByRole("button", { name: "Add FAQ" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText(UNAVAILABLE);
+    await expect(dialog(page).getByRole("alert")).toContainText("Nothing was changed.");
+    await expect(dialog(page).getByRole("alert")).not.toContainText("no longer exists");
+    await expect(dialog(page).getByLabel("Answer")).toHaveValue("Yes.");
+    await expectDialogFits(page);
+    await dialog(page).getByRole("button", { name: "Cancel" }).click();
+    // The section then says so and switches its changes off.
+    await expect(faqs(page)).toContainText(UNAVAILABLE);
+    await expect(faqs(page).getByRole("button", { name: "Add", exact: true })).toBeDisabled();
+    await expect(faqs(page).getByRole("button", { name: "Edit FAQ: Do you do home visits?" })).toBeDisabled();
+    await expect(faqs(page).getByRole("button", { name: "Delete FAQ: Do you do home visits?" })).toBeDisabled();
+    await expect(toast(page, "Added")).toHaveCount(0);
+
+    // Uploading: the same.
+    await docsRegion(page).getByRole("button", { name: "Upload" }).click();
+    await dialog(page).getByLabel("File").setInputFiles({ name: "Price list.md", mimeType: "text/markdown", buffer: Buffer.from("# Prices") });
+    await dialog(page).getByRole("button", { name: "Upload" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText(UNAVAILABLE);
+    await expect(dialog(page).getByRole("alert")).not.toContainText("no longer exists");
+    await expectDialogFits(page);
+    await dialog(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(docsRegion(page)).toContainText(UNAVAILABLE);
+    await expect(docsRegion(page).getByRole("button", { name: "Upload" })).toBeDisabled();
+    await expect(docsRegion(page).getByRole("button", { name: "Delete Bridal price list.pdf" })).toBeDisabled();
+    await expect(docsRegion(page).getByRole("heading")).toHaveText("Documents · 2");
+
+    // Each refused write was sent once; nothing was stored.
+    expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/faqs", "POST /api/kb/documents"]);
+    expect(await storedDocs(request, account.tenantId)).toHaveLength(4);
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("a not_found for something still listed is the route missing, not the thing gone", async ({ page, request, kb }) => {
+    kb.setGaps(GAPS);
+    for (const route of ["DELETE /api/kb/faqs/:id", "DELETE /api/kb/documents/:id", "POST /api/kb/gaps/:id/answer", "POST /api/kb/gaps/:id/dismiss"]) {
+      kb.fail(route, ROUTE_MISSING);
+    }
+    const account = await newAccount(request, { faqs: true, docs: true });
+    await openKnowledge(page, account);
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+
+    // The FAQ is still stored, so the 404 came from a route that isn't there.
+    await faqs(page).getByRole("button", { name: "Delete FAQ: Do you do home visits?" }).click();
+    await dialog(page).getByRole("button", { name: "Delete FAQ" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText(UNAVAILABLE);
+    await expect(dialog(page).getByRole("alert")).not.toContainText("no longer exists");
+    await dialog(page).getByRole("button", { name: "Keep it" }).click();
+    await expect(faqs(page).getByRole("heading")).toHaveText("FAQs · 2");
+    await expect(faqs(page)).toContainText(UNAVAILABLE);
+
+    await docsRegion(page).getByRole("button", { name: "Delete Bridal price list.pdf" }).click();
+    await dialog(page).getByRole("button", { name: "Delete document" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText(UNAVAILABLE);
+    await dialog(page).getByRole("button", { name: "Keep it" }).click();
+    await expect(tile(page, "Bridal price list.pdf")).toBeVisible();
+    await expect(docsRegion(page)).toContainText(UNAVAILABLE);
+
+    // The question is still listed by the API, so its answer and dismiss routes are what's missing.
+    await gapsRegion(page).getByRole("button", { name: "Add answer: Do you do keratin?" }).click();
+    await gapsRegion(page).getByLabel("Answer to “Do you do keratin?”").fill("Yes.");
+    await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+    await expect(gapsRegion(page).getByRole("alert")).toContainText(UNAVAILABLE);
+    await expect(gapsRegion(page).getByRole("alert")).not.toContainText("no longer exists");
+    await expect(gapsRegion(page).getByLabel("Answer to “Do you do keratin?”")).toHaveValue("Yes.");
+    await gapsRegion(page).getByRole("button", { name: "Cancel" }).click();
+    await gapsRegion(page).getByRole("button", { name: "Dismiss: Is there a student discount?" }).click();
+    await dialog(page).getByRole("button", { name: "Dismiss question" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText(UNAVAILABLE);
+    await dialog(page).getByRole("button", { name: "Keep it" }).click();
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+
+    expect(kb.writes().map((c) => c.route)).toEqual([
+      "DELETE /api/kb/faqs/:id",
+      "DELETE /api/kb/documents/:id",
+      "POST /api/kb/gaps/:id/answer",
+      "POST /api/kb/gaps/:id/dismiss",
+    ]);
+    expect(await storedDocs(request, account.tenantId)).toHaveLength(4);
+    await expect(toast(page, "Deleted")).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
   });
 });

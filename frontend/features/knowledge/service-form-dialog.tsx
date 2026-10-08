@@ -4,10 +4,10 @@ import { useState, type FormEvent } from "react";
 import { ErrorState } from "@/components/shared/states";
 import type { FormattedError } from "@/lib/errors";
 import { DialogFrame } from "./dialog-frame";
-import { describeWriteError, EMPTY_DRAFT, NAME_MAX, toDraft, validateDraft, type FieldErrors, type Service, type ServiceDraft, type ServiceInput } from "./data";
+import { BUFFER_MAX, describeWriteError, EMPTY_DRAFT, NAME_MAX, toDraft, validateDraft, type FieldErrors, type Service, type ServiceDraft, type ServiceInput } from "./data";
 
 // Add or edit one service, in the prototype's dialog with its .field / .input form controls. Only the
-// columns that exist are offered. Everything is validated before the database is called; a failed
+// columns that exist are offered, including the slot engine's gap and minimum notice (0015). Everything is validated before the database is called; a failed
 // save keeps the dialog and what was typed, and says why.
 
 export function ServiceFormDialog({
@@ -123,6 +123,22 @@ export function ServiceFormDialog({
           </div>
         </div>
         <p className="app-hint" style={{ margin: "-6px 0 0" }}>Whole rupees. Leave both empty if there’s no fixed price; enter 0 if it’s free.</p>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "14px" }}>
+          <div className="field">
+            <label htmlFor="service-bufferMin">Gap between bookings (minutes)</label>
+            <input {...field("bufferMin")} className="input" inputMode="numeric" value={draft.bufferMin} onChange={(e) => set("bufferMin", e.target.value)} />
+            {fieldError("bufferMin")}
+          </div>
+          <div className="field">
+            <label htmlFor="service-minNoticeMin">Minimum notice (minutes)</label>
+            <input {...field("minNoticeMin")} className="input" inputMode="numeric" value={draft.minNoticeMin} onChange={(e) => set("minNoticeMin", e.target.value)} />
+            {fieldError("minNoticeMin")}
+          </div>
+        </div>
+        <p className="app-hint" style={{ margin: "-6px 0 0" }}>
+          The gap is kept free before and after each booking, up to {BUFFER_MAX} minutes. Minimum notice is how soon from now a customer can book, up to 7 days.
+        </p>
 
         <label style={{ display: "flex", gap: "10px", alignItems: "center", fontSize: "14px", cursor: "pointer" }}>
           <input

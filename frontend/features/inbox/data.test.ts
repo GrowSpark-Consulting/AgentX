@@ -143,10 +143,161 @@ describe("mapping rows to the inbox view model", () => {
     expect(attachmentOf("x")).toBeNull();
   });
 
+  it("shows mime-only media (no kind) by its mime type, never as an empty attachment", () => {
+    expect(attachmentOf({ id: "m1", mime: "image/jpeg" })).toEqual({ label: "IMG", name: "Photo", note: "Can't be shown here yet" });
+    expect(attachmentOf({ id: "m2", mime: "audio/ogg; codecs=opus" })).toEqual({ label: "AUD", name: "Voice message", note: "Can't be played here yet" });
+    expect(attachmentOf({ id: "m3", mime: "application/pdf" })).toEqual({ label: "PDF", name: "Document", note: "Can't be opened here yet" });
+    expect(attachmentOf({ id: "m4" })).toBeNull();
+  });
+
   it("makes initials from the first two words", () => {
     expect(initialsOf("Lakshmi")).toBe("L");
     expect(initialsOf("mohammed abdul rahim")).toBe("MA");
     expect(initialsOf("  ")).toBe("#");
+  });
+});
+
+// The inbound rows #50 stores (docs/task-notes/2026-10-08-feat-agent-webhook-post.md, section 6):
+// kind, body, media { id, mime } and meta by kind. Files aren't downloaded, so there is never a URL.
+describe("inbound message kinds (migration 0013)", () => {
+  const inbound = (over: Partial<MessageRow>) => chatMessage({ media: null, meta: {}, ...over });
+  const shown = (m: ChatMessage) => ({ attachment: m.attachment, text: m.text, textIsNotice: m.textIsNotice, preview: m.preview });
+
+  it("leaves text messages as they were", () => {
+    expect(shown(inbound({ kind: "text", body: "Velachery 3BHK irukka?" }))).toEqual({
+      attachment: null,
+      text: "Velachery 3BHK irukka?",
+      textIsNotice: false,
+      preview: "Velachery 3BHK irukka?",
+    });
+    // Outbound rows and rows from before 0013 have no kind or meta at all.
+    const legacy = chatMessage({ body: "Hi" });
+    expect(legacy.kind).toBeNull();
+    expect(shown(legacy)).toEqual({ attachment: null, text: "Hi", textIsNotice: false, preview: "Hi" });
+    expect(chatMessage({ sender: "ai", direction: "out", body: null, template_name: "reminder_24h_v1" }).text).toBe("Template · reminder_24h_v1");
+  });
+
+  it("shows an image with its caption under a placeholder", () => {
+    expect(shown(inbound({ kind: "image", body: "This one, near the lake?", media: { id: "wamid-media-1", mime: "image/jpeg" } }))).toEqual({
+      attachment: { label: "IMG", name: "Photo", note: "Can't be shown here yet" },
+      text: "This one, near the lake?",
+      textIsNotice: false,
+      preview: "Photo · This one, near the lake?",
+    });
+  });
+
+  it("shows an image without a caption as the placeholder alone", () => {
+    expect(shown(inbound({ kind: "image", body: null, media: { id: "wamid-media-2", mime: "image/webp" } }))).toEqual({
+      attachment: { label: "IMG", name: "Photo", note: "Can't be shown here yet" },
+      text: null,
+      textIsNotice: false,
+      preview: "Photo",
+    });
+  });
+
+  it("shows a document by its type, with a caption, and a file name only if the row has one", () => {
+    expect(shown(inbound({ kind: "document", body: "My salary slip", media: { id: "wamid-media-3", mime: "application/pdf" } }))).toEqual({
+      attachment: { label: "PDF", name: "Document", note: "Can't be opened here yet" },
+      text: "My salary slip",
+      textIsNotice: false,
+      preview: "Document · My salary slip",
+    });
+    const docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    expect(inbound({ kind: "document", body: null, media: { id: "m", mime: docx } }).attachment?.label).toBe("DOCX");
+    expect(inbound({ kind: "document", body: null, media: { id: "m", mime: "application/zip" } }).attachment?.label).toBe("DOC");
+    expect(inbound({ kind: "document", body: null, media: { id: "m", mime: "application/pdf", filename: "Floor plan.pdf" } }).attachment).toEqual({
+      label: "PDF",
+      name: "Floor plan.pdf",
+      note: "Can't be opened here yet",
+    });
+  });
+
+  it("shows a voice message as a placeholder that can't be played", () => {
+    expect(shown(inbound({ kind: "audio", body: null, media: { id: "wamid-media-4", mime: "audio/ogg; codecs=opus" } }))).toEqual({
+      attachment: { label: "AUD", name: "Voice message", note: "Can't be played here yet" },
+      text: null,
+      textIsNotice: false,
+      preview: "Voice message",
+    });
+  });
+
+  it("shows a location as its place and coordinates, with no map", () => {
+    expect(shown(inbound({ kind: "location", body: "12.9791,80.2209 Phoenix Marketcity Velachery Main Road, Chennai" }))).toEqual({
+      attachment: { label: "LOC", name: "Phoenix Marketcity Velachery Main Road, Chennai", note: "12.9791, 80.2209" },
+      text: null,
+      textIsNotice: false,
+      preview: "Location · Phoenix Marketcity Velachery Main Road, Chennai",
+    });
+    expect(shown(inbound({ kind: "location", body: "-33.8688,151.2093" }))).toEqual({
+      attachment: { label: "LOC", name: "Location", note: "-33.8688, 151.2093" },
+      text: null,
+      textIsNotice: false,
+      preview: "Location",
+    });
+    // A body in some other form is still shown, as written.
+    expect(shown(inbound({ kind: "location", body: "near the temple" }))).toMatchObject({ attachment: { label: "LOC", name: "Location" }, text: "near the temple" });
+  });
+
+  it("says a sticker isn't supported, by Meta's own word for it", () => {
+    expect(shown(inbound({ kind: "unsupported", body: null, meta: { unsupportedType: "sticker" } }))).toEqual({
+      attachment: null,
+      text: "Message type not supported (sticker)",
+      textIsNotice: true,
+      preview: "Message type not supported (sticker)",
+    });
+    expect(inbound({ kind: "unsupported", body: null, meta: { unsupportedType: "unknown" } }).text).toBe("Message type not supported");
+    expect(inbound({ kind: "unsupported", body: null, meta: {} }).text).toBe("Message type not supported");
+    expect(inbound({ kind: "unsupported", body: null, meta: { unsupportedType: "<b>x</b>" } }).text).toBe("Message type not supported");
+  });
+
+  it("shows an interactive reply as the title the customer chose", () => {
+    expect(shown(inbound({ kind: "interactive", body: "Book a site visit", meta: { buttonId: "book_visit" } }))).toEqual({
+      attachment: null,
+      text: "Book a site visit",
+      textIsNotice: false,
+      preview: "Book a site visit",
+    });
+    expect(inbound({ kind: "interactive", body: null, meta: { buttonId: "x" } })).toMatchObject({ text: "Replied with a button", textIsNotice: true });
+  });
+
+  it("shows a kind added later from its body, not as a failed read", () => {
+    expect(shown(inbound({ kind: "video", body: "Look at this", media: { id: "m", mime: "video/mp4" } }))).toMatchObject({ text: "Look at this", preview: "Look at this" });
+    // Nothing to show at all: a notice, never an empty bubble or an empty list preview.
+    expect(shown(inbound({ kind: "sticker_pack", body: null, media: null, meta: null }))).toEqual({
+      attachment: null,
+      text: "Message type not supported",
+      textIsNotice: true,
+      preview: "Message type not supported",
+    });
+  });
+
+  it("is safe with null kind, null meta and a missing contact", () => {
+    // Legacy and outbound rows: kind and meta stored as null (not just absent) read as plain text.
+    expect(shown(chatMessage({ kind: null, meta: null, body: "Hi" }))).toEqual({ attachment: null, text: "Hi", textIsNotice: false, preview: "Hi" });
+    expect(inbound({ kind: "unsupported", body: null, meta: null }).text).toBe("Message type not supported");
+    // A photo whose media is missing still shows the placeholder.
+    expect(inbound({ kind: "image", body: null, media: null }).attachment).toEqual({ label: "IMG", name: "Photo", note: "Can't be shown here yet" });
+    // A conversation whose contact row is gone: the masked-number fallback, no crash.
+    expect(summary({ contacts: null, messages: [] })).toMatchObject({ name: "Hidden number", firstName: "This customer", initials: "#", phoneMasked: "Hidden number", language: null, lastMessage: null });
+  });
+
+  it("uses the same wording in the conversation list and for live updates", () => {
+    const c = summary({
+      messages: [{ id: id(101), sender: "customer", kind: "unsupported", body: null, media: null, meta: { unsupportedType: "sticker" }, template_name: null, created_at: "2026-10-07T04:12:00+00:00" }],
+    });
+    expect(c.lastMessage?.preview).toBe("Message type not supported (sticker)");
+    const photo = chatMessage({ id: id(202), kind: "image", body: null, media: { id: "m", mime: "image/jpeg" }, meta: {}, created_at: "2026-10-07T05:00:00Z" });
+    expect(applyMessageToList([c], photo)?.[0].lastMessage?.preview).toBe("Photo");
+  });
+
+  it("reads kind and meta in both message queries", async () => {
+    const list = fakeClient({ data: [], error: null });
+    await fetchConversations(list.client, TENANT);
+    expect(String(list.calls.find(([name]) => name === "select")?.[1][0])).toMatch(/messages \([^)]*\bkind\b[^)]*\bmeta\b[^)]*\)/);
+    const chat = fakeClient({ data: [], error: null });
+    await fetchMessages(chat.client, TENANT, id(1));
+    const columns = String(chat.calls.find(([name]) => name === "select")?.[1][0]).split(", ");
+    expect(columns).toEqual(expect.arrayContaining(["kind", "meta", "body", "media"]));
   });
 });
 

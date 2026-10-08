@@ -12,7 +12,7 @@ vi.mock("../billing/credits", async (importOriginal) => ({
   getBalance: (...args: unknown[]) => getBalance(...args),
 }));
 
-const { bodyLimitFor, createApp } = await import("./app");
+const { bodyLimitFor, createApp, logPathFor } = await import("./app");
 const { tenantRoute } = await import("./auth");
 const { MAX_BODY_BYTES } = await import("./node");
 
@@ -267,6 +267,24 @@ describe("tenant authorization", () => {
   });
 });
 
+describe("GET /api/calendar/google/connect", () => {
+  it("is a browser route for signed-in members only", async () => {
+    const res = await app(new Request("http://localhost:4000/api/calendar/google/connect?resourceId=x", { headers: { origin: FRONTEND } }));
+    expect(res.status).toBe(401);
+    expect(res.headers.get("access-control-allow-origin")).toBe(FRONTEND);
+    const pre = await app(
+      new Request("http://localhost:4000/api/calendar/google/connect", { method: "OPTIONS", headers: { origin: FRONTEND, "access-control-request-method": "GET" } }),
+    );
+    expect(pre.status).toBe(204);
+  });
+
+  it("refuses staff before anything else", async () => {
+    const res = await app(new Request("http://localhost:4000/api/calendar/google/connect?resourceId=x", { headers: as("staff.token.sig", { origin: FRONTEND }) }));
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe("forbidden");
+  });
+});
+
 describe("POST /api/onboarding/trial", () => {
   beforeEach(() => {
     createTrialTenant.mockReset().mockResolvedValue({
@@ -390,6 +408,20 @@ describe("path parameters, PATCH and DELETE", () => {
     expect(bodyLimitFor(`/api/kb/faqs/${FAQ}`, routes)).toBe(MAX_BODY_BYTES);
     expect(bodyLimitFor("/api/nope", routes)).toBe(MAX_BODY_BYTES);
     expect(bodyLimitFor("/api/templates")).toBe(MAX_BODY_BYTES);
+  });
+});
+
+describe("logPathFor", () => {
+  const routes: Route[] = [
+    { path: "/api/connect-links/:token", browser: true, secretParams: ["token"], methods: { GET: () => new Response(null) } },
+    { path: "/api/kb/faqs/:id", methods: { PATCH: () => new Response(null) } },
+  ];
+
+  it("shows a route's secret params as *** and leaves everything else", () => {
+    expect(logPathFor("/api/connect-links/Ab_c-123xyz", routes)).toBe("/api/connect-links/***");
+    expect(logPathFor("/api/kb/faqs/3f2a1b4c", routes)).toBe("/api/kb/faqs/3f2a1b4c");
+    expect(logPathFor("/api/templates")).toBe("/api/templates");
+    expect(logPathFor("/api/nope/anything", routes)).toBe("/api/nope/anything");
   });
 });
 

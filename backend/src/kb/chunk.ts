@@ -47,6 +47,9 @@ export function chunkText(input: string): string[] {
     // Start the next chunk on a word, not in the middle of one.
     const space = text.indexOf(" ", start);
     if (space !== -1 && space < end) start = space + 1;
+    // The step-back can land inside an emoji's two UTF-16 units; begin after it, never in the middle.
+    const code = text.charCodeAt(start);
+    if (code >= 0xdc00 && code <= 0xdfff) start += 1;
   }
   return chunks;
 }

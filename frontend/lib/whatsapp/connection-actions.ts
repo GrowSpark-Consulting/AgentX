@@ -1,4 +1,4 @@
-import type { ConnectionStatus, Role } from "@pakka/types";
+import type { ConnectionMethod, ConnectionStatus, Role } from "@pakka/types";
 
 // What a member may do to a WhatsApp connection from the dashboard, and whether the API can do it
 // yet. The handover lists POST /api/whatsapp/connections/:id/recheck and /disconnect (module 10);
@@ -37,7 +37,17 @@ const STATUSES: Record<ConnectionAction, readonly ConnectionStatus[]> = {
   disconnect: ["pending", "validating", "active", "failed"],
 };
 
-/** The actions this member sees for a connection in this status, in display order. */
-export function visibleActions(status: ConnectionStatus, role: Role): ConnectionAction[] {
-  return (["recheck", "disconnect"] as const).filter((a) => ROLES[a].includes(role) && STATUSES[a].includes(status));
+// `platform` is one of Spark Agent's own test or demo numbers (migration 0014), seeded by script and
+// never the client's: recheck and disconnect are for the client's own connections, so it has neither
+// (docs/whatsapp-connection-contract.md).
+const METHODS: Record<ConnectionAction, readonly ConnectionMethod[]> = {
+  recheck: ["embedded_signup", "assisted", "manual_byo"],
+  disconnect: ["embedded_signup", "assisted", "manual_byo"],
+};
+
+/** The actions this member sees for a connection with this method and status, in display order. */
+export function visibleActions(status: ConnectionStatus, role: Role, method: ConnectionMethod): ConnectionAction[] {
+  return (["recheck", "disconnect"] as const).filter(
+    (a) => METHODS[a].includes(method) && ROLES[a].includes(role) && STATUSES[a].includes(status),
+  );
 }

@@ -1,12 +1,13 @@
-import { SendResult, type ErrorCode } from "@pakka/types";
+import { SendResult, TEMPLATE_BODY_MAX, type ErrorCode } from "@pakka/types";
 import { z } from "zod";
 import { connectionSecretContext, decryptSecret } from "../../lib/crypto";
 import { serverEnv, type ServerEnv } from "../../lib/env";
 import { mapMetaError } from "./meta-errors";
 import { normalizeE164 } from "./phone";
 
-// The WhatsApp send side (module 1): sendText and markRead on Meta's Graph API. notify.send is the
-// only caller (through a MessageSender wrapper that comes later); nothing else sends messages.
+// The WhatsApp send side (module 1): sendText, sendTemplate and markRead on Meta's Graph API.
+// notify.send is the only caller (through the MessageSender in message-sender.ts); nothing else sends
+// messages.
 //
 // - Returns a result, never throws. A failure carries one of the shared error codes, a retryable flag,
 //   and outcomeUnknown (true when the message may have gone out: timeout, network failure, unreadable
@@ -183,6 +184,26 @@ function failFromMeta(status: number, json: unknown): AdapterResult<never> {
 const SendBody = z.looseObject({ messages: z.array(z.looseObject({ id: z.string().min(1) })).min(1) });
 const ReadBody = z.looseObject({ success: z.boolean() });
 
+/** Sends one message, already checked by the caller, to an E.164 number and returns its wamid. */
+async function sendMessage(
+  connection: SendConnection,
+  number: string,
+  message: { type: "text" | "template" } & Record<string, unknown>,
+  deps: AdapterDeps,
+): Promise<AdapterResult<SendResult>> {
+  const prepared = prepare(connection, deps);
+  if (!prepared.ok) return prepared;
+
+  const reply = await post(prepared.value, { messaging_product: "whatsapp", recipient_type: "individual", to: number, ...message }, deps);
+  if (reply.kind === "no_answer") return noAnswer();
+  const json = parseJson(reply.text);
+  if (reply.status < 200 || reply.status >= 300) return failFromMeta(reply.status, json);
+
+  const parsed = SendBody.safeParse(json);
+  if (!parsed.success) return unclearAnswer(reply.status);
+  return { ok: true, value: SendResult.parse({ providerMsgId: parsed.data.messages[0].id }) };
+}
+
 export async function sendText(
   connection: SendConnection,
   to: string,
@@ -194,27 +215,54 @@ export async function sendText(
     if (number === null || typeof body !== "string" || body.trim() === "" || body.length > TEXT_MAX) {
       return failFor("validation_failed");
     }
-    const prepared = prepare(connection, deps);
-    if (!prepared.ok) return prepared;
+    return await sendMessage(connection, number, { type: "text", text: { body, preview_url: false } }, deps);
+  } catch {
+    return failFor("internal");
+  }
+}
 
-    const reply = await post(
-      prepared.value,
-      {
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: number,
-        type: "text",
-        text: { body, preview_url: false },
-      },
+/** An approved template: its exact versioned name, its language code and its body variables in {{1}}… order. */
+export type TemplateMessage = { name: string; language: string; params: string[] };
+
+// Meta's rules: names are lowercase letters, digits and underscores; languages are codes like en, ta or
+// en_US. A variable may not be empty or contain a newline or tab or more than 4 spaces in a row (Meta
+// answers 132018), and the whole body is at most 1024 characters.
+const TEMPLATE_NAME = /^[a-z0-9_]{1,512}$/;
+const TEMPLATE_LANGUAGE = /^[a-z]{2,3}(_[A-Z]{2})?$/;
+const validParam = (param: unknown) =>
+  typeof param === "string" && param.trim() !== "" && param.length <= TEMPLATE_BODY_MAX && !/[\r\n\t]| {5}/.test(param);
+
+/**
+ * Sends an approved template, the only kind of message allowed outside the 24-hour window. Body
+ * variables only: templates with header or button variables need a new parameter here first.
+ */
+export async function sendTemplate(
+  connection: SendConnection,
+  to: string,
+  template: TemplateMessage,
+  deps: AdapterDeps = {},
+): Promise<AdapterResult<SendResult>> {
+  try {
+    const number = normalizeE164(to);
+    const { name, language, params }: Partial<TemplateMessage> = template ?? {};
+    if (
+      number === null ||
+      typeof name !== "string" ||
+      !TEMPLATE_NAME.test(name) ||
+      typeof language !== "string" ||
+      !TEMPLATE_LANGUAGE.test(language) ||
+      !Array.isArray(params) ||
+      !params.every(validParam)
+    ) {
+      return failFor("validation_failed");
+    }
+    const body = params.length > 0 ? [{ type: "body", parameters: params.map((text) => ({ type: "text", text })) }] : undefined;
+    return await sendMessage(
+      connection,
+      number,
+      { type: "template", template: { name, language: { code: language }, ...(body && { components: body }) } },
       deps,
     );
-    if (reply.kind === "no_answer") return noAnswer();
-    const json = parseJson(reply.text);
-    if (reply.status < 200 || reply.status >= 300) return failFromMeta(reply.status, json);
-
-    const parsed = SendBody.safeParse(json);
-    if (!parsed.success) return unclearAnswer(reply.status);
-    return { ok: true, value: SendResult.parse({ providerMsgId: parsed.data.messages[0].id }) };
   } catch {
     return failFor("internal");
   }

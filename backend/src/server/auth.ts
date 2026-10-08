@@ -2,6 +2,7 @@ import type { TenantContext } from "@pakka/types";
 import { createClient, isAuthRetryableFetchError, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { serverEnv } from "../lib/env";
 import { AppError, toErrorResponse } from "../lib/errors";
+import { supabaseAdmin } from "../lib/supabase-admin";
 import { resolveTenant } from "../lib/tenant";
 import type { RouteParams } from "./routes";
 
@@ -75,6 +76,30 @@ export async function readJson(request: Request): Promise<unknown> {
   }
 }
 
+/** Whether the user works for us across businesses (platform_admins, migration 0016; server only). */
+export async function isPlatformAdmin(userId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin()
+    .from("platform_admins")
+    .select("user_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw new AppError("upstream_failed", "We couldn't check your access. Try again in a moment.");
+  return data !== null;
+}
+
+export interface PlatformAdmin {
+  user: User;
+  /** Who to record in audit_logs and whatsapp_connections.connected_by: `admin:<user id>`. */
+  actor: string;
+}
+
+/** The verified caller, if they are a platform admin; otherwise forbidden. X-Pakka-Tenant plays no part. */
+export async function requirePlatformAdmin(request: Request, makeClient: UserClientFactory = userClient): Promise<PlatformAdmin> {
+  const { user } = await authenticate(request, makeClient);
+  if (!(await isPlatformAdmin(user.id))) throw new AppError("forbidden", "Only the Spark Agent team can do this.");
+  return { user, actor: `admin:${user.id}` };
+}
+
 type TenantHandler<T> = (args: {
   supabase: SupabaseClient;
   context: TenantContext;
@@ -82,24 +107,44 @@ type TenantHandler<T> = (args: {
   params: RouteParams;
 }) => Promise<T>;
 
+type AdminHandler<T> = (args: { admin: PlatformAdmin; body: unknown; params: RouteParams }) => Promise<T>;
+
 const JSON_BODY_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
-/**
- * Wraps a JSON route: verifies the token and resolves the tenant on the server, parses the body
- * (POST, PUT and PATCH only), runs the backend service, and turns any error into the
- * `{ error: { code, message } }` envelope. The result is sent with `status` (default 200); a
- * service that returns nothing answers 204.
- */
-export function tenantRoute<T>(handler: TenantHandler<T>, options: { status?: number } = {}) {
+// Authorizes first, then parses the body (POST, PUT and PATCH only), runs the backend service, and turns
+// any error into the `{ error: { code, message } }` envelope. The result is sent with `successStatus`;
+// a service that returns nothing answers 204.
+function jsonRoute<A, T>(
+  authorize: (request: Request, makeClient: UserClientFactory) => Promise<A>,
+  handler: (args: A & { body: unknown; params: RouteParams }) => Promise<T>,
+  successStatus = 200,
+) {
   return async (request: Request, makeClient: UserClientFactory = userClient, params: RouteParams = {}): Promise<Response> => {
     try {
-      const { supabase, context } = await requireTenant(request, makeClient);
+      const authorized = await authorize(request, makeClient);
       const body = JSON_BODY_METHODS.has(request.method) ? await readJson(request) : undefined;
-      const result = await handler({ supabase, context, body, params });
-      return result === undefined ? new Response(null, { status: 204 }) : Response.json(result, { status: options.status ?? 200 });
+      const result = await handler({ ...authorized, body, params });
+      return result === undefined ? new Response(null, { status: 204 }) : Response.json(result, { status: successStatus });
     } catch (err) {
       const { status, body } = toErrorResponse(err);
       return Response.json(body, { status });
     }
   };
+}
+
+/**
+ * Wraps a JSON route for a member of the business: verifies the token and resolves the tenant on the
+ * server (X-Pakka-Tenant only picks among the caller's own businesses). `status` defaults to 200.
+ */
+export function tenantRoute<T>(handler: TenantHandler<T>, options: { status?: number } = {}) {
+  return jsonRoute(requireTenant, handler, options.status);
+}
+
+/**
+ * Wraps a JSON route for the platform team (/api/admin/...): verifies the token and checks
+ * platform_admins. The business it acts on is named in the body or path, never by X-Pakka-Tenant.
+ * Same responses as tenantRoute.
+ */
+export function adminRoute<T>(handler: AdminHandler<T>, options: { status?: number } = {}) {
+  return jsonRoute(async (request, makeClient) => ({ admin: await requirePlatformAdmin(request, makeClient) }), handler, options.status);
 }

@@ -67,6 +67,9 @@ test("/ always goes to /login and stops there, even with a session (signed in)",
 
 test("walks every step without overflow, and Back returns", async ({ page }) => {
   await openOnboarding(page);
+  // The trial plan grants 300 credits (supabase/seed/plans.sql, 0006).
+  await expect(page.getByText("7 days, 300 credits, no card.")).toBeVisible();
+  await expect(page.getByText(/150 credits/)).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 
   await next(page, "Send code on WhatsApp").click();
@@ -112,6 +115,9 @@ test("walks every step without overflow, and Back returns", async ({ page }) => 
   await next(page, "Go live").click();
 
   await expect(page.getByRole("link", { name: "Go to my dashboard" })).toBeVisible();
+  // No trial was created here (the account already has a business), so the summary is the default.
+  await expect(page.getByText("7 days · 300 credits")).toBeVisible();
+  await expect(page.getByText(/150 credits/)).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 });
 

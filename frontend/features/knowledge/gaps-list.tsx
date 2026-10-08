@@ -1,16 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { ErrorState, LoadingState } from "@/components/shared/states";
+import { EmptyState, ErrorState, LoadingState } from "@/components/shared/states";
 import type { FormattedError } from "@/lib/errors";
-import { askedText, describeKbWriteError, GAP_ANSWER_MAX, validateGapAnswer, type GapItem, type SectionSource } from "./kb-content";
+import { askedText, describeKbWriteError, GAP_ANSWER_MAX, KB_UNAVAILABLE_TITLE, validateGapAnswer, type GapItem, type SectionSource } from "./kb-content";
 
 // "Questions the AI couldn't answer", ported from the /dashboard/preview Knowledge base
 // (features/knowledge/pakka-knowledge.tsx): accent title over a 2px accent rule, one row per question
 // with "Add answer", which opens a textarea with Save answer / Cancel, and Dismiss. Saving an answer
 // turns the question into an FAQ (POST /api/kb/gaps/:id/answer); the row leaves the list only once
 // the API confirms. Every member can answer; owners and admins can also dismiss (contracts.md
-// section 9).
+// section 9). While GET /api/kb/gaps isn't deployed, the section says so instead of an error.
 
 export function GapsList({
   source,
@@ -82,6 +82,15 @@ export function GapsList({
       {source.status === "error" ? (
         <div style={{ paddingTop: "12px" }}>
           <ErrorState compact title="Couldn't load the questions" description={source.message} onRetry={source.retry} />
+        </div>
+      ) : null}
+      {source.status === "unavailable" ? (
+        <div style={{ paddingTop: "12px" }}>
+          <EmptyState
+            compact
+            title={KB_UNAVAILABLE_TITLE}
+            description="The knowledge-base service is still being connected. Questions the AI couldn’t answer will appear here once it is."
+          />
         </div>
       ) : null}
       {source.status === "ready" && gaps.length === 0 ? (

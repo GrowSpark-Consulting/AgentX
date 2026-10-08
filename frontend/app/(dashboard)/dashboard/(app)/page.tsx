@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { NoBusinessNotice } from "@/components/dashboard/no-business";
 import { WhatsAppConnectionPanel } from "@/components/dashboard/whatsapp-connection-panel";
 import { LoadingState } from "@/components/shared/states";
+import { calendarReturn } from "@/features/settings/google-calendar";
 import { requireDashboardView } from "@/lib/auth/session";
 import { packLabel } from "@/lib/format";
 
@@ -16,7 +18,14 @@ function formatDate(iso: string, timeZone: string) {
   return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone }).format(new Date(iso));
 }
 
-export default async function HomePage() {
+export default async function HomePage({ searchParams }: PageProps<"/dashboard">) {
+  // Google Calendar's callback (Dev 2) returns the browser to /dashboard?google_calendar=…&resource=…;
+  // the outcome belongs on Booking setup, where calendars are connected. Only known values are passed on.
+  const returned = calendarReturn(await searchParams);
+  if (returned) {
+    const query = new URLSearchParams({ google_calendar: returned.outcome, ...(returned.resourceId ? { resource: returned.resourceId } : {}) });
+    redirect(`/dashboard/settings/booking?${query}`);
+  }
   const view = await requireDashboardView();
   if (view.kind === "no_business") return <NoBusinessHome email={view.user.email} />;
   const { user, role, tenant } = view.context;

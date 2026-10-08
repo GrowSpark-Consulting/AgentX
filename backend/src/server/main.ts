@@ -1,7 +1,8 @@
 import { createPackStore } from "../agent/packs/store";
 import { defaultPacksDir, describeStartupFailure, formatSyncReport, syncPacks } from "../agent/packs/sync";
+import { registerWhatsAppSender } from "../channels/whatsapp/message-sender";
 import { EnvError, serverEnv, type ServerEnv } from "../lib/env";
-import { bodyLimitFor, createApp } from "./app";
+import { bodyLimitFor, createApp, logPathFor } from "./app";
 import { allowedOrigins, withCors } from "./cors";
 import { closeGracefully, createHttpServer } from "./node";
 
@@ -18,10 +19,14 @@ try {
   process.exit(1);
 }
 
+// Before any request: notify.send (HTTP routes and Inngest functions alike) sends through WhatsApp.
+registerWhatsAppSender();
+
 function start(): void {
   const origins = allowedOrigins(env);
   const server = createHttpServer(createApp({ allowedOrigins: origins }), {
     maxBodyBytes: (pathname) => bodyLimitFor(pathname),
+    logPath: (pathname) => logPathFor(pathname),
     // A body over the limit is refused before the app runs; CORS lets the frontend read that 413.
     onRejected: (request, response) => withCors(response, request, origins),
   });

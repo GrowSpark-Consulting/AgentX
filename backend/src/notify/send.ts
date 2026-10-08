@@ -1,3 +1,4 @@
+import { redactSecrets } from "@pakka/types";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CREDIT_COST } from "../billing/credit-costs";
@@ -5,13 +6,16 @@ import { refundCredits, spendCredits } from "../billing/credits";
 import { isEnabled } from "../features/is-enabled";
 import { supabaseAdmin } from "../lib/supabase-admin";
 import { KINDS, type MessageCreditReason, type NotificationKind } from "./kinds";
-import { OutsideWindowError, senderFactory, type MessageSender } from "./sender";
+import { OutsideWindowError, SendError, senderFactory, type MessageSender } from "./sender";
 
 // notify.send (docs/handover.md, module 5; docs/contracts.md, section 4): every outbound message goes
 // through here. Order: feature toggle → recipient and connection → opt-out → test-message limit →
 // 24-hour window (free text) or approved template → credits → send → record (messages + audit_logs).
 // If the send fails after credits were spent, they are refunded. If WhatsApp says the window has
-// closed (OutsideWindowError), the approved template is sent instead.
+// closed (OutsideWindowError), the approved template is sent instead. Any other refusal keeps the
+// sender's code (rate_limited, whatsapp_not_connected…). When the outcome is unknown (a timeout), the
+// credits are refunded too and the failure says outcomeUnknown, so nobody resends it; holding them
+// instead waits for Raja (docs/contracts.md, decision 16).
 
 export type NotifyPayload = {
   /** Customer messages: the conversation to reply in. */
@@ -32,7 +36,14 @@ export type SendOutcome =
       status: "skipped";
       reason: "feature_off" | "opted_out" | "insufficient_credits" | "outside_window";
     }
-  | { status: "failed"; error: { code: string; message: string } };
+  | {
+      status: "failed";
+      /**
+       * `retryable`: a later attempt may work. `outcomeUnknown`: WhatsApp may have delivered the message
+       * anyway (no answer in time), so it must never be resent automatically.
+       */
+      error: { code: string; message: string; retryable: boolean; outcomeUnknown: boolean };
+    };
 
 export const TEST_MESSAGES_PER_HOUR = 10;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -49,7 +60,18 @@ const Target = z.object({
 });
 const Template = z.object({ name: z.string(), language: z.string(), category: z.string() });
 
-const failed = (code: string, message: string): SendOutcome => ({ status: "failed", error: { code, message } });
+const failed = (
+  code: string,
+  message: string,
+  { retryable = false, outcomeUnknown = false }: { retryable?: boolean; outcomeUnknown?: boolean } = {},
+): SendOutcome => ({ status: "failed", error: { code, message, retryable, outcomeUnknown } });
+
+/** A sender's SendError keeps its code and flags; anything else is unexpected, so it is logged and generic. */
+function senderFailure(err: unknown, message: string): SendOutcome {
+  if (err instanceof SendError) return failed(err.code, err.message, { retryable: err.retryable, outcomeUnknown: err.outcomeUnknown });
+  console.error(`[notify] unexpected sender error: ${redactSecrets(err instanceof Error ? `${err.name}: ${err.message}` : String(err))}`);
+  return failed("upstream_failed", message);
+}
 
 export async function send(tenantId: string, kind: NotificationKind, payload: NotifyPayload): Promise<SendOutcome> {
   const kindConfig = KINDS[kind];
@@ -83,7 +105,7 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
 
   if (target.opted_out) return { status: "skipped", reason: "opted_out" };
   if (kind === "test_message" && target.recent_test_messages >= TEST_MESSAGES_PER_HOUR) {
-    return failed("rate_limited", `Only ${TEST_MESSAGES_PER_HOUR} test messages an hour. Try again later.`);
+    return failed("rate_limited", `Only ${TEST_MESSAGES_PER_HOUR} test messages an hour. Try again later.`, { retryable: true });
   }
 
   // Free text only inside 24 hours of the customer's last message; otherwise an approved template.
@@ -110,8 +132,8 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
   let sender: MessageSender;
   try {
     sender = await factory({ tenantId, connectionId: target.connection_id });
-  } catch {
-    return failed("upstream_failed", "The WhatsApp connection could not be used, so the message was not sent.");
+  } catch (err) {
+    return senderFailure(err, "The WhatsApp connection could not be used, so the message was not sent.");
   }
 
   const messageId = randomUUID();
@@ -133,7 +155,7 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
       if (!kindConfig.template) return { status: "skipped", reason: "outside_window" };
       return send(tenantId, kind, { ...payload, text: undefined });
     }
-    return failed("upstream_failed", "WhatsApp did not accept the message, so it was not sent.");
+    return senderFailure(err, "WhatsApp did not accept the message, so it was not sent.");
   }
 
   const actor = payload.actorId ?? (kindConfig.sender === "ai" ? "ai" : "system");
