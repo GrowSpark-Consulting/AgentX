@@ -132,3 +132,13 @@ export function connectionSecretContext(parts: {
   }
   return `whatsapp_connections:${column}:${tenantId}:${connectionId}` as SecretContext;
 }
+
+// google_calendar_connections.refresh_token_enc. A resource has at most one connection, and its id
+// never changes, so the resource id identifies the row (and is known before the row exists).
+export function calendarSecretContext(parts: { tenantId: string; resourceId: string }): SecretContext {
+  const { tenantId, resourceId } = parts;
+  for (const id of [tenantId, resourceId]) {
+    if (id === "" || id.includes(":")) throw new CryptoError("invalid context part");
+  }
+  return `google_calendar_connections:refresh_token_enc:${tenantId}:${resourceId}` as SecretContext;
+}

@@ -2,6 +2,7 @@ import type { StartTrialResult } from "@pakka/types";
 import { getBalance } from "../billing/credits";
 import { startTrialFor } from "../billing/start-trial";
 import { createTrialTenant } from "../billing/trial";
+import { googleConnectUrl, handleGoogleCallback } from "../booking/google-calendar";
 import { sendTestMessage } from "../channels/whatsapp/test-message";
 import { handleWhatsAppWebhook } from "../channels/whatsapp/inbound";
 import { handleWhatsAppVerification } from "../channels/whatsapp/verify-challenge";
@@ -76,12 +77,19 @@ async function startTrial(request: Request, deps: RouteDeps): Promise<Response> 
 const templates = tenantRoute(({ context, body }) => createTemplate(context, body));
 // { to, body } → SendTestMessageResult. Owner or admin.
 const testMessage = tenantRoute(({ supabase, context, body }) => sendTestMessage(supabase, context, body));
+// ?resourceId= → { url }: the Google consent link for one staff member. Owner or admin.
+const googleConnect: RouteHandler = (request, deps, params) =>
+  tenantRoute(({ context }) => googleConnectUrl(context, new URL(request.url).searchParams.get("resourceId")))(request, deps.userClient, params);
 
 export const ROUTES: readonly Route[] = [
   { path: "/api/health", methods: { GET: health } },
   { path: "/api/templates", browser: true, methods: { POST: (request, deps) => templates(request, deps.userClient) } },
   { path: "/api/messages/test", browser: true, methods: { POST: (request, deps) => testMessage(request, deps.userClient) } },
   { path: "/api/onboarding/trial", browser: true, methods: { POST: startTrial } },
+  { path: "/api/calendar/google/connect", browser: true, methods: { GET: googleConnect } },
+  // Google sends the browser here after consent (no login: the signed state says who asked). Every answer
+  // is a redirect back to the dashboard. The code and state are in the query string, which is never logged.
+  { path: "/api/calendar/google/callback", methods: { GET: (request) => handleGoogleCallback(request) } },
   {
     // Meta's callback URL. GET is the verification check; POST delivers messages and statuses (the
     // signature is verified in the handler). Server to server: not `browser`, so no CORS; default body limit.

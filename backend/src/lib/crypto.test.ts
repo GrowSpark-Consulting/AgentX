@@ -1,6 +1,7 @@
 import { createCipheriv, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  calendarSecretContext,
   connectionSecretContext,
   CryptoError,
   decryptSecret,
@@ -347,5 +348,31 @@ describe("context is required", () => {
   it("rejects a hand-written string at compile time", () => {
     // @ts-expect-error only connectionSecretContext() can make a SecretContext
     expect(() => encryptSecret(SECRET, "tenant-a", env)).not.toThrow();
+  });
+});
+
+describe("calendarSecretContext", () => {
+  const TENANT = "d0000000-0000-0000-0000-000000000001";
+  const RESOURCE_A = "d5000000-0000-0000-0000-000000000011";
+  const RESOURCE_B = "d5000000-0000-0000-0000-000000000012";
+
+  it("binds a calendar refresh token to its business and resource", () => {
+    const context = calendarSecretContext({ tenantId: TENANT, resourceId: RESOURCE_A });
+    expect(context).toBe(`google_calendar_connections:refresh_token_enc:${TENANT}:${RESOURCE_A}`);
+    const stored = encryptSecret("1//refresh", context, env);
+    expect(decryptSecret(stored, context, env)).toBe("1//refresh");
+    expect(() => decryptSecret(stored, calendarSecretContext({ tenantId: TENANT, resourceId: RESOURCE_B }), env)).toThrow(CryptoError);
+  });
+
+  it("never collides with a WhatsApp connection secret", () => {
+    const stored = encryptSecret("1//refresh", calendarSecretContext({ tenantId: TENANT, resourceId: RESOURCE_A }), env);
+    const whatsapp = connectionSecretContext({ column: "token_enc", tenantId: TENANT, connectionId: RESOURCE_A });
+    expect(() => decryptSecret(stored, whatsapp, env)).toThrow(CryptoError);
+  });
+
+  it("refuses empty parts and parts with the separator", () => {
+    for (const parts of [{ tenantId: "", resourceId: RESOURCE_A }, { tenantId: TENANT, resourceId: "a:b" }]) {
+      expect(() => calendarSecretContext(parts)).toThrow(CryptoError);
+    }
   });
 });
