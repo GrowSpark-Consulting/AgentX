@@ -1,4 +1,4 @@
-import type { Extraction } from "@pakka/types";
+import { Extraction } from "@pakka/types";
 import { NonRetriableError } from "inngest";
 import type { KbMatch } from "../../kb/retrieve";
 import type { LlmClient, LlmMessage } from "../llm/anthropic";
@@ -28,7 +28,7 @@ export interface UnderstandDeps {
   loadPackDefinition: (key: string, version: number) => Promise<unknown | null>;
   /** The knowledge-base search (kb/retrieve.ts), for this business. */
   retrieve: (tenantId: string, query: string) => Promise<KbMatch[]>;
-  /** The turn's own deadline: when it passes the model call stops. */
+  /** The turn's own deadline: when it passes the model call stops. Not wired in production until PR 6 (the reply step owns the deadline). */
   signal?: AbortSignal;
 }
 
@@ -98,6 +98,16 @@ async function loadTurnPack(turn: TurnContext, deps: UnderstandDeps) {
   }
 }
 
+const summarise = (extraction: Extraction): ExtractionSummary => ({
+  intent: extraction.intent,
+  language: extraction.language,
+  sentiment: extraction.sentiment,
+  asksIfHuman: extraction.asksIfHuman,
+  confidence: extraction.confidence,
+  hasQuestion: extraction.question !== null,
+  fieldKeys: Object.keys(extraction.fields),
+});
+
 const isScalar = (value: unknown): value is string | number | boolean => ["string", "number", "boolean"].includes(typeof value);
 const scalarFields = (fields: Record<string, unknown>): Record<string, string | number | boolean> =>
   Object.fromEntries(Object.entries(fields).filter((e): e is [string, string | number | boolean] => isScalar(e[1])));
@@ -110,18 +120,37 @@ export async function understandTurn(step: StepRunner, turn: TurnContext, deps: 
   const { store } = deps;
   const lastMessageId = turn.messageIds[turn.messageIds.length - 1];
 
+  // Keeps what was worked out on the newest message. The keys of the other outcome are cleared in the same write, so
+  // a re-run never leaves an extraction next to an extractionFailed. A write that fails is tried once more at once
+  // (a step retry would call the model again); a message that is not found is a bug, not retried.
+  const persist = async (agent: Record<string, unknown>) => {
+    const write = () => store.saveAgentMeta(turn.tenantId, turn.conversationId, lastMessageId, { ...agent, at: new Date().toISOString() });
+    let saved: boolean;
+    try {
+      saved = await write();
+    } catch (error) {
+      if (error instanceof NonRetriableError) throw error;
+      saved = await write();
+    }
+    if (!saved) throw new NonRetriableError("The message was not found.");
+  };
+
   // Ask the model. The client has already retried a model that was slow or unreachable (3 times, capped waits), so
-  // a step that fails that way is not repeated: it says so, and the turn reports `model_unavailable`. A step retry
-  // would only pay for the same calls again. Anything else that goes wrong is not hidden.
+  // a step that fails that way is not repeated: it says so, and the turn reports `model_unavailable`. A run that
+  // finds the message already has its extraction (an earlier attempt saved it and then failed) uses it and does not
+  // ask again. Anything else that goes wrong is not hidden.
   const extracted = await step.run<ExtractOutcome>("extract", async () => {
     const loaded = await loadTurnPack(turn, deps);
     if (!loaded) return { outcome: "no_pack" };
+
+    const earlier = Extraction.safeParse((await store.getAgentMeta(turn.tenantId, turn.conversationId, lastMessageId))?.extraction);
+    if (earlier.success) return { outcome: "ok", summary: summarise(earlier.data) };
 
     const texts = await store.getBatchTexts(turn.tenantId, turn.conversationId, turn.messageIds);
     const joined = texts.map((t) => t.body?.trim() ?? "").filter(Boolean).join("\n");
     const combined = joined.length > BATCH_TEXT_MAX_CHARS ? joined.slice(-BATCH_TEXT_MAX_CHARS) : joined;
     const fail = async (reason: FallbackReason | "model_unavailable"): Promise<ExtractOutcome> => {
-      await store.saveAgentMeta(turn.tenantId, turn.conversationId, lastMessageId, { extractionFailed: reason, at: new Date().toISOString() });
+      await persist({ extractionFailed: reason, extraction: null, droppedFields: null });
       return reason === "model_unavailable" ? { outcome: "model_unavailable" } : { outcome: "fallback", reason };
     };
     if (!combined) return fail("no_text");
@@ -155,20 +184,11 @@ export async function understandTurn(step: StepRunner, turn: TurnContext, deps: 
       }
       const interpreted = interpretExtraction(text, loaded.fieldSchema);
       if (interpreted.ok) {
-        const { extraction, dropped } = interpreted;
-        await store.saveAgentMeta(turn.tenantId, turn.conversationId, lastMessageId, { extraction, droppedFields: dropped, at: new Date().toISOString() });
-        return {
-          outcome: "ok",
-          summary: {
-            intent: extraction.intent,
-            language: extraction.language,
-            sentiment: extraction.sentiment,
-            asksIfHuman: extraction.asksIfHuman,
-            confidence: extraction.confidence,
-            hasQuestion: extraction.question !== null,
-            fieldKeys: Object.keys(extraction.fields),
-          },
-        };
+        const { dropped } = interpreted;
+        // A customer who is leaving: what they said is not kept as details or as a question to look up.
+        const extraction = interpreted.extraction.intent === "opt_out" ? { ...interpreted.extraction, fields: {}, question: null } : interpreted.extraction;
+        await persist({ extraction, droppedFields: dropped, extractionFailed: null });
+        return { outcome: "ok", summary: summarise(extraction) };
       }
       if (attempt === 2) return fail("invalid_output");
       followUp = [...first, { role: "assistant", content: text }, { role: "user", content: CORRECTION }];

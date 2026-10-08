@@ -20,7 +20,7 @@ begin
   if p_patch is null or jsonb_typeof(p_patch) <> 'object' then
     raise exception 'merge_lead_fields: the patch must be a JSON object' using errcode = 'P0001';
   end if;
-  if pg_column_size(p_patch) > 16384 then
+  if octet_length(p_patch::text) > 16384 then
     raise exception 'merge_lead_fields: the patch is too large' using errcode = 'P0001';
   end if;
 
@@ -44,7 +44,7 @@ begin
   if p_agent is null or jsonb_typeof(p_agent) <> 'object' then
     raise exception 'merge_message_agent_meta: the value must be a JSON object' using errcode = 'P0001';
   end if;
-  if pg_column_size(p_agent) > 16384 then
+  if octet_length(p_agent::text) > 16384 then
     raise exception 'merge_message_agent_meta: the value is too large' using errcode = 'P0001';
   end if;
 

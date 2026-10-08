@@ -245,6 +245,8 @@ describe("the details kept on the lead", () => {
     expect((await understandTurn(r.step, w.turn, w.deps)).status).toBe("understood");
     expect(merge).not.toHaveBeenCalled();
     expect(w.leads.get(LEAD)).toMatchObject({ stage: "new", fields: {} });
+    // and the saved extraction does not keep their details or question either
+    expect(w.messages.get(M1)?.meta?.agent).toMatchObject({ extraction: { intent: "opt_out", fields: {}, question: null } });
   });
 
   it("checks the details again against the pack as it is when they are saved: a field hidden in between is not written", async () => {
@@ -474,13 +476,59 @@ describe("the knowledge base search", () => {
 });
 
 describe("running it again", () => {
-  it("does not repeat a step that finished: the model is not called twice", async () => {
+  it("a fresh run for a message whose extraction is already saved uses it: the model is not called again", async () => {
+    const w = world({ script: [good(), good()] });
+    await understandTurn(runner().step, w.turn, w.deps);
+    const again = await understandTurn(runner().step, w.turn, w.deps); // a new run: no memoised steps
+    expect(w.complete).toHaveBeenCalledOnce();
+    expect(again).toMatchObject({ status: "understood", summary: { intent: "question", fieldKeys: ["area", "size", "budget", "timeline"] } });
+  });
+
+  it("a failed extraction is tried again by a later run, and the failure is cleared when it works", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const w = world({ script: [new LlmError("unavailable", 503, 3), good()] });
+    expect((await understandTurn(runner().step, w.turn, w.deps)).status).toBe("model_unavailable");
+    expect((await understandTurn(runner().step, w.turn, w.deps)).status).toBe("understood");
+    const agent = w.messages.get(M1)?.meta?.agent as Record<string, unknown>;
+    expect(agent.extractionFailed).toBeNull();
+    expect(agent.extraction).toMatchObject({ intent: "question" });
+  });
+
+  it("a failure written over a good extraction clears it, so the two never sit side by side", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // an earlier attempt left something under `extraction` that no longer reads as a valid extraction, then this run fails
+    const w2 = world({ script: ["nope", "nope"] });
+    w2.messages.get(M1)!.meta = { buttonId: "b1", agent: { extraction: { stale: true } } };
+    await understandTurn(runner().step, w2.turn, w2.deps);
+    const agent = w2.messages.get(M1)?.meta?.agent as Record<string, unknown>;
+    expect(w2.messages.get(M1)?.meta?.buttonId).toBe("b1");
+    expect(agent).toMatchObject({ extractionFailed: "invalid_output", extraction: null, droppedFields: null });
+  });
+
+  it("a database blip when keeping the answer is retried at once, without asking the model again", async () => {
+    const w = world({ script: [good(), good()] });
+    w.state.failNext.add("saveAgentMeta");
+    const r = runner();
+    expect((await understandTurn(r.step, w.turn, w.deps)).status).toBe("understood");
+    expect(w.complete).toHaveBeenCalledOnce();
+    expect(r.attempts.get("extract")).toBe(1);
+  });
+
+  it("a message that cannot be found is a bug, not retried and not reported as understood", async () => {
+    const w = world();
+    w.messages.delete(M1);
+    const r = runner(2);
+    await expect(understandTurn(r.step, w.turn, w.deps)).rejects.toBeInstanceOf(NonRetriableError);
+    expect(r.attempts.get("extract")).toBe(1);
+  });
+
+  it("does not repeat a step that finished within a run", async () => {
     const w = world();
     const r = runner();
     await understandTurn(r.step, w.turn, w.deps);
     await understandTurn(r.step, w.turn, w.deps);
+    expect(r.ran).toEqual(["extract", "save-fields", "retrieve"]);
     expect(w.complete).toHaveBeenCalledOnce();
-    expect(w.retrieve).toHaveBeenCalledOnce();
   });
 
   it("a new run for the same turn works from the same lead: the same details end up on it", async () => {
@@ -494,9 +542,10 @@ describe("running it again", () => {
 describe("another business", () => {
   it("never reads or writes another business's messages or lead, even given their ids", async () => {
     const w = world();
-    const result = await understandTurn(runner().step, { ...w.turn, tenantId: B }, w.deps);
-    // B has no such message: nothing to read
-    expect(result).toEqual({ status: "fallback", reason: "no_text" });
+    const result = understandTurn(runner().step, { ...w.turn, tenantId: B }, w.deps);
+    // B has no such message: nothing to read, and nothing can be written to it (a bug, so the run stops)
+    await expect(result).rejects.toBeInstanceOf(NonRetriableError);
+    expect(w.messages.get(M1)?.meta?.agent).toBeUndefined();
     expect(w.leads.get(LEAD)).toMatchObject({ stage: "new", fields: {} });
     expect(w.complete).not.toHaveBeenCalled();
   });

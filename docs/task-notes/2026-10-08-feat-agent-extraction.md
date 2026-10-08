@@ -124,6 +124,13 @@ Need review by Dev 3 (Dhatri): the new `messages.meta.agent` (below).
 
 ## 7. Follow-ups / not done in this PR
 
+- **Open risk, PR 6 must close it:** `model_unavailable`, `fallback` and `no_pack` end the run as a normal result. Nothing
+  answers the customer in those cases yet (the run does not retry for minutes either, because the client already waited).
+  PR 6 turns them into a holding reply or a handover. Until PR 6 ships, a deployed run reads and records but is silent anyway.
+- Notes: `meta.agent` keys are merged, so a success clears `extractionFailed` and a failure clears `extraction`
+  (read null as absent). A media-only message is `no_text`: not engaged. History is the last four with text before the
+  burst's first message. `confidence` is the model's own word, so it is not a trust boundary against injection.
+
 - **PR 6 wires the turn's deadline** (`signal`) into `understandDeps`; until then the model call has the client's own
   timeout only.
 - **PR 8's gap recording must be idempotent** (a retried or replayed run sees `none` again).

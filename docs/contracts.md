@@ -319,7 +319,15 @@ intent `opt_out`. `retrieve` searches the knowledge base for the English questio
 **The extraction is kept on the newest message of the turn, in `messages.meta.agent`** (merged by
 `merge_message_agent_meta`, which leaves the rest of the meta and the other keys of `agent` alone): `{ extraction,
 droppedFields: { unknownKeys, invalidValues }, at }`, or `{ extractionFailed: "no_text" | "invalid_output" |
-"model_declined" | "model_unavailable", at }`. The customer's words, the question and the details are not in Inngest's step results; later steps read them from there.
+"model_declined" | "model_unavailable", at }`. Writing one outcome clears the other's keys (`extraction: null` with a failure, `extractionFailed: null` with a success), so
+read `null` as absent. A run that finds a valid `extraction` already on the message uses it and does not ask the model
+again; for the intent `opt_out` the saved extraction has no details and no question. A message with no text (media only)
+is the `no_text` fallback and does not engage the lead. The history sent to the model is the last four messages with text
+strictly before the first message of the burst (by its `created_at`). `confidence` is the model's own word, not a trust
+boundary: an injected message can claim 1.0. **Open risk until the reply step (PR 6): `model_unavailable`, `fallback` and
+`no_pack` end the run as a normal result and nothing answers the customer yet; PR 6 must turn them into a holding reply or
+a handover.** The turn's deadline signal is not wired until PR 6. The customer's words, the question and the details are
+not in Inngest's step results; later steps read them from there.
 
 A run that still fails after its 3 retries is not tried again by anything: the message stays in the inbox unanswered and
 `onFailure` logs its id. A sweep for customer messages nobody answered is the follow-up.
