@@ -2,10 +2,10 @@ import type { APIRequestContext, Page, Route } from "@playwright/test";
 import { MOCK_SUPABASE_URL } from "./app";
 
 // The knowledge-base routes of docs/contracts.md section 9, emulated in the browser with page.route.
-// The real routes (backend/src/server/routes.ts, Dev 1) aren't built yet, and the API answers an unknown
-// route with a 404 the browser rejects (no CORS headers), so every page that loads the Knowledge base
-// needs this. It speaks the contract only: paths, methods, bodies, status codes and the
-// `{ error: { code, message, fields? } }` envelope. Rows live in mock-supabase.mjs, so the page's RLS
+// The real routes (backend/src/server/routes.ts, Dev 1) aren't built yet: today the API answers each of
+// them with ROUTE_MISSING below, which the page shows as "not available yet". These tests cover the
+// contract the page is built for. It speaks the contract only: paths, methods, bodies, status codes
+// (section 6) and the `{ error: { code, message, fields? } }` envelope. Rows live in mock-supabase.mjs, so the page's RLS
 // reads see what the "API" wrote. Like the real API, the business comes from X-Pakka-Tenant and the
 // member's role decides writes (owner and admin; staff may answer a gap); nothing is read from the body.
 
@@ -20,6 +20,8 @@ export type KbCall = {
   body: string;
 };
 export type KbFailure = { status: number; code: string; message: string; fields?: Record<string, string> };
+/** What the API answers for a route it doesn't have (backend/src/server/app.ts), byte for byte. */
+export const ROUTE_MISSING: KbFailure = { status: 404, code: "not_found", message: "Not found." };
 type StoredDoc = { id: string; tenant_id: string; source_type: string; title: string | null; body: string | null; status: string; created_at: string };
 
 const UUID_SEGMENT = /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
@@ -101,15 +103,15 @@ export async function mockKbApi(page: Page, request: APIRequestContext, { role =
       }
       case "POST /api/kb/documents": {
         if (!contentType?.startsWith("multipart/form-data")) {
-          return error(route, { status: 400, code: "validation_failed", message: "Send the file as multipart/form-data.", fields: { file: "Choose a file to upload." } });
+          return error(route, { status: 422, code: "validation_failed", message: "Send the file as multipart/form-data.", fields: { file: "Choose a file to upload." } });
         }
         const fileName = /name="file"; filename="([^"]*)"/.exec(raw)?.[1] ?? "";
         const title = /name="title"\r\n\r\n([^\r]*)\r\n/.exec(raw)?.[1];
         if (!UPLOAD_TYPES.test(fileName)) {
-          return error(route, { status: 400, code: "validation_failed", message: "Check the file.", fields: { file: "Upload a PDF, DOCX, TXT or MD file." } });
+          return error(route, { status: 422, code: "validation_failed", message: "Check the file.", fields: { file: "Upload a PDF, DOCX, TXT or MD file." } });
         }
         if (bytes.length > UPLOAD_MAX_BYTES + 4096) {
-          return error(route, { status: 400, code: "validation_failed", message: "Check the file.", fields: { file: "Files can be at most 5 MB." } });
+          return error(route, { status: 422, code: "validation_failed", message: "Check the file.", fields: { file: "Files can be at most 5 MB." } });
         }
         const row = await insert({ tenant_id: tenant, source_type: "upload", title: title || fileName, status: "processing" });
         return json(route, 202, { id: row.id, title: row.title, sourceType: "upload", status: "processing", createdAt: row.created_at });

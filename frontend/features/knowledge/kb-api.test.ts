@@ -222,3 +222,108 @@ describe("gaps", () => {
     expect(kb.describeKbWriteError(err, "Couldn't dismiss the question", "question").message).toBe("This question no longer exists. Refresh to see the current list.");
   });
 });
+
+// The API answers a route it doesn't have with exactly this (backend/src/server/app.ts).
+const routeMissing = () => apiError(404, "not_found", "Not found.");
+
+describe("while the knowledge-base routes aren't deployed", () => {
+  const file = () => new File(["Prices"], "Price list.md", { type: "text/markdown" });
+
+  it("reads a 404 from a route without an id as the route not being there yet", async () => {
+    fetchMock.mockResolvedValueOnce(routeMissing());
+    await expect(kb.createFaq(TENANT, { q: "a", a: "b" })).rejects.toBeInstanceOf(kb.KbUnavailableError);
+    fetchMock.mockResolvedValueOnce(routeMissing());
+    await expect(kb.uploadDocument(TENANT, file())).rejects.toBeInstanceOf(kb.KbUnavailableError);
+    fetchMock.mockResolvedValueOnce(routeMissing());
+    await expect(kb.listGaps(TENANT)).rejects.toBeInstanceOf(kb.KbUnavailableError);
+  });
+
+  it("reads not_available (501) the same on every route", async () => {
+    const notAvailable = () => apiError(501, "not_available", "This isn't available yet.");
+    const calls = [
+      () => kb.createFaq(TENANT, { q: "a", a: "b" }),
+      () => kb.updateFaq(TENANT, FAQ_ID, { a: "b" }),
+      () => kb.deleteFaq(TENANT, FAQ_ID),
+      () => kb.uploadDocument(TENANT, file()),
+      () => kb.deleteDocument(TENANT, DOC_ID),
+      () => kb.listGaps(TENANT),
+      () => kb.answerGap(TENANT, GAP_ID, "Yes"),
+      () => kb.dismissGap(TENANT, GAP_ID),
+    ];
+    for (const call of calls) {
+      fetchMock.mockResolvedValueOnce(notAvailable());
+      await expect(call()).rejects.toBeInstanceOf(kb.KbUnavailableError);
+    }
+  });
+
+  it("leaves a 404 from a route with an id as not_found, for the caller to explain", async () => {
+    for (const call of [
+      () => kb.updateFaq(TENANT, FAQ_ID, { a: "b" }),
+      () => kb.deleteFaq(TENANT, FAQ_ID),
+      () => kb.deleteDocument(TENANT, DOC_ID),
+      () => kb.answerGap(TENANT, GAP_ID, "Yes"),
+      () => kb.dismissGap(TENANT, GAP_ID),
+    ]) {
+      fetchMock.mockResolvedValueOnce(routeMissing());
+      await expect(call()).rejects.toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+    }
+  });
+
+  it("keeps every other error as it was: signed out, forbidden, conflict, validation and server errors", async () => {
+    const cases: [Response, string][] = [
+      [apiError(401, "unauthenticated", "Sign in again."), "unauthenticated"],
+      [apiError(403, "forbidden", "Only an owner or admin can do this."), "forbidden"],
+      [apiError(403, "no_membership", "Your account isn't linked to a business yet."), "no_membership"],
+      [apiError(409, "conflict", "There's already an FAQ with this question."), "conflict"],
+      [apiError(422, "validation_failed", "Check the question.", { q: "Too long" }), "validation_failed"],
+      [apiError(500, "internal", "Something went wrong."), "internal"],
+      [apiError(502, "upstream_failed", "Couldn't prepare this answer for the AI."), "upstream_failed"],
+    ];
+    for (const [response, code] of cases) {
+      fetchMock.mockResolvedValueOnce(response);
+      const err = await kb.createFaq(TENANT, { q: "a", a: "b" }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(kb.describeKbWriteError(err, "Couldn't save the FAQ", "FAQ").code).toBe(code);
+    }
+    // A failed gaps read stays an error with Try again, not "not available".
+    fetchMock.mockResolvedValueOnce(apiError(503, "internal", "Something went wrong."));
+    await expect(kb.listGaps(TENANT)).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("says the knowledge base isn't available yet, and that nothing changed", async () => {
+    fetchMock.mockResolvedValueOnce(routeMissing());
+    const err = await kb.createFaq(TENANT, { q: "a", a: "b" }).catch((e: unknown) => e);
+    expect(kb.describeKbWriteError(err, "Couldn't save the FAQ", "FAQ")).toEqual({
+      code: "not_available",
+      title: "Knowledge base is not available yet.",
+      message: "The knowledge-base service is still being connected. Nothing was changed.",
+      retryable: false,
+    });
+  });
+});
+
+describe("explainNotFound: a deleted row or a missing route", () => {
+  const notFound = new ApiError(404, { error: { code: "not_found", message: "Not found." } });
+
+  it("is the missing route when the row is still listed", async () => {
+    expect(await kb.explainNotFound(notFound, async () => true)).toBeInstanceOf(kb.KbUnavailableError);
+  });
+
+  it("is the deleted row when it's gone from the list", async () => {
+    const err = await kb.explainNotFound(notFound, async () => false);
+    expect(err).toBe(notFound);
+    expect(kb.describeKbWriteError(err, "Couldn't delete the FAQ", "FAQ").message).toBe("This FAQ no longer exists. Refresh to see the current list.");
+  });
+
+  it("is the missing route when the list's own route is missing too", async () => {
+    expect(await kb.explainNotFound(notFound, async () => Promise.reject(new kb.KbUnavailableError()))).toBeInstanceOf(kb.KbUnavailableError);
+  });
+
+  it("keeps the 404 when the list can't be read, and never re-reads for other errors", async () => {
+    expect(await kb.explainNotFound(notFound, async () => Promise.reject(new TypeError("Failed to fetch")))).toBe(notFound);
+    const conflict = new ApiError(409, { error: { code: "conflict", message: "Already answered." } });
+    const stillListed = vi.fn(async () => true);
+    expect(await kb.explainNotFound(conflict, stillListed)).toBe(conflict);
+    expect(stillListed).not.toHaveBeenCalled();
+  });
+});

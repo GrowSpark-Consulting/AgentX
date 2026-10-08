@@ -15,7 +15,7 @@ export function StepLive({ s }: { s: OnboardingState }) {
   const trialSummary = s.trial
     ? `${s.trial.trialDays} ${s.trial.trialDays === 1 ? "day" : "days"}` +
       (s.trial.credits === null ? "" : ` · ${s.trial.credits} credits`)
-    : "7 days · 150 credits";
+    : "7 days · 300 credits";
 
   return (
     <>

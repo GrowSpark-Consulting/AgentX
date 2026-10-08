@@ -115,6 +115,86 @@ test.describe("Inbox", () => {
     await expect(page.getByText("A team member is replying.")).toBeVisible();
   });
 
+  test("shows each kind of inbound WhatsApp message, without downloading anything", async ({ page }) => {
+    await mockRealtime(page);
+    await openInbox(page);
+    await row(page, /Priya S/).click();
+    const log = chatLog(page);
+    const bubble = (kind: string) => log.locator(`[data-kind="${kind}"]`);
+
+    // Text, before and after, is unchanged.
+    await expect(log.getByText("Hi, OMR 2BHK price enna?")).toBeVisible();
+    await expect(log.getByText("Hi Priya! 2BHKs on OMR start from ₹62 L.")).toBeVisible();
+
+    const images = bubble("image");
+    await expect(images).toHaveCount(2);
+    await expect(images.nth(0)).toContainText("IMG");
+    await expect(images.nth(0)).toContainText("Photo");
+    await expect(images.nth(0)).toContainText("Can't be shown here yet");
+    await expect(images.nth(0)).toContainText("This one, near the lake?");
+    await expect(images.nth(1)).toContainText("Photo");
+    await expect(images.nth(1)).not.toContainText("lake");
+
+    await expect(bubble("document")).toContainText("PDF");
+    await expect(bubble("document")).toContainText("Document");
+    await expect(bubble("document")).toContainText("Can't be opened here yet");
+    await expect(bubble("document")).toContainText("My salary slip");
+
+    await expect(bubble("audio")).toContainText("Voice message");
+    await expect(bubble("audio")).toContainText("Can't be played here yet");
+
+    await expect(bubble("location")).toContainText("Phoenix Marketcity Velachery Main Road, Chennai");
+    await expect(bubble("location")).toContainText("12.9791, 80.2209");
+    await expect(bubble("location")).not.toContainText("12.9791,80.2209");
+
+    await expect(bubble("unsupported")).toHaveText(/Message type not supported \(sticker\)/);
+    await expect(bubble("interactive")).toContainText("Book a site visit");
+
+    // All from the customer, on the left; no image, player or link to a file that wasn't downloaded.
+    for (const kind of ["image", "document", "audio", "location", "unsupported", "interactive"]) {
+      for (const b of await bubble(kind).all()) {
+        await expect(b).toHaveAttribute("data-sender", "customer");
+        await expect(b).toHaveCSS("align-self", "flex-start");
+      }
+    }
+    await expect(log.locator("img, audio, video, a")).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+
+    // Both reads ask for kind and meta.
+    const rest = await (await page.request.get(`${MOCK_SUPABASE_URL}/__mock/rest-log?email=inbox@test.local`)).json();
+    const selects = (rest as { table: string; query: string }[])
+      .filter((r) => r.table === "conversations" || r.table === "messages")
+      .map((r) => new URLSearchParams(r.query).get("select") ?? "");
+    expect(selects.length).toBeGreaterThan(0);
+    for (const s of selects) expect(s).toMatch(/\bkind\b[\s\S]*\bmeta\b/);
+  });
+
+  test("a live sticker or voice message shows the same way in the chat and the list", async ({ page }) => {
+    const realtime = await mockRealtime(page);
+    await openInbox(page);
+    await row(page, /Lakshmi V/).click();
+    await expect(chatLog(page)).toContainText("Visit ku varen");
+    await expect.poll(() => realtime.joins.length).toBe(1);
+
+    const base = {
+      tenant_id: INBOX_TENANT, conversation_id: cid(3), direction: "in", sender: "customer", template_name: null,
+      delivery_status: null, created_at: new Date().toISOString(),
+    };
+    realtime.push("messages", "INSERT", {
+      ...base, id: "41000000-0000-0000-0000-000000000911", kind: "audio", body: null, media: { id: "media-911", mime: "audio/ogg; codecs=opus" }, meta: {},
+    });
+    await expect(chatLog(page).locator('[data-kind="audio"]')).toContainText("Voice message");
+    realtime.push("messages", "INSERT", {
+      ...base, id: "41000000-0000-0000-0000-000000000912", kind: "unsupported", body: null, media: null, meta: { unsupportedType: "sticker" },
+      created_at: new Date(Date.now() + 1000).toISOString(),
+    });
+    await expect(chatLog(page).locator('[data-kind="unsupported"]')).toHaveText(/Message type not supported \(sticker\)/);
+
+    if (isMobile(page)) await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.locator(".app-inbox-row").first()).toContainText("Lakshmi V");
+    await expect(page.locator(".app-inbox-row").first()).toContainText("Message type not supported (sticker)");
+  });
+
   test("filters and search", async ({ page }) => {
     await mockRealtime(page);
     await openInbox(page);

@@ -134,7 +134,7 @@ export async function WhatsAppConnectionPanel({ tenantId, role, compact }: { ten
                       connectionId={c.id}
                       tenantId={tenantId}
                       displayPhone={c.display_phone}
-                      actions={visibleActions(c.status, role)}
+                      actions={visibleActions(c.status, role, c.method)}
                     />
                   ) : null}
                 </>

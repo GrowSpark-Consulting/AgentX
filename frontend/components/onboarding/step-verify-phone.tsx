@@ -16,7 +16,7 @@ export function StepVerifyPhone({
   return (
     <>
       <StepIntro title="Start your free trial">
-        7 days, 150 credits, no card. We’ll send a code to your WhatsApp.
+        7 days, 300 credits, no card. We’ll send a code to your WhatsApp.
       </StepIntro>
 
       <div>
