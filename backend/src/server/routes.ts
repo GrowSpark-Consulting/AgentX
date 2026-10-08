@@ -6,9 +6,10 @@ import { googleConnectUrl, handleGoogleCallback } from "../booking/google-calend
 import { sendTestMessage } from "../channels/whatsapp/test-message";
 import { handleWhatsAppWebhook } from "../channels/whatsapp/inbound";
 import { handleWhatsAppVerification } from "../channels/whatsapp/verify-challenge";
+import { deleteDocument, KB_UPLOAD_MAX_BODY_BYTES, uploadDocument } from "../kb/documents";
 import { resolveTenant } from "../lib/tenant";
 import { createTemplate } from "../notify/templates";
-import { authenticate, readJson, tenantRoute, type UserClientFactory } from "./auth";
+import { authenticate, readJson, requireTenant, tenantRoute, type UserClientFactory } from "./auth";
 
 // Every HTTP endpoint of the API. A route only parses the request and calls a backend service;
 // business logic stays in the modules it imports.
@@ -81,11 +82,25 @@ const testMessage = tenantRoute(({ supabase, context, body }) => sendTestMessage
 const googleConnect: RouteHandler = (request, deps, params) =>
   tenantRoute(({ context }) => googleConnectUrl(context, new URL(request.url).searchParams.get("resourceId")))(request, deps.userClient, params);
 
+// multipart: file (+ optional title) → 202 { id, title, sourceType, status: "processing", createdAt }. Owner or
+// admin. The body is a form, not JSON, so this reads it itself, after the caller and the business are known.
+const kbUpload: RouteHandler = async (request, deps) => {
+  const { context } = await requireTenant(request, deps.userClient);
+  return Response.json(await uploadDocument(context, request), { status: 202 });
+};
+// → 204. Owner or admin; an upload or imported document and its chunks (an FAQ has its own route).
+const kbDeleteDocument: RouteHandler = (request, deps, params) =>
+  tenantRoute(({ context }) => deleteDocument(context, params.id), { status: 204 })(request, deps.userClient, params);
+
 export const ROUTES: readonly Route[] = [
   { path: "/api/health", methods: { GET: health } },
   { path: "/api/templates", browser: true, methods: { POST: (request, deps) => templates(request, deps.userClient) } },
   { path: "/api/messages/test", browser: true, methods: { POST: (request, deps) => testMessage(request, deps.userClient) } },
   { path: "/api/onboarding/trial", browser: true, methods: { POST: startTrial } },
+  // 6 MB: room for a 5 MB file plus its multipart wrapping; the service checks the 5 MB itself, so a big file
+  // is a validation_failed with fields.file, and only a body over 6 MB is refused by the server (413).
+  { path: "/api/kb/documents", browser: true, maxBodyBytes: KB_UPLOAD_MAX_BODY_BYTES, methods: { POST: kbUpload } },
+  { path: "/api/kb/documents/:id", browser: true, methods: { DELETE: kbDeleteDocument } },
   { path: "/api/calendar/google/connect", browser: true, methods: { GET: googleConnect } },
   // Google sends the browser here after consent (no login: the signed state says who asked). Every answer
   // is a redirect back to the dashboard. The code and state are in the query string, which is never logged.
