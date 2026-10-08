@@ -1,6 +1,7 @@
 import { NonRetriableError } from "inngest";
 import { AppError } from "../lib/errors";
 import { chunkText } from "./chunk";
+import { EMBED_BATCH_SIZE, embedBatch, storeChunks } from "./embed-store";
 import { EmbeddingsError, embeddingsClient } from "./embeddings";
 import { KbUploadedData } from "./events";
 import { createKbStore, type KbStore } from "./store";
@@ -30,7 +31,7 @@ export interface IngestDeps {
 }
 
 /** Chunks per embed step. The provider takes more, but a step's answer is memoized, so it is kept small. */
-export const INGEST_BATCH_SIZE = 32;
+export const INGEST_BATCH_SIZE = EMBED_BATCH_SIZE;
 /** A document `processing` for longer than this never had a job finish it (the job's own limit is 15 minutes). */
 export const STALE_PROCESSING_MS = 30 * 60_000;
 export const STALE_PROCESSING_MESSAGE = "This file took too long to process. Upload it again.";
@@ -120,9 +121,7 @@ export async function runIngest(step: StepRunner, rawEvent: unknown, deps: Inges
       const slice = texts.slice(start, start + INGEST_BATCH_SIZE);
       const embedded = await step.run<Embedded>(`embed-${batch}`, async () => {
         try {
-          const result = await embed(slice);
-          if (result.length !== slice.length) throw new Error("embeddings answer has the wrong length"); // never saved against the wrong text
-          return { vectors: result };
+          return { vectors: await embedBatch(embed, slice) }; // refuses a wrong-length answer: never saved against the wrong text
         } catch (error) {
           if (isRejection(error)) return { fail: "embeddings_rejected" }; // a rejected key or input: not retried
           throw error; // an outage or rate limit: the step is retried, with Inngest's own spacing
@@ -136,9 +135,7 @@ export async function runIngest(step: StepRunner, rawEvent: unknown, deps: Inges
     }
 
     const stored = await step.run("store", async () => {
-      const result = await store.replaceChunks(tenantId, documentId, texts.map((content, i) => ({ content, embedding: vectors[i] })));
-      if (result === "stored") await store.setStatus(tenantId, documentId, "ready");
-      return result;
+      return storeChunks(store, tenantId, documentId, texts, vectors);
     });
     return stored === "stored" ? { status: "ready", chunks: texts.length } : { status: "skipped", reason: "document_gone" };
   } catch (error) {

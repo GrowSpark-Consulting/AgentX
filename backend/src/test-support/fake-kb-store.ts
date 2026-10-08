@@ -1,4 +1,5 @@
-import type { KbDocument, KbDocumentStatus, KbStore } from "../kb/store";
+import { AppError } from "../lib/errors";
+import type { Faq, KbDocument, KbDocumentStatus, KbStore, OpenGap } from "../kb/store";
 
 // An in-memory KbStore for tests. It enforces the same tenant filtering the real store does, so a service
 // that forgets to pass the tenant (or passes another one) shows up as a missing or untouched document.
@@ -13,12 +14,22 @@ export interface FakeDoc {
   error: string | null;
   createdAt: string;
 }
+export interface FakeGap {
+  id: string;
+  tenantId: string;
+  question: string;
+  askedCount: number;
+  status: "open" | "answered" | "dismissed";
+  lastAskedBy: string | null;
+  lastAskedAt: number;
+  answeredFaqId?: string;
+}
 export interface FakeChunk {
   content: string;
   embedding: number[];
 }
 
-export function fakeKbStore(seed: Partial<FakeDoc>[] = []) {
+export function fakeKbStore(seed: Partial<FakeDoc>[] = [], gapSeed: Partial<FakeGap>[] = []) {
   const docs = new Map<string, FakeDoc>();
   const chunks = new Map<string, FakeChunk[]>();
   const calls: string[] = [];
@@ -39,6 +50,23 @@ export function fakeKbStore(seed: Partial<FakeDoc>[] = []) {
     return doc;
   };
   seed.forEach(add);
+  const gaps = new Map<string, FakeGap>();
+  for (const g of gapSeed) {
+    const gap: FakeGap = {
+      id: g.id ?? `10000000-0000-0000-0000-${String(++state.counter).padStart(12, "0")}`,
+      tenantId: g.tenantId ?? "t-default",
+      question: g.question ?? "A question?",
+      askedCount: g.askedCount ?? 1,
+      status: g.status ?? "open",
+      lastAskedBy: g.lastAskedBy === undefined ? "Priya" : g.lastAskedBy,
+      lastAskedAt: g.lastAskedAt ?? 0,
+      answeredFaqId: g.answeredFaqId,
+    };
+    gaps.set(gap.id, gap);
+  }
+  const sameQuestion = (tenantId: string, q: string) =>
+    [...docs.values()].some((d) => d.tenantId === tenantId && d.sourceType === "manual" && d.title.trim().toLowerCase() === q.trim().toLowerCase());
+  const DUPLICATE = "You already have a question like this. Edit the existing one instead.";
 
   const mine = (tenantId: string, id: string) => {
     const doc = docs.get(id);
@@ -95,6 +123,75 @@ export function fakeKbStore(seed: Partial<FakeDoc>[] = []) {
       }
       return failed;
     },
+    async insertFaq(tenantId, { q, a }) {
+      calls.push("insertFaq");
+      maybeFail("insertFaq");
+      if (sameQuestion(tenantId, q)) throw new AppError("conflict", DUPLICATE);
+      const doc = add({ tenantId, title: q, body: a, sourceType: "manual", status: "processing" });
+      return { id: doc.id };
+    },
+    async findFailedFaq(tenantId, q): Promise<Faq | null> {
+      calls.push("findFailedFaq");
+      maybeFail("findFailedFaq");
+      const doc = [...docs.values()].find((d) => d.tenantId === tenantId && d.sourceType === "manual" && d.status === "failed" && d.title.toLowerCase() === q.toLowerCase());
+      return doc ? { id: doc.id, q: doc.title, a: doc.body ?? "", status: doc.status } : null;
+    },
+    async getFaq(tenantId, id): Promise<Faq | null> {
+      calls.push("getFaq");
+      maybeFail("getFaq");
+      const doc = mine(tenantId, id);
+      return doc && doc.sourceType === "manual" ? { id: doc.id, q: doc.title, a: doc.body ?? "", status: doc.status } : null;
+    },
+    async updateFaq(tenantId, id, { q, a }): Promise<Faq | null> {
+      calls.push("updateFaq");
+      maybeFail("updateFaq");
+      const doc = mine(tenantId, id);
+      if (!doc || doc.sourceType !== "manual") return null;
+      if (q !== undefined && q.trim().toLowerCase() !== doc.title.trim().toLowerCase() && sameQuestion(tenantId, q)) throw new AppError("conflict", DUPLICATE);
+      if (q !== undefined) doc.title = q;
+      if (a !== undefined) doc.body = a;
+      doc.status = "processing";
+      doc.error = null;
+      return { id: doc.id, q: doc.title, a: doc.body ?? "", status: doc.status };
+    },
+    async deleteFaq(tenantId, id) {
+      calls.push("deleteFaq");
+      maybeFail("deleteFaq");
+      const doc = mine(tenantId, id);
+      if (!doc || doc.sourceType !== "manual") return false;
+      docs.delete(id);
+      chunks.delete(id);
+      return true;
+    },
+    async listOpenGaps(tenantId): Promise<OpenGap[]> {
+      calls.push("listOpenGaps");
+      maybeFail("listOpenGaps");
+      return [...gaps.values()]
+        .filter((g) => g.tenantId === tenantId && g.status === "open")
+        .sort((x, y) => y.askedCount - x.askedCount || y.lastAskedAt - x.lastAskedAt)
+        .map((g) => ({ id: g.id, question: g.question, askedCount: g.askedCount, lastAskedBy: g.lastAskedBy }));
+    },
+    async dismissGap(tenantId, id) {
+      calls.push("dismissGap");
+      maybeFail("dismissGap");
+      const gap = gaps.get(id);
+      if (!gap || gap.tenantId !== tenantId || gap.status === "answered") return false;
+      gap.status = "dismissed";
+      return true;
+    },
+    async answerGap(tenantId, gapId, { answer }) {
+      calls.push("answerGap");
+      maybeFail("answerGap");
+      const gap = gaps.get(gapId);
+      if (!gap || gap.tenantId !== tenantId) throw new AppError("not_found", "That question was not found.");
+      if (gap.status === "answered") throw new AppError("conflict", "This question was already answered.");
+      if (!answer.trim() || answer.trim().length > 2000) throw new AppError("validation_failed", "Check the answer and try again.");
+      if (sameQuestion(tenantId, gap.question)) throw new AppError("conflict", DUPLICATE); // nothing changes: the gap stays open
+      const doc = add({ tenantId, title: gap.question, body: answer.trim(), sourceType: "manual", status: "processing" });
+      gap.status = "answered";
+      gap.answeredFaqId = doc.id;
+      return { faqId: doc.id, question: gap.question, answer: answer.trim() };
+    },
     async deleteDocument(tenantId, id) {
       calls.push("deleteDocument");
       maybeFail("deleteDocument");
@@ -106,5 +203,5 @@ export function fakeKbStore(seed: Partial<FakeDoc>[] = []) {
     },
   };
 
-  return { store, docs, chunks, calls, state, add };
+  return { store, docs, chunks, gaps, calls, state, add };
 }

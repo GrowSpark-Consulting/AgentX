@@ -530,6 +530,25 @@ answer_kb_gap(p_tenant_id, p_gap_id, p_answer, p_answered_by, p_question default
   `maxBodyBytes: 6 * 1024 * 1024` and checks the file itself: over `5 * 1024 * 1024` bytes (the
   frontend's `UPLOAD_MAX_BYTES`) is `validation_failed` with `fields.file`. A body over 6 MB is refused
   before the route runs: 413 `validation_failed`, readable by the frontend but without `fields`.
+- **FAQ and gap routes: built (9 Oct)**, `backend/src/kb/faqs.ts`, as the table above. Owner and admin write FAQs
+  (staff get `forbidden`); owner, admin and staff list, answer and dismiss gaps. A FAQ is embedded as one text, the
+  question then the answer, through the same embed-and-store functions the ingest job uses (`kb/embed-store.ts`). If
+  embedding fails the row stays as `failed` (not searchable) and the answer is `upstream_failed`; sending the same
+  question again (a POST) or a PATCH retries it (a POST of a question whose earlier save is `failed` reuses that row; one
+  whose FAQ is `ready` is a `conflict`). A failed `POST .../answer` leaves the gap answered and the FAQ `failed`:
+  retry with a PATCH on that FAQ. An edit makes the FAQ `processing` again until its new chunks are stored. Two saves
+  of one FAQ at once: after embedding, a save checks the FAQ still has the text it embedded and stores nothing if not
+  (the newer save stores its own), and a late failure only marks `failed` a FAQ that is still `processing`. The
+  `kb-sweep` job does not touch FAQs. A duplicate
+  question (`23505`) is `conflict`, as is answering an answered gap; a gap or FAQ of another business, an upload sent to
+  a FAQ route, and a malformed id are all `not_found`. `validation_failed` carries `fields.q` / `fields.a`. Dismiss
+  needs no body and also works on an already dismissed gap; an answered gap cannot be dismissed (`not_found`).
+  `GET /api/kb/gaps` returns the open gaps, most asked first and then most recent, at most 100; `lastAskedBy` is the
+  contact's name, else the number masked (`+9198xxxxxx21`), else `null` if the contact was deleted. **The gap key is
+  `normaliseQuestion`** (`kb/question.ts`): NFKC, lowercase, zero-width characters removed, every character that is not
+  a letter, combining sign or digit a space, spaces collapsed (Tamil and Hindi vowel signs are kept); an empty result
+  is not recorded. `asked_count` is business-wide and only feeds the dashboard's most-asked list; the `kb_gap` handoff
+  is two misses in a row in one conversation, tracked by the pipeline.
 - **Build order:** migration, then `backend/src/kb` and the embeddings client (mocked provider), then the
   router PR, then upload and the ingest job, then FAQ routes, then gaps. **FAQ routes and gaps may slip to
   Day 3.**

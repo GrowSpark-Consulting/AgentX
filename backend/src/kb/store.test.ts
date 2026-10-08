@@ -9,14 +9,20 @@ import { CHUNK_INSERT_BATCH, createKbStore } from "./store";
 
 const A = "e0000000-0000-0000-0000-00000000000a";
 const DOC = "e2000000-0000-0000-0000-0000000000a1";
+const FAQ_ID = "f0000000-0000-0000-0000-0000000000f2";
 
 type Answer = { data?: unknown; error?: { code?: string; message: string } | null; count?: number };
 interface Call {
   table: string;
-  op: "select" | "insert" | "update" | "delete";
+  op: "select" | "insert" | "update" | "delete" | "rpc";
+  /** rpc: the function and its arguments */
+  fn?: string;
+  args?: Record<string, unknown>;
+  order?: [string, boolean][];
+  limit?: number;
   payload?: unknown;
   returning?: string;
-  filters: [string, "eq" | "neq" | "lt", unknown][];
+  filters: [string, "eq" | "neq" | "lt" | "in" | "ilike", unknown][];
   terminal?: string;
   /** The signal the query was given, if any: the store must pass one so a call that gave up can be cancelled. */
   signal?: AbortSignal;
@@ -26,6 +32,17 @@ interface Call {
 function fakeDb(answer: (call: Call) => Answer | Promise<Answer>) {
   const calls: Call[] = [];
   const db = {
+    rpc(fn: string, args: Record<string, unknown>) {
+      const call: Call = { table: "", op: "rpc", filters: [], fn, args };
+      const builder: Record<string, unknown> = {
+        abortSignal: (signal: AbortSignal) => ((call.signal = signal), builder),
+        then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => {
+          calls.push(call);
+          return Promise.resolve(answer(call)).then((a) => ({ data: a.data ?? null, error: a.error ?? null, count: a.count ?? null }), reject).then(resolve, reject);
+        },
+      };
+      return builder;
+    },
     from(table: string) {
       const call: Call = { table, op: "select", filters: [] };
       let opSet = false;
@@ -45,6 +62,10 @@ function fakeDb(answer: (call: Call) => Answer | Promise<Answer>) {
         delete: () => (setOp("delete"), builder),
         eq: (column: string, value: unknown) => (call.filters.push([column, "eq", value]), builder),
         neq: (column: string, value: unknown) => (call.filters.push([column, "neq", value]), builder),
+        in: (column: string, value: unknown) => (call.filters.push([column, "in", value]), builder),
+        ilike: (column: string, value: unknown) => (call.filters.push([column, "ilike", value]), builder),
+        order: (column: string, options?: { ascending?: boolean }) => ((call.order = [...(call.order ?? []), [column, options?.ascending ?? true]]), builder),
+        limit: (n: number) => ((call.limit = n), builder),
         single: () => ((call.terminal = "single"), builder),
         maybeSingle: () => ((call.terminal = "maybeSingle"), builder),
         then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => {
@@ -226,6 +247,7 @@ describe("failStaleProcessing", () => {
     expect(await createKbStore(db).failStaleProcessing(30 * 60_000, "Took too long")).toBe(2);
     expect(calls[0]).toMatchObject({ table: "kb_documents", op: "update", payload: { status: "failed", error: "Took too long" }, returning: "id" });
     expect(filterOf(calls[0], "status")).toEqual(["status", "eq", "processing"]);
+    expect(filterOf(calls[0], "source_type")).toEqual(["source_type", "neq", "manual"]); // FAQs are embedded in their request: never swept
     const cutoff = Date.parse(String(filterOf(calls[0], "created_at")?.[2]));
     expect(cutoff).toBeLessThanOrEqual(before - 30 * 60_000 + 1000);
     expect(cutoff).toBeGreaterThan(before - 30 * 60_000 - 5000);
@@ -266,5 +288,145 @@ describe("a call that never answers", () => {
     expect(error).toBeInstanceOf(AppError);
     expect(error.code).toBe("upstream_failed");
     expect(String(vi.mocked(console.error).mock.calls.at(-1)?.[0])).toMatch(/timed out/);
+  });
+});
+
+describe("FAQs", () => {
+  const FAQ = "f0000000-0000-0000-0000-0000000000f1";
+  const faqRow = { id: FAQ, title: "Is there parking?", body: "Yes", status: "ready" };
+
+  it("insertFaq makes a manual, processing document for the business", async () => {
+    const { db, calls } = fakeDb(() => ({ data: { id: FAQ, created_at: "2026-10-09T10:00:00+00:00" } }));
+    expect(await createKbStore(db).insertFaq(A, { q: "Is there parking?", a: "Yes" })).toEqual({ id: FAQ });
+    expect(calls[0]).toMatchObject({ table: "kb_documents", op: "insert", payload: { tenant_id: A, source_type: "manual", title: "Is there parking?", body: "Yes", status: "processing" } });
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("insertFaq answers conflict for a question the business already has (23505), in fixed words", async () => {
+    const { db } = fakeDb(() => ({ error: { code: "23505", message: 'duplicate key value violates "kb_documents_faq_question_idx" (Is there parking?)' } }));
+    const error = (await createKbStore(db).insertFaq(A, { q: "Is there parking?", a: "Yes" }).catch((e: unknown) => e)) as AppError;
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.code).toBe("conflict");
+    expect(error.message).not.toMatch(/duplicate|idx|parking/i);
+  });
+
+  it("insertFaq fails with fixed upstream_failed words for any other error", async () => {
+    const { db } = fakeDb(() => ({ error: { code: "XX000", message: "secret" } }));
+    const error = (await createKbStore(db).insertFaq(A, { q: "Q", a: "A" }).catch((e: unknown) => e)) as AppError;
+    expect(error.code).toBe("upstream_failed");
+    expect(error.message).not.toMatch(/secret/);
+  });
+
+  it("findFailedFaq finds a failed FAQ of the business by its question, ignoring case, with LIKE characters escaped", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ ...faqRow, status: "failed" }] }));
+    expect(await createKbStore(db).findFailedFaq(A, "100% sure_thing?")).toEqual({ id: FAQ, q: "Is there parking?", a: "Yes", status: "failed" });
+    expectTenantFilter(calls[0]);
+    expect(filterOf(calls[0], "status")).toEqual(["status", "eq", "failed"]);
+    expect(filterOf(calls[0], "source_type")).toEqual(["source_type", "eq", "manual"]);
+    expect(calls[0].filters).toContainEqual(["title", "ilike", "100\\% sure\\_thing?"]);
+    expect(await createKbStore(fakeDb(() => ({ data: [] })).db).findFailedFaq(A, "x")).toBeNull();
+  });
+
+  it("getFaq reads one manual document of the business", async () => {
+    const { db, calls } = fakeDb(() => ({ data: faqRow }));
+    expect(await createKbStore(db).getFaq(A, FAQ)).toEqual({ id: FAQ, q: "Is there parking?", a: "Yes", status: "ready" });
+    expectTenantFilter(calls[0]);
+    expect(filterOf(calls[0], "id")).toEqual(["id", "eq", FAQ]);
+    expect(filterOf(calls[0], "source_type")).toEqual(["source_type", "eq", "manual"]);
+  });
+
+  it("getFaq answers null when there is none", async () => {
+    expect(await createKbStore(fakeDb(() => ({ data: null })).db).getFaq(A, FAQ)).toBeNull();
+  });
+
+  it("updateFaq writes only what changed, makes the FAQ processing again, and filters by business, id and manual", async () => {
+    const { db, calls } = fakeDb(() => ({ data: { ...faqRow, body: "No", status: "processing" } }));
+    expect(await createKbStore(db).updateFaq(A, FAQ, { a: "No" })).toEqual({ id: FAQ, q: "Is there parking?", a: "No", status: "processing" });
+    expect(calls[0]).toMatchObject({ op: "update", payload: { body: "No", status: "processing", error: null } });
+    expect(calls[0].payload).not.toHaveProperty("title");
+    expectTenantFilter(calls[0]);
+    expect(filterOf(calls[0], "id")).toEqual(["id", "eq", FAQ]);
+    expect(filterOf(calls[0], "source_type")).toEqual(["source_type", "eq", "manual"]);
+  });
+
+  it("updateFaq answers null for no such FAQ, and conflict for a question another FAQ has", async () => {
+    expect(await createKbStore(fakeDb(() => ({ data: null })).db).updateFaq(A, FAQ, { q: "x" })).toBeNull();
+    const { db } = fakeDb(() => ({ error: { code: "23505", message: "dup" } }));
+    expect(((await createKbStore(db).updateFaq(A, FAQ, { q: "x" }).catch((e: unknown) => e)) as AppError).code).toBe("conflict");
+  });
+
+  it("deleteFaq deletes only a manual document of the business, and says whether there was one", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: FAQ }] }));
+    expect(await createKbStore(db).deleteFaq(A, FAQ)).toBe(true);
+    expect(calls[0].op).toBe("delete");
+    expectTenantFilter(calls[0]);
+    expect(filterOf(calls[0], "source_type")).toEqual(["source_type", "eq", "manual"]);
+    expect(await createKbStore(fakeDb(() => ({ data: [] })).db).deleteFaq(A, FAQ)).toBe(false);
+  });
+});
+
+describe("gaps", () => {
+  const GAP = "a0000000-0000-0000-0000-0000000000a1";
+  const USER = "00000000-0000-0000-0000-0000000000a1";
+
+  it("listOpenGaps reads the business's open gaps, most asked first, at most 100", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [] }));
+    expect(await createKbStore(db).listOpenGaps(A)).toEqual([]);
+    expectTenantFilter(calls[0]);
+    expect(filterOf(calls[0], "status")).toEqual(["status", "eq", "open"]);
+    expect(calls[0].order).toEqual([["asked_count", false], ["last_asked_at", false], ["id", true]]);
+    expect(calls[0].limit).toBe(100);
+    expect(calls[0].returning).toContain("contacts!last_contact_id");
+  });
+
+  it("listOpenGaps shows the contact's name, else a masked number, else null; never a full number", async () => {
+    const { db } = fakeDb(() => ({
+      data: [
+        { id: "g1", question: "Q1", asked_count: 4, contact: { name: "Priya", phone: "+919812345621" } },
+        { id: "g2", question: "Q2", asked_count: 2, contact: { name: null, phone: "+919812345621" } },
+        { id: "g3", question: "Q3", asked_count: 2, contact: { name: "   ", phone: "+919812345621" } },
+        { id: "g4", question: "Q4", asked_count: 1, contact: null },
+      ],
+    }));
+    const gaps = await createKbStore(db).listOpenGaps(A);
+    expect(gaps.map((g) => g.lastAskedBy)).toEqual(["Priya", "+9198xxxxxx21", "+9198xxxxxx21", null]);
+    expect(JSON.stringify(gaps)).not.toContain("919812345621");
+    expect(gaps[0]).toEqual({ id: "g1", question: "Q1", askedCount: 4, lastAskedBy: "Priya" });
+  });
+
+  it("listOpenGaps refuses a row that is not a gap", async () => {
+    const { db } = fakeDb(() => ({ data: [{ id: "g1", question: "Q", asked_count: 0, contact: null }] }));
+    await expect(createKbStore(db).listOpenGaps(A)).rejects.toThrow();
+  });
+
+  it("dismissGap updates only this business's open or dismissed gap, never an answered one", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: GAP }] }));
+    expect(await createKbStore(db).dismissGap(A, GAP)).toBe(true);
+    expect(calls[0]).toMatchObject({ table: "kb_gaps", op: "update", payload: { status: "dismissed" } });
+    expectTenantFilter(calls[0]);
+    expect(filterOf(calls[0], "id")).toEqual(["id", "eq", GAP]);
+    expect(filterOf(calls[0], "status")).toEqual(["status", "in", ["open", "dismissed"]]);
+    expect(await createKbStore(fakeDb(() => ({ data: [] })).db).dismissGap(A, GAP)).toBe(false);
+  });
+
+  it("answerGap calls answer_kb_gap for this business with the caller's user id", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ faq_id: FAQ_ID, question: "Home visits?", answer: "Yes" }] }));
+    expect(await createKbStore(db).answerGap(A, GAP, { answer: "Yes", answeredBy: USER })).toEqual({ faqId: FAQ_ID, question: "Home visits?", answer: "Yes" });
+    expect(calls[0]).toMatchObject({ op: "rpc", fn: "answer_kb_gap", args: { p_tenant_id: A, p_gap_id: GAP, p_answer: "Yes", p_answered_by: USER } });
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each([
+    ["PA404", "not_found"],
+    ["PA409", "conflict"],
+    ["23505", "conflict"],
+    ["P0001", "validation_failed"],
+    ["57014", "upstream_failed"],
+  ])("answerGap maps the database's %s to %s, in fixed words", async (code, expected) => {
+    const { db } = fakeDb(() => ({ error: { code, message: "answer_kb_gap: secret detail from the database" } }));
+    const error = (await createKbStore(db).answerGap(A, GAP, { answer: "Yes", answeredBy: USER }).catch((e: unknown) => e)) as AppError;
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.code).toBe(expected);
+    expect(error.message).not.toMatch(/secret|answer_kb_gap/);
   });
 });
