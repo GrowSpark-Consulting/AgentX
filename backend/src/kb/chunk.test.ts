@@ -54,6 +54,34 @@ describe("chunkText", () => {
     for (const c of chunks) expect(c).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 
+  it("does not start a chunk with half an emoji after stepping back for the overlap", () => {
+    // The first cut falls after the line break at 600, so the overlap step-back (150) lands on 451:
+    // an odd offset inside a run of two-unit emoji, i.e. on a low surrogate.
+    const text = `${"😀".repeat(300)}\n${"tail ".repeat(100)}`;
+    const chunks = chunkText(text);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      expect(c).not.toMatch(/^[\uDC00-\uDFFF]/);
+      expect(c).not.toMatch(/[\uD800-\uDBFF]$/);
+      expect(c).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    }
+    // The overlap is kept: the second chunk still begins with an emoji from the first.
+    expect(chunks[1].startsWith("😀")).toBe(true);
+  });
+
+  it("does not start a chunk on half an emoji, whatever the length of the emoji run before the break", () => {
+    // Each run ends in a line break, so the cut falls after it and the overlap step-back (150, an even
+    // number) lands on an odd offset inside the run: a low surrogate unless the chunker corrects it.
+    for (let emoji = 260; emoji <= 330; emoji += 7) {
+      for (const tail of ["tail ".repeat(120), "x".repeat(300), "😀 ".repeat(200)]) {
+        for (const c of chunkText(`${"😀".repeat(emoji)}\n${tail}`)) {
+          expect(c).not.toMatch(/^[\uDC00-\uDFFF]/);
+          expect(c).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+        }
+      }
+    }
+  });
+
   it("handles Tamil text", () => {
     const text = "வணக்கம் ".repeat(400);
     const chunks = chunkText(text);

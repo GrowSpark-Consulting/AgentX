@@ -5,6 +5,7 @@ vi.stubEnv("NEXT_PUBLIC_APP_URL", "http://localhost:3000");
 vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "http://127.0.0.1:54321");
 vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "synthetic-anon-key");
 vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "synthetic-service-key");
+vi.stubEnv("EMBEDDINGS_API_KEY", "synthetic-embeddings-key");
 vi.stubEnv("META_WEBHOOK_VERIFY_TOKEN", "synthetic-route-token");
 
 const { createApp } = await import("./app");

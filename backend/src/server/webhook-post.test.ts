@@ -14,6 +14,7 @@ vi.stubEnv("NEXT_PUBLIC_APP_URL", "http://localhost:3000");
 vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "http://127.0.0.1:54321");
 vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "synthetic-anon-key");
 vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "synthetic-service-key");
+vi.stubEnv("EMBEDDINGS_API_KEY", "synthetic-embeddings-key");
 vi.stubEnv("META_WEBHOOK_VERIFY_TOKEN", "synthetic-route-token");
 vi.stubEnv("META_APP_SECRET", SECRET);
 
@@ -278,6 +279,35 @@ describe("storing a message", () => {
     expect(db.state.conversations).toHaveLength(2);
     expect(send).toHaveBeenCalledTimes(2);
     expect(db.state.messages.find((m) => m.providerMsgId === "wamid.SYNTHETIC_OUT_0003")?.deliveryStatus).toBe("read");
+  });
+
+  it("removes NUL and control characters from the text and the contact name, so the insert cannot fail and Meta does not resend", async () => {
+    const raw = edit(fixture("synthetic-text-message"), (b) => {
+      const value = b.entry[0].changes[0].value as unknown as { messages: { text: { body: string } }[]; contacts: { profile: { name: string } }[] };
+      value.messages[0].text.body = "Hello\u0000 there\u0001, 9am?\tok\uD83D";
+      value.contacts[0].profile.name = "Test\u0000 Customer";
+    });
+    const res = await post(raw);
+    expect(res.status).toBe(200);
+    expect(db.state.messages[0].body).toBe("Hello there, 9am?\tok");
+    expect(db.state.contacts[0].name).toBe("Test Customer");
+  });
+
+  it("cleans the button id and the media id and type too, since they are stored as JSON", async () => {
+    const button = edit(fixture("synthetic-button-reply"), (b) => {
+      const message = b.entry[0].changes[0].value.messages[0] as unknown as { interactive: { button_reply: { id: string } } };
+      message.interactive.button_reply.id = "slot\u0000_1";
+    });
+    expect((await post(button)).status).toBe(200);
+    expect(db.state.messages[0].meta).toMatchObject({ buttonId: "slot_1" });
+
+    const image = edit(fixture("synthetic-image-message"), (b) => {
+      const message = b.entry[0].changes[0].value.messages[0] as unknown as { image: { id: string; mime_type: string } };
+      message.image.id = "media\u0000-1";
+      message.image.mime_type = "image/\u0001jpeg";
+    });
+    expect((await post(image)).status).toBe(200);
+    expect(db.state.messages[1].media).toEqual({ id: "media-1", mime: "image/jpeg" });
   });
 
   it("stores a button reply as interactive with the button id in meta", async () => {

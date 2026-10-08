@@ -162,7 +162,7 @@ finishes requests in flight before exiting.
 Variables per environment (names in `backend/.env.example`): `NEXT_PUBLIC_APP_URL` (the frontend's
 origin for this environment; always allowed by CORS), `CORS_ALLOWED_ORIGINS` (other exact origins,
 comma-separated, never `*`), `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-`SUPABASE_SERVICE_ROLE_KEY`, `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ENCRYPTION_KEY`,
+`SUPABASE_SERVICE_ROLE_KEY`, `EMBEDDINGS_API_KEY` (required), `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ENCRYPTION_KEY`,
 `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_SERVE_ORIGIN`, and the rest of the file as
 modules land. Optional: `RAILPACK_NODE_VERSION=22` to build on the same Node as CI (`.nvmrc`).
 
