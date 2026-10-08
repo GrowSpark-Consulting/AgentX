@@ -33,6 +33,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0014_connection_method_platform` | `whatsapp_connections.method` may be `platform` (our own test and demo numbers; Dev 1, #51) |
 | `0015_booking_engine` | `services.buffer_min`/`min_notice_min`, booking status `expired`, end after start, slot kinds need a resource, `hold_slot`, `confirm_booking`, `reschedule_booking`, `cancel_booking`, `release_expired_holds` (service_role only, section 4) |
 | `0016_platform_admins_and_link_tokens` | `platform_admins` (server only), `connect_links.token` → `token_hash` (SHA-256 hex; existing links rehashed) |
+| `0017_google_calendar` | `google_calendar_connections`: one per resource, refresh token encrypted, `status connected \| needs_reconnect`; members read everything but the token (section 6) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -331,6 +332,24 @@ other origins get no CORS headers.
 - The test route sends through `notify.send`: `outside_window` (409) when the number has not
   messaged in 24 hours, `conflict` (409) when it opted out, and `notify.send`'s own codes otherwise.
   Both routes answer `not_available` until Dev 1's adapter is registered.
+
+**Google Calendar per staff member (built, Day 3; `backend/src/booking/google-calendar.ts`):**
+
+- `GET /api/calendar/google/connect?resourceId=…` → `{ url }`: Google's consent link (offline access,
+  scopes `calendar.events`, `calendar.freebusy`, `email`). Owner or admin; a resource of the business. The
+  dashboard sends the browser to `url`. `not_available` (501) until `GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` are set on Railway.
+- `GET /api/calendar/google/callback`: Google sends the browser here. No login: a 10-minute state signed
+  with a key derived from `ENCRYPTION_KEY` says who asked, for which business and resource. It stores
+  the refresh token encrypted, sets `resources.google_calendar_id`, writes `google_calendar.connected` to
+  `audit_logs`, and always answers with a redirect to
+  `${NEXT_PUBLIC_APP_URL}/dashboard?google_calendar=connected|denied|failed|not_available&resource=<id>`.
+- The dashboard reads `google_calendar_connections` (`google_email`, `status`, `last_error`) under RLS. On
+  `needs_reconnect` (Google refused the saved token: access revoked, or the 7-day expiry while the consent
+  screen is in Testing), show "Reconnect", which is the same connect link.
+- `getGoogleAccessToken(tenantId, resourceId)` gives the calendar sync (Day 4) a fresh access token, or
+  null when there is no working connection. Until a resource is connected, the bookings table stays the
+  source of truth.
 
 **Read routes (Proposed, screen-contracts Q1).** Entitlements and balances are computed on the
 server, so these are routes, not SQL views:

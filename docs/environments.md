@@ -126,6 +126,22 @@ Marketplace integration** (remove it if it is installed): it would try to sync t
 - Smoke test after any new environment: send `system/ping` from the Inngest UI; a
   `system-ping` run should show status Completed.
 
+## Google Calendar
+
+Staff members connect their own Google Calendar from the dashboard (one connection per resource;
+`docs/contracts.md` section 6). One-time setup, per Google Cloud project (Raja owns the account):
+
+1. console.cloud.google.com → new project → **APIs & Services → Library** → enable **Google Calendar API**.
+2. **OAuth consent screen**: External, app name and support email, scopes `openid`, `email`,
+   `.../auth/calendar.events`, `.../auth/calendar.freebusy`. Leave it in **Testing** and add the testers'
+   Google accounts as test users. In Testing, Google ends access after 7 days; the connection then shows
+   "Reconnect". Publishing needs Google's verification (later).
+3. **Credentials → Create OAuth client ID** → Web application. Authorized redirect URIs:
+   `https://<API host>/api/calendar/google/callback` (staging: the Railway API origin) and
+   `http://localhost:4000/api/calendar/google/callback` for local work.
+4. Railway (API service): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` set to exactly
+   the redirect URI registered above. Until all three are set, connect answers `not_available`.
+
 ## Vercel (frontend)
 
 One project, `pakka-agent`, in the team's Vercel account (Pro: Hobby is for non-commercial use).

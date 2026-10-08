@@ -267,6 +267,24 @@ describe("tenant authorization", () => {
   });
 });
 
+describe("GET /api/calendar/google/connect", () => {
+  it("is a browser route for signed-in members only", async () => {
+    const res = await app(new Request("http://localhost:4000/api/calendar/google/connect?resourceId=x", { headers: { origin: FRONTEND } }));
+    expect(res.status).toBe(401);
+    expect(res.headers.get("access-control-allow-origin")).toBe(FRONTEND);
+    const pre = await app(
+      new Request("http://localhost:4000/api/calendar/google/connect", { method: "OPTIONS", headers: { origin: FRONTEND, "access-control-request-method": "GET" } }),
+    );
+    expect(pre.status).toBe(204);
+  });
+
+  it("refuses staff before anything else", async () => {
+    const res = await app(new Request("http://localhost:4000/api/calendar/google/connect?resourceId=x", { headers: as("staff.token.sig", { origin: FRONTEND }) }));
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe("forbidden");
+  });
+});
+
 describe("POST /api/onboarding/trial", () => {
   beforeEach(() => {
     createTrialTenant.mockReset().mockResolvedValue({

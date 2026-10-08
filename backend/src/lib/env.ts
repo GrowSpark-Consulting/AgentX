@@ -72,6 +72,8 @@ const serverEnvSchema = z.object({
 
   GOOGLE_CLIENT_ID: secret.optional(),
   GOOGLE_CLIENT_SECRET: secret.optional(),
+  // Exactly as registered in the Google Cloud OAuth client: <API origin>/api/calendar/google/callback.
+  GOOGLE_REDIRECT_URI: z.url({ protocol: /^https?$/ }).optional(),
 
   RAZORPAY_KEY_ID: secret.optional(),
   RAZORPAY_KEY_SECRET: secret.optional(),
