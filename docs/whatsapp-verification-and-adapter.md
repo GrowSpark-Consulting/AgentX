@@ -107,7 +107,7 @@ Meta's own text is never passed on, and `meta` holds integers only.
 1. Can `notify.send` pass the error code and the `retryable` flag through? **Yes, built.** A `failed` outcome
    now keeps the sender's code (`outside_window`, `rate_limited`, `whatsapp_not_connected`, `validation_failed`,
    `upstream_failed`) and always carries `retryable` and `outcomeUnknown`.
-2. Refund, or hold for reconciliation, after a timeout? **Hold is the agreed direction, but it waits for Raja**
+2. Refund, or hold for reconciliation, after a timeout? **Dev 2 proposes holding, but it waits for Raja**
    because it changes billing ([contracts.md](contracts.md), decision 16). Holding also needs a way to learn the
    outcome later, such as Meta's status webhook. Until then `notify.send` refunds as before and reports
    `outcomeUnknown: true`, so no caller sends the message again.
