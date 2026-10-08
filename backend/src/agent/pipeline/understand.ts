@@ -176,7 +176,11 @@ export async function understandTurn(step: StepRunner, turn: TurnContext, deps: 
         if (!(error instanceof LlmError)) throw error;
         if (error.code === "refusal") return fail("model_declined");
         if (error.code === "rejected" || error.code === "invalid_request") throw new NonRetriableError("The language model refused the request."); // our bug: not retried
-        if (error.code === "aborted") throw error; // the turn's deadline: the step is retried under a new one
+        if (error.code === "aborted") {
+          // The turn's time is up: say so (the reply step sends the safe line); a retry would only be aborted again.
+          if (deps.signal?.aborted) return fail("model_unavailable");
+          throw error;
+        }
         if (error.retryable) return fail("model_unavailable");
         // truncated or empty: ask once more, as it was
         if (attempt === 2) return fail("invalid_output");

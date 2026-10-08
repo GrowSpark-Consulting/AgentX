@@ -51,6 +51,7 @@ function fakeDb(answer: (call: Call) => Answer | Promise<Answer>) {
         gte: (c: string, v: unknown) => (call.filters.push([c, "gte", v]), builder),
         in: (c: string, v: unknown) => (call.filters.push([c, "in", v]), builder),
         not: (c: string, op: string, v: unknown) => (call.filters.push([c, `not.${op}`, v]), builder),
+        is: (c: string, v: unknown) => (call.filters.push([c, "is", v]), builder),
         order: (c: string, o?: { ascending?: boolean }) => ((call.order = [c, o?.ascending ?? true]), builder),
         limit: (n: number) => ((call.limit = n), builder),
         abortSignal: (signal: AbortSignal) => ((call.signal = signal), builder),
@@ -383,5 +384,87 @@ describe("saveAgentMeta and getAgentMeta", () => {
     expect(await createPipelineStore(fakeDb(read({ agent: { extraction: { intent: "question" } } })).db).getAgentMeta(T, CONV, MSG)).toEqual({ extraction: { intent: "question" } });
     expect(await createPipelineStore(fakeDb(read({})).db).getAgentMeta(T, CONV, MSG)).toBeNull();
     expect(await createPipelineStore(fakeDb(() => ({ data: null })).db).getAgentMeta(T, CONV, MSG)).toBeNull();
+  });
+});
+
+describe("getTenantReplyInfo", () => {
+  it("reads the business's name and agent settings by its own id", async () => {
+    const { db, calls } = fakeDb(() => ({ data: { name: "Skyline Homes", agent_settings: { persona: "Maya" } } }));
+    expect(await createPipelineStore(db).getTenantReplyInfo(T)).toEqual({ name: "Skyline Homes", agentSettings: { persona: "Maya" } });
+    expect(calls[0]).toMatchObject({ table: "tenants", terminal: "maybeSingle" });
+    expect(filter(calls[0], "id")).toEqual(["id", "eq", T]);
+  });
+
+  it("answers null when the business is gone", async () => {
+    expect(await createPipelineStore(fakeDb(() => ({ data: null })).db).getTenantReplyInfo(T)).toBeNull();
+  });
+});
+
+describe("getPreviousMisses", () => {
+  const rows = (...metas: unknown[]) => ({ data: metas.map((meta) => ({ meta })) });
+
+  it("reads the newest earlier customer messages of this chat, newest first, for this business", async () => {
+    const { db, calls } = fakeDb(() => rows({}));
+    await createPipelineStore(db).getPreviousMisses(T, CONV, "2026-10-08T10:00:00.000Z");
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
+    expect(filter(calls[0], "sender")).toEqual(["sender", "eq", "customer"]);
+    expect(filter(calls[0], "created_at")).toEqual(["created_at", "lt", "2026-10-08T10:00:00.000Z"]);
+    expect(calls[0].order).toEqual(["created_at", false]);
+    expect(calls[0].limit).toBe(20);
+  });
+
+  it("is the count the latest turn left, skipping messages no turn wrote on", async () => {
+    const { db } = fakeDb(() => rows({ buttonId: "x" }, { agent: { extraction: {} } }, { agent: { kbMisses: 1 } }, { agent: { kbMisses: 5 } }));
+    expect(await createPipelineStore(db).getPreviousMisses(T, CONV, "2026-10-08T10:00:00.000Z")).toBe(1);
+  });
+
+  it("is 0 for a chat with no earlier turn, and for a count that is not a whole number", async () => {
+    expect(await createPipelineStore(fakeDb(() => rows({}, null)).db).getPreviousMisses(T, CONV, "2026-10-08T10:00:00.000Z")).toBe(0);
+    expect(await createPipelineStore(fakeDb(() => rows({ agent: { kbMisses: -1 } }, { agent: { kbMisses: 1.5 } }, { agent: { kbMisses: "2" } })).db).getPreviousMisses(T, CONV, "2026-10-08T10:00:00.000Z")).toBe(0);
+    expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).getPreviousMisses(T, CONV, "2026-10-08T10:00:00.000Z")).toBe(0);
+  });
+});
+
+describe("recordKbGap", () => {
+  it("calls record_kb_gap for this business with the contact, no summary, and gives back the gap and its count", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ gap_id: "g1", asked_count: 3, status: "open", created: false }] }));
+    expect(await createPipelineStore(db).recordKbGap(T, { question: "Parking?", questionNorm: "parking", contactId: CONTACT })).toEqual({ gapId: "g1", askedCount: 3 });
+    expect(calls[0]).toMatchObject({ op: "rpc", fn: "record_kb_gap", args: { p_tenant_id: T, p_question: "Parking?", p_question_norm: "parking", p_summary: null, p_contact_id: CONTACT } });
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("is retried for a database that is down, and not for a refused input", async () => {
+    await expect(createPipelineStore(fakeDb(() => ({ error: { code: "08006", message: "x" } })).db).recordKbGap(T, { question: "q", questionNorm: "q", contactId: CONTACT })).rejects.toBeInstanceOf(AppError);
+    await expect(createPipelineStore(fakeDb(() => ({ error: { code: "P0001", message: "secret" } })).db).recordKbGap(T, { question: "q", questionNorm: "q", contactId: CONTACT })).rejects.toBeInstanceOf(NonRetriableError);
+  });
+});
+
+describe("openHandoff", () => {
+  it("gives back the chat's open handoff and makes none when there is one", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: "h1" }] }));
+    expect(await createPipelineStore(db).openHandoff(T, CONV, "kb_gap", "normal")).toEqual({ id: "h1", created: false });
+    expect(calls).toHaveLength(1);
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
+    expect(filter(calls[0], "resolved_at")).toEqual(["resolved_at", "is", null]);
+  });
+
+  it("opens one for this business and chat when there is none", async () => {
+    const { db, calls } = fakeDb((call) => (call.op === "insert" ? { data: { id: "h2" } } : { data: [] }));
+    expect(await createPipelineStore(db).openHandoff(T, CONV, "credits_exhausted", "high")).toEqual({ id: "h2", created: true });
+    expect(calls[1]).toMatchObject({ table: "handoffs", op: "insert", payload: { tenant_id: T, conversation_id: CONV, trigger: "credits_exhausted", priority: "high" }, terminal: "single" });
+  });
+});
+
+describe("setConversationMode", () => {
+  it("switches only a chat the AI has, for this business, and says whether it did", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: CONV }] }));
+    expect(await createPipelineStore(db).setConversationMode(T, CONV, "human")).toBe(true);
+    expect(calls[0]).toMatchObject({ table: "conversations", op: "update", payload: { mode: "human" } });
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "id")).toEqual(["id", "eq", CONV]);
+    expect(filter(calls[0], "mode")).toEqual(["mode", "eq", "ai"]);
+    expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).setConversationMode(T, CONV, "human")).toBe(false);
   });
 });

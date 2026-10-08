@@ -1,0 +1,343 @@
+import type { HandoffTrigger } from "@pakka/types";
+import { NonRetriableError } from "inngest";
+import { normaliseQuestion } from "../../kb/question";
+import type { AuditEntry } from "../../lib/audit";
+import { stripUnsafeCharacters } from "../../lib/text";
+import type { NotifyPayload, SendOutcome } from "../../notify/send";
+import type { LlmClient, LlmMessage } from "../llm/anthropic";
+import { LlmError } from "../llm/anthropic";
+import { buildReplyMessages, buildReplySystem, REPLY_PROMPT } from "../prompts/reply_v1";
+import { ANSWERED_ACTION } from "./events";
+import { fixedText, textLanguage } from "./fixed-texts";
+import { parseReplySettings, type ReplySettings } from "./persona";
+import { planReply, type Plan, type PlanInput, type ReplyPlan } from "./plan";
+import { checkReply } from "./postcheck";
+import type { PortOutcome, StaffAlertPort, SystemNoticePort } from "./ports";
+import type { StepRunner, TurnContext } from "./process-message";
+import type { HandoffPriority, PipelineStore } from "./store";
+import { turnClock } from "./turn-deadline";
+import type { UnderstandResult } from "./understand";
+
+// The message pipeline, step 7 and the send (docs/handover.md, module 2): turn what step 4 found into ONE reply, check
+// it, send it through notify.send, and record that the customer's messages were answered. Day 2's action is fixed
+// (answer from the knowledge base's facts, or a safe line); plan.ts decides which, for every way step 4 can end, and this
+// file carries it out.
+//
+// Steps (each a step.run; what a step returns is kept by Inngest, so only ids, flags and a case name, never text):
+//   plan     the table in plan.ts, and its two side effects: the question the knowledge base could not answer is
+//            recorded as a gap (once), and the chat's count of misses in a row is kept for the next turn.
+//   reply    write the reply (the strong model for an answer, fixed words for everything else; the post-check; one
+//            regeneration; then the safe fallback), look again at the chat's mode and the contact's opt-out, send it
+//            through notify.send, and write `message.answered` for every message of the turn IN THIS STEP: a crash
+//            between the send and the record would send the reply twice on retry.
+//   handoff  when the plan says a person must take over (after the reply went), or the business is out of credits: the
+//            handoffs row, the switch of the chat to `human`, the `handoff.opened` event, the alerts.
+//
+// Never two replies: a step that finds the last message answered does nothing; a send whose outcome is unknown is
+// treated as answered (the sender says it may have gone out); the answered rows are written with a few tries and a
+// failure there is logged, never thrown (throwing would retry the step and send again).
+
+export interface ReplyDeps {
+  store: PipelineStore;
+  llm: LlmClient;
+  /** notify.send (Dev 2). */
+  send: (tenantId: string, kind: "ai_reply", payload: NotifyPayload) => Promise<SendOutcome>;
+  /** writeAudit (Dev 2): the answered rows and the handoff row. */
+  audit: (entry: AuditEntry) => Promise<void>;
+  /** Inngest's send, for `handoff.opened`. */
+  sendEvent: (event: { id: string; name: string; data: Record<string, string> }) => Promise<unknown>;
+  systemNotice: SystemNoticePort;
+  staffAlert: StaffAlertPort;
+  now?: () => number;
+}
+
+export type NotSentReason = "no_conversation" | "not_ai_mode" | "opted_out" | "feature_off" | "outside_window" | "send_failed";
+export type ReplyResult =
+  | { status: "sent"; source: "model" | "fixed" }
+  | { status: "sent_unknown" } // the send's outcome is unknown: it may have gone out, so it is never sent again
+  | { status: "already_answered" }
+  | { status: "not_sent"; reason: NotSentReason }
+  | { status: "no_credits" };
+
+export interface HandoffSummary {
+  trigger: HandoffTrigger;
+  opened: boolean;
+  switched: boolean;
+  alert: PortOutcome["status"];
+  holding: PortOutcome["status"] | "not_needed";
+}
+
+export interface ReplyOutcome {
+  /** The table row (plan.ts) that decided what the customer got. */
+  case: string;
+  reply: ReplyResult;
+  handoff: HandoffSummary | null;
+}
+
+const TAG = "[pipeline]";
+const AUDIT_TRIES = 3;
+const CORRECTION =
+  "That reply cannot be sent. Use only the amounts, dates and times that are in <facts>, keep it under 600 characters and ask at most two questions. Write the reply again.";
+
+/** What the plan step tells the later steps: a case name and a handover, no text. */
+interface PlanSummary {
+  case: string;
+  deadlineExceeded: boolean;
+  handoff: { trigger: HandoffTrigger; priority: HandoffPriority } | null;
+}
+
+interface Loaded {
+  input: PlanInput;
+  agent: Record<string, unknown> | null;
+  settings: ReplySettings;
+  businessName: string | null;
+  lastAt: string;
+}
+
+async function loadPlanInput(turn: TurnContext, understood: UnderstandResult, deadlineExceeded: boolean, deps: ReplyDeps): Promise<Loaded> {
+  const { store } = deps;
+  const lastMessageId = turn.messageIds[turn.messageIds.length - 1];
+  const texts = await store.getBatchTexts(turn.tenantId, turn.conversationId, turn.messageIds);
+  const firstAt = texts[0]?.createdAt ?? new Date().toISOString();
+  const lastAt = texts[texts.length - 1]?.createdAt ?? firstAt;
+  const [agent, contact, info, previousMisses] = await Promise.all([
+    store.getAgentMeta(turn.tenantId, turn.conversationId, lastMessageId),
+    store.getContact(turn.tenantId, turn.contactId),
+    store.getTenantReplyInfo(turn.tenantId),
+    store.getPreviousMisses(turn.tenantId, turn.conversationId, firstAt),
+  ]);
+  const asked = (agent?.extraction as { question?: unknown } | undefined)?.question;
+  const settings = parseReplySettings(info?.agentSettings);
+  return {
+    agent,
+    settings,
+    businessName: info?.name ?? null,
+    lastAt,
+    input: { understood, question: typeof asked === "string" ? asked : null, contactLanguage: contact?.language ?? null, previousMisses, settings, deadlineExceeded },
+  };
+}
+
+/** Keeps something on the newest message's meta; a message that is not found is a bug, not retried. */
+async function keep(deps: ReplyDeps, turn: TurnContext, agent: Record<string, unknown>): Promise<void> {
+  const lastMessageId = turn.messageIds[turn.messageIds.length - 1];
+  const saved = await deps.store.saveAgentMeta(turn.tenantId, turn.conversationId, lastMessageId, { ...agent, at: new Date().toISOString() });
+  if (!saved) throw new NonRetriableError("The message was not found.");
+}
+
+export async function replyTurn(step: StepRunner, turn: TurnContext, understood: UnderstandResult, startedAt: number, deps: ReplyDeps): Promise<ReplyOutcome> {
+  const now = deps.now ?? Date.now;
+
+  const planned = await step.run<PlanSummary>("plan", async () => {
+    const clock = turnClock(startedAt, now());
+    const loaded = await loadPlanInput(turn, understood, clock.exceeded, deps);
+    const plan = planReply(loaded.input);
+    // A question the knowledge base could not answer is a gap: recorded once per turn (the marker is on the message,
+    // so a retried step does not count it twice).
+    if (plan.gap && loaded.agent?.gapRecorded !== true) {
+      const question = [...stripUnsafeCharacters(plan.gap.question).replace(/\s+/g, " ").trim()].slice(0, 300).join("");
+      const questionNorm = normaliseQuestion(question);
+      if (questionNorm) {
+        await deps.store.recordKbGap(turn.tenantId, { question, questionNorm, contactId: turn.contactId });
+        await keep(deps, turn, { gapRecorded: true });
+      }
+    }
+    await keep(deps, turn, { kbMisses: plan.kbMisses, planCase: plan.case });
+    return { case: plan.case, deadlineExceeded: clock.exceeded, handoff: plan.handoff ?? null };
+  });
+
+  const reply = await step.run<ReplyResult>("reply", () => sendReply(turn, understood, startedAt, planned, deps));
+
+  const trigger: { trigger: HandoffTrigger; priority: HandoffPriority } | null =
+    reply.status === "no_credits"
+      ? { trigger: "credits_exhausted", priority: "high" }
+      : planned.handoff && (reply.status === "sent" || reply.status === "sent_unknown" || reply.status === "already_answered")
+        ? planned.handoff
+        : null;
+  const handoff = trigger ? await step.run<HandoffSummary>("handoff", () => openHandoff(turn, trigger, deps)) : null;
+
+  return { case: planned.case, reply, handoff };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The reply
+
+/** The text to send for a plan: the model's answer after the post-check, or fixed words. Never throws for a model problem. */
+async function compose(plan: Plan, loaded: Loaded, turn: TurnContext, exceeded: boolean, signal: AbortSignal, deps: ReplyDeps): Promise<{ text: string; source: "model" | "fixed" }> {
+  const fixedPlan = (reply: ReplyPlan) => (reply.mode === "fixed" ? reply : null);
+  const fixedOf = fixedPlan(plan.reply);
+  if (fixedOf) return { text: fixedText(fixedOf.text, fixedOf.language), source: "fixed" };
+
+  const model = plan.reply as Extract<ReplyPlan, { mode: "model" }>;
+  const fallback = { text: fixedText("fallback", textLanguage(model.language, loaded.input.contactLanguage)), source: "fixed" as const };
+  if (exceeded) return fallback;
+
+  try {
+    if (!loaded.businessName) throw new Error("the business has no name");
+    const system = buildReplySystem({ businessName: loaded.businessName, persona: loaded.settings.persona, tone: loaded.settings.tone });
+    // The last 10 messages, ending with the customer's latest (they are all stored before the turn runs).
+    // Up to the turn's newest message and no further: a message that arrived after it belongs to the next turn.
+    const history = await deps.store.getHistory(turn.tenantId, turn.conversationId, new Date(Date.parse(loaded.lastAt) + 1).toISOString(), 10);
+    const first: LlmMessage[] = buildReplyMessages({
+      action: model.action,
+      facts: model.facts,
+      history: history.map((h) => ({ sender: h.sender, text: h.body })),
+      language: model.language ?? undefined,
+    });
+
+    let messages = first;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const result = await deps.llm.complete({ role: "reply", tenantId: turn.tenantId, conversationId: turn.conversationId, prompt: REPLY_PROMPT, system, messages, signal });
+      const text = stripUnsafeCharacters(result.text).trim();
+      const check = checkReply(text, model.facts);
+      if (check.ok) return { text, source: "model" };
+      // The kinds of problem only: never the reply or what it said.
+      console.error(`${TAG} a reply failed the post-check (${check.problems.join(", ")}; attempt ${attempt})`);
+      messages = [...first, { role: "assistant", content: text }, { role: "user", content: CORRECTION }];
+    }
+  } catch (error) {
+    // The model, its prompt or the history failed: the customer still gets an answer. The code only, never the words.
+    console.error(`${TAG} the reply could not be written (${error instanceof LlmError ? error.code : error instanceof Error ? error.name : "unknown"})`);
+  }
+  return fallback;
+}
+
+async function sendReply(turn: TurnContext, understood: UnderstandResult, startedAt: number, planned: PlanSummary, deps: ReplyDeps): Promise<ReplyResult> {
+  const { store } = deps;
+  const now = deps.now ?? Date.now;
+  const lastMessageId = turn.messageIds[turn.messageIds.length - 1];
+  const loaded = await loadPlanInput(turn, understood, planned.deadlineExceeded, deps);
+
+  // A retried step, or a repeated event: the last message has been answered, so nothing is sent again. Two signals:
+  // the audit row, and the marker the send leaves on the message's meta (if the audit could not be written, the marker
+  // still stops a second reply; then the missing rows are written now).
+  const markedSent = loaded.agent?.reply !== undefined && loaded.agent.reply !== null;
+  const answered = await store.isAnswered(turn.tenantId, lastMessageId, loaded.lastAt);
+  if (answered || markedSent) {
+    if (!answered) await recordAnswered(turn, deps);
+    return { status: "already_answered" };
+  }
+
+  const clock = turnClock(startedAt, now());
+  const plan = planReply(loaded.input);
+  const { text, source } = await compose(plan, loaded, turn, clock.exceeded, clock.signal, deps);
+
+  // Staff may have taken over, or the customer sent STOP, since the gate looked.
+  const [conversation, contact] = await Promise.all([store.getConversation(turn.tenantId, turn.conversationId), store.getContact(turn.tenantId, turn.contactId)]);
+  if (!conversation) return { status: "not_sent", reason: "no_conversation" };
+  if (conversation.mode !== "ai") return { status: "not_sent", reason: "not_ai_mode" };
+  if (!contact || contact.optedOut) return { status: "not_sent", reason: "opted_out" };
+
+  // The model can take seconds: look once more, right before the send, in case another run answered meanwhile.
+  if (await store.isAnswered(turn.tenantId, lastMessageId, loaded.lastAt)) return { status: "already_answered" };
+
+  const outcome = await deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, text });
+  switch (outcome.status) {
+    case "sent":
+      // The marker first (one cheap write), then the rows: if the rows cannot be written, a retry still sees the marker.
+      await keep(deps, turn, { reply: { case: planned.case, source } }).catch(() => undefined);
+      await recordAnswered(turn, deps);
+      return { status: "sent", source };
+    case "skipped":
+      if (outcome.reason === "insufficient_credits") return { status: "no_credits" };
+      console.error(`${TAG} the reply was not sent (${outcome.reason})`);
+      return { status: "not_sent", reason: outcome.reason };
+    case "failed":
+      // It may have gone out anyway: never resend, and count it as answered.
+      if (outcome.error.outcomeUnknown) {
+        await keep(deps, turn, { reply: { case: planned.case, source: "unknown_outcome" } }).catch(() => undefined);
+        await recordAnswered(turn, deps);
+        return { status: "sent_unknown" };
+      }
+      console.error(`${TAG} the reply could not be sent (${outcome.error.code})`);
+      // Waiting can fix it (a blip, a rate limit): the step is tried again; anything else is final.
+      if (outcome.error.retryable) throw new Error(`the reply could not be sent (${outcome.error.code})`);
+      return { status: "not_sent", reason: "send_failed" };
+  }
+}
+
+/** `message.answered` for every message of the turn. A few tries each; a failure is logged, never thrown (see the top of this file). */
+async function recordAnswered(turn: TurnContext, deps: ReplyDeps): Promise<void> {
+  for (const messageId of turn.messageIds) {
+    let written = false;
+    for (let attempt = 1; attempt <= AUDIT_TRIES && !written; attempt++) {
+      try {
+        await deps.audit({ tenantId: turn.tenantId, actor: "ai", action: ANSWERED_ACTION, entity: "message", entityId: messageId });
+        written = true;
+      } catch {
+        // tried again
+      }
+    }
+    if (!written) console.error(`${TAG} could not record that message ${messageId} was answered (business ${turn.tenantId})`);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The handover
+
+async function openHandoff(turn: TurnContext, handoff: { trigger: HandoffTrigger; priority: HandoffPriority }, deps: ReplyDeps): Promise<HandoffSummary> {
+  const { store } = deps;
+  const opened = await store.openHandoff(turn.tenantId, turn.conversationId, handoff.trigger, handoff.priority);
+  if (opened.created) {
+    try {
+      await deps.audit({ tenantId: turn.tenantId, actor: "ai", action: "handoff.opened", entity: "handoff", entityId: opened.id, diff: { trigger: handoff.trigger } });
+    } catch {
+      console.error(`${TAG} could not record the handoff (business ${turn.tenantId})`);
+    }
+  }
+  // On every run, not only the one that made the row: a retry after a failure between the row and the event must still
+  // tell staff. The fixed id makes the same handover one event however often it is sent.
+  await deps.sendEvent({ id: `handoff_opened:${opened.id}`, name: "handoff.opened", data: { tenantId: turn.tenantId, handoffId: opened.id, conversationId: turn.conversationId } });
+  const switched = await store.setConversationMode(turn.tenantId, turn.conversationId, "human");
+
+  const settle = async (send: () => Promise<PortOutcome>): Promise<PortOutcome["status"]> => {
+    try {
+      return (await send()).status;
+    } catch {
+      return "failed";
+    }
+  };
+  const alert = await settle(() =>
+    deps.staffAlert.send({ tenantId: turn.tenantId, conversationId: turn.conversationId, kind: handoff.trigger === "credits_exhausted" ? "credits_exhausted" : handoff.trigger === "stuck" ? "setup_problem" : "handoff_opened" }),
+  );
+  // Out of credits: the customer got no reply from the assistant, so one free holding line says a person will answer.
+  let holding: HandoffSummary["holding"] = "not_needed";
+  if (handoff.trigger === "credits_exhausted") {
+    const contact = await store.getContact(turn.tenantId, turn.contactId);
+    holding = await settle(() =>
+      deps.systemNotice.send({ tenantId: turn.tenantId, conversationId: turn.conversationId, kind: "credits_holding", text: fixedText("credits_holding", textLanguage(contact?.language)) }),
+    );
+  }
+  return { trigger: handoff.trigger, opened: opened.created, switched, alert, holding };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// When the run gave up
+
+/**
+ * Called when a run has failed after its retries: a customer must not be left without an answer. If their latest
+ * messages are still unanswered and the chat is still the assistant's, one safe line goes out and they are marked
+ * answered. Best effort, never throws, and safe to call twice (it looks first).
+ */
+export async function answerAfterFailure(ids: { tenantId: string; conversationId: string; messageId: string }, batchWindowMs: number, deps: ReplyDeps): Promise<"sent" | "nothing_to_do" | "not_sent"> {
+  const { store } = deps;
+  try {
+    const message = await store.getMessage(ids.tenantId, ids.conversationId, ids.messageId);
+    if (!message || message.sender !== "customer") return "nothing_to_do";
+    const since = new Date(Date.parse(message.createdAt) - batchWindowMs).toISOString();
+    const pending = await store.recentUnanswered(ids.tenantId, ids.conversationId, since);
+    if (pending.length === 0) return "nothing_to_do";
+    const conversation = await store.getConversation(ids.tenantId, ids.conversationId);
+    if (!conversation || conversation.mode !== "ai") return "nothing_to_do";
+    const contact = await store.getContact(ids.tenantId, conversation.contactId);
+    if (!contact || contact.optedOut) return "nothing_to_do";
+
+    const outcome = await deps.send(ids.tenantId, "ai_reply", { conversationId: ids.conversationId, text: fixedText("fallback", textLanguage(contact.language)) });
+    if (outcome.status === "sent" || (outcome.status === "failed" && outcome.error.outcomeUnknown)) {
+      await recordAnswered({ tenantId: ids.tenantId, conversationId: ids.conversationId, messageIds: pending.map((m) => m.id) } as TurnContext, deps);
+      return "sent";
+    }
+    return "not_sent";
+  } catch {
+    return "not_sent";
+  }
+}

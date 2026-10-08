@@ -330,13 +330,42 @@ read `null` as absent. A run that finds a valid `extraction` already on the mess
 again; for the intent `opt_out` the saved extraction has no details and no question. A message with no text (media only)
 is the `no_text` fallback and does not engage the lead. The history sent to the model is the last four messages with text
 strictly before the first message of the burst (by its `created_at`). `confidence` is the model's own word, not a trust
-boundary: an injected message can claim 1.0. **Open risk until the reply step (PR 6): `model_unavailable`, `fallback` and
-`no_pack` end the run as a normal result and nothing answers the customer yet; PR 6 must turn them into a holding reply or
-a handover.** The turn's deadline signal is not wired until PR 6. The customer's words, the question and the details are
-not in Inngest's step results; later steps read them from there.
+boundary: an injected message can claim 1.0. The customer's words, the question and the details are not in Inngest's
+step results; later steps read them from there.
 
-A run that still fails after its 3 retries is not tried again by anything: the message stays in the inbox unanswered and
-`onFailure` logs its id. A sweep for customer messages nobody answered is the follow-up.
+**Step 7, the reply and the send (`replyTurn`, built).** Steps `plan`, `reply`, `handoff`; the first step of the run,
+`started`, records when the turn began. The action is fixed until the decide step (Day 3) exists: answer from the
+knowledge base's facts, or a safe line. **`plan.ts` is the whole table of what the customer gets, for every way step 4 can
+end: nothing ends without an answer.** An answer from the knowledge base is written by the strong model (Sonnet 5.5,
+`reply_v1`: persona and business name, tone, the customer's language, the last 10 messages, the facts) and checked by
+code (`postcheck.ts`): every ₹ amount (compared by value: ₹85 lakh = 85L = ₹85,00,000; Tamil and Hindi numerals), date and
+time must be in the facts, at most 600 characters and two questions; one regeneration, then the safe fallback: exactly
+"Let me confirm that with the team" in English, and the same sentence in the customer's language when it is Tamil, Tanglish
+or Hindi (fixed lines in `fixed-texts.ts`). Everything
+else is a fixed line, with no model call: a clarifying question (nothing readable, a bad answer twice, the model
+declined), the safe fallback (the language model or the search could not be reached, a question the knowledge base cannot
+answer, the turn's time ran out, no usable pack), the handover line, or a STOP hint for a message about leaving. Fixed
+lines go out as `ai_reply` and cost one credit like any reply. A question the knowledge base could not answer is
+recorded with `record_kb_gap` once per turn (marker `gapRecorded` on the message), under `normaliseQuestion`.
+**The `kb_gap` handoff is two such questions in a row in the SAME chat** (the count is `messages.meta.agent.kbMisses`; any
+answered turn resets it, an outage or a clarifying question carries it), never the business-wide `asked_count`, which only
+feeds the dashboard's most-asked list. A business can turn it off (`agent_settings.handoffTriggers`, key `kb_gap` or `gap`).
+The send is `notify.send(tenantId, "ai_reply", { conversationId, text })`, after a fresh look at the chat's mode and the
+contact's opt-out; **in the same step `message.answered` is written for every message of the turn** (a few tries; a failure
+is logged and never thrown, since a retry would send again), and a send whose outcome is unknown counts as answered.
+`insufficient_credits` sends no AI reply: the chat goes to `human`, a `handoffs` row (`credits_exhausted`, priority
+`high`) opens, `handoff.opened` is sent (id `handoff_opened:<handoffId>`), and the free holding message and the owner alert
+go through two ports (`ports.ts`) that only log `awaiting_notify_kind` until Dev 2 adds the kinds. The whole turn has one
+clock (`turn-deadline.ts`): target 10 s, hard stop 25 s, after which the model calls stop and the safe line is sent.
+`persona` and `tone` are read from `tenants.agent_settings` as the Agent settings screen saves them. The turn's clock also
+runs while a failed step waits for its retry, so a slow second attempt can be answered with the safe line. **Never two
+replies:** a step looks at `message.answered` (and at the `reply` marker the send leaves on the message's meta) before and
+right before the send; the marker is written before the rows, so a failure to write the rows does not allow a second
+reply. The handover's event is sent on every run of the step (its id makes it one event), so a retry after a failure still tells staff.
+
+A run that still fails after its 3 retries: `onFailure` logs its id and, if the customer's messages are still unanswered and
+the chat is still the assistant's, sends one safe line and marks them answered (`give-up.ts`). A sweep for customer messages
+nobody answered is still the follow-up for a failure that could not even do that.
 
 ## 6. API routes and errors
 

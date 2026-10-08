@@ -355,6 +355,16 @@ describe("when the model cannot be reached", () => {
     expect(logged).not.toContain("2BHK price enna");
   });
 
+  it("the turn's time being up is reported, not retried: the reply step sends the safe line", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const w = world({ script: [new LlmError("aborted", undefined, 1), good()] });
+    const r = runner(2);
+    const result = await understandTurn(r.step, w.turn, { ...w.deps, signal: AbortSignal.abort() });
+    expect(result).toEqual({ status: "model_unavailable" });
+    expect(r.attempts.get("extract")).toBe(1);
+    expect((w.messages.get(M1)?.meta?.agent as { extractionFailed: string }).extractionFailed).toBe("model_unavailable");
+  });
+
   it("the turn's own deadline passing is retried as a step, under a new one", async () => {
     const w = world({ script: [new LlmError("aborted", undefined, 1), good()] });
     const r = runner(2);

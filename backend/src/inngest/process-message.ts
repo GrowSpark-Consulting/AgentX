@@ -1,7 +1,10 @@
 import { MESSAGE_RECEIVED_EVENT, MessageReceived } from "../agent/pipeline/events";
+import { answerRunThatGaveUp } from "../agent/pipeline/give-up";
 import { runTurn } from "../agent/pipeline/process-message";
-import { understandDeps } from "../agent/pipeline/runtime";
+import { replyTurn } from "../agent/pipeline/reply";
+import { replyDeps, understandDeps } from "../agent/pipeline/runtime";
 import { createPipelineStore } from "../agent/pipeline/store";
+import { turnClock } from "../agent/pipeline/turn-deadline";
 import { understandTurn } from "../agent/pipeline/understand";
 import { isEnabled } from "../features/is-enabled";
 import { inngest } from "./client";
@@ -16,13 +19,18 @@ import { inngest } from "./client";
 //   to start looking: the run collects the customer's unanswered messages itself and answers them together.
 // - Every stage is a step: a failure retries that stage (3 retries) and never repeats what finished.
 //
-// Today the pipeline ends after step 4 (understanding the message, and the knowledge-base search); the decide,
-// reply and send steps are added in the next PRs, so a deployed run reads the message, calls the fast model, keeps
-// the customer's details on the lead and searches the knowledge base, but sends nothing.
+// The pipeline: resolve, batch, lead and gate (steps 2 and 3), understand the message and search the knowledge base
+// (step 4), then reply and send (step 7 and the send): ONE reply per turn, through notify.send, recorded as answered
+// in the same step. The decide step (Day 3) will sit between 4 and 7; until then the action is fixed: answer from the
+// knowledge base's facts, or a safe line. Every way the run can end has an answer for the customer (plan.ts).
 //
-// A run that still fails after its retries is not tried again by anything: the customer's message stays in the
-// inbox, unanswered, and `onFailure` leaves a line saying so (ids only). A sweep that finds customer messages
-// nobody answered, like kb-sweep does for documents, is the follow-up that closes this gap.
+// One clock for the whole turn: the first step records when it began, and every invocation works out what is left of
+// the 25-second hard stop (turn-deadline.ts); the model calls stop when it passes and the customer gets the safe line.
+//
+// A run that still fails after its retries: `onFailure` leaves a line (ids only) and, if the customer's messages are
+// still unanswered and the chat is still the assistant's, sends one safe line (give-up.ts), so nobody is left in
+// silence. A sweep for messages nobody answered, like kb-sweep does for documents, is still the follow-up for a
+// failure that could not even do that.
 export const processMessage = inngest.createFunction(
   {
     id: "process-message",
@@ -34,11 +42,14 @@ export const processMessage = inngest.createFunction(
       const original = MessageReceived.safeParse((event.data.event as { data?: unknown } | undefined)?.data);
       // Ids and the kind of error only: no message text, no phone number, nothing the database said.
       console.error(`[pipeline] gave up after its retries${original.success ? ` on message ${original.data.messageId}` : ""} (${error.name})`);
+      if (original.success) console.log(`[pipeline] safe line after giving up: ${await answerRunThatGaveUp(original.data)}`);
     },
   },
   async ({ event, step }) => {
     // step.run types its result as the JSON round trip of what the function returns; the results here are plain JSON already.
     const steps = { run: <T>(id: string, fn: () => Promise<T>) => step.run(id, fn) as Promise<T> };
+    // The turn's clock starts here (a step, so every later invocation of this function knows when it began).
+    const startedAt = await steps.run("started", async () => Date.now());
     const store = createPipelineStore();
     const turn = await runTurn(steps, event.data, { store, isEnabled });
     // A status and a reason only: no ids, no message text, no phone number.
@@ -46,12 +57,14 @@ export const processMessage = inngest.createFunction(
       console.log(`[pipeline] ${turn.status} (${turn.reason})`);
       return turn;
     }
-    const understood = await understandTurn(steps, turn.turn, understandDeps(store));
+    const understood = await understandTurn(steps, turn.turn, understandDeps(store, turnClock(startedAt).signal));
     console.log(
       `[pipeline] ${understood.status}${understood.status === "fallback" ? ` (${understood.reason})` : ""}` +
         (understood.status === "understood" ? ` (${understood.summary.intent}; search ${understood.retrieval.outcome})` : ""),
     );
-    // What the next steps read comes from the database, not from here.
-    return { status: understood.status };
+    const replied = await replyTurn(steps, turn.turn, understood, startedAt, replyDeps(store));
+    // Case names and statuses only: no ids, no message text, no phone number. What happened is in the database.
+    console.log(`[pipeline] replied: ${replied.case}; ${replied.reply.status}${replied.handoff ? `; handoff ${replied.handoff.trigger}` : ""}`);
+    return { status: understood.status, reply: replied.reply.status };
   },
 );

@@ -1,3 +1,4 @@
+import type { HandoffPriority, TenantReplyInfo } from "../agent/pipeline/store";
 import type { BatchText, ContactRow, ConversationRow, HistoryItem, InboundMessage, LeadRow, LeadState, PendingMessage, PipelineStore, TenantRow } from "../agent/pipeline/store";
 
 // An in-memory PipelineStore for tests. It enforces the same filtering the real store does: a message,
@@ -22,6 +23,14 @@ export interface FakeContact extends ContactRow {
 export interface FakeConversation extends ConversationRow {
   tenantId: string;
 }
+export interface FakeHandoff {
+  id: string;
+  tenantId: string;
+  conversationId: string;
+  trigger: string;
+  priority: HandoffPriority;
+  resolved: boolean;
+}
 export interface FakeLead {
   id: string;
   tenantId: string;
@@ -43,6 +52,9 @@ export function fakePipelineStore(
     answeredAt?: Record<string, string>;
     /** tenants.pack_overrides by business id. */
     packOverrides?: Record<string, unknown>;
+    /** The business's name and agent_settings, by business id. */
+    tenantInfo?: Record<string, TenantReplyInfo>;
+    handoffs?: FakeHandoff[];
   } = {},
 ) {
   const tenants = new Map((seed.tenants ?? []).map((t) => [t.id, t]));
@@ -56,7 +68,10 @@ export function fakePipelineStore(
     answered.set(id, Date.parse(at));
   }
   const calls: string[] = [];
-  const state = { failNext: new Set<keyof PipelineStore>(), leadCounter: 0 };
+  const handoffs: FakeHandoff[] = [...(seed.handoffs ?? [])];
+  /** record_kb_gap's rows: one per business and normalised question, with the business-wide count. */
+  const gaps = new Map<string, { tenantId: string; norm: string; question: string; contactId: string; askedCount: number }>();
+  const state = { failNext: new Set<keyof PipelineStore>(), leadCounter: 0, handoffCounter: 0 };
   const maybeFail = (op: keyof PipelineStore) => {
     if (state.failNext.delete(op)) throw new Error(`${op} failed (simulated)`);
   };
@@ -161,6 +176,54 @@ export function fakePipelineStore(
       const agent = m && m.tenantId === tenantId && m.conversationId === conversationId ? m.meta?.agent : undefined;
       return agent && typeof agent === "object" ? (structuredClone(agent) as Record<string, unknown>) : null;
     },
+    async getTenantReplyInfo(tenantId): Promise<TenantReplyInfo | null> {
+      calls.push("getTenantReplyInfo");
+      maybeFail("getTenantReplyInfo");
+      return seed.tenantInfo?.[tenantId] ?? (tenants.has(tenantId) ? { name: "Skyline Homes", agentSettings: {} } : null);
+    },
+    async getPreviousMisses(tenantId, conversationId, before) {
+      calls.push("getPreviousMisses");
+      maybeFail("getPreviousMisses");
+      const earlier = [...messages.values()]
+        .filter((m) => m.tenantId === tenantId && m.conversationId === conversationId && m.sender === "customer" && Date.parse(m.createdAt) < Date.parse(before))
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .slice(0, 20);
+      for (const m of earlier) {
+        const misses = (m.meta?.agent as { kbMisses?: unknown } | undefined)?.kbMisses;
+        if (typeof misses === "number" && Number.isInteger(misses) && misses >= 0) return misses;
+      }
+      return 0;
+    },
+    async recordKbGap(tenantId, { question, questionNorm, contactId }) {
+      calls.push("recordKbGap");
+      maybeFail("recordKbGap");
+      const key = `${tenantId}|${questionNorm}`;
+      const existing = gaps.get(key);
+      if (existing) {
+        existing.askedCount++;
+        existing.contactId = contactId;
+        return { gapId: key, askedCount: existing.askedCount };
+      }
+      gaps.set(key, { tenantId, norm: questionNorm, question, contactId, askedCount: 1 });
+      return { gapId: key, askedCount: 1 };
+    },
+    async openHandoff(tenantId, conversationId, trigger, priority) {
+      calls.push("openHandoff");
+      maybeFail("openHandoff");
+      const open = handoffs.find((h) => h.tenantId === tenantId && h.conversationId === conversationId && !h.resolved);
+      if (open) return { id: open.id, created: false };
+      const handoff: FakeHandoff = { id: `20000000-0000-0000-0000-${String(++state.handoffCounter).padStart(12, "0")}`, tenantId, conversationId, trigger, priority, resolved: false };
+      handoffs.push(handoff);
+      return { id: handoff.id, created: true };
+    },
+    async setConversationMode(tenantId, conversationId, mode) {
+      calls.push("setConversationMode");
+      maybeFail("setConversationMode");
+      const c = conversations.get(conversationId);
+      if (!c || c.tenantId !== tenantId || c.mode !== "ai") return false;
+      c.mode = mode;
+      return true;
+    },
     async recentUnanswered(tenantId, conversationId, since): Promise<PendingMessage[]> {
       calls.push("recentUnanswered");
       maybeFail("recentUnanswered");
@@ -174,5 +237,5 @@ export function fakePipelineStore(
     },
   };
 
-  return { store, tenants, messages, conversations, contacts, leads, answered, calls, state };
+  return { store, tenants, messages, conversations, contacts, leads, answered, handoffs, gaps, calls, state };
 }

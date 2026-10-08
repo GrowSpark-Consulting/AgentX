@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { functions } from "./functions";
 import { processMessage } from "./process-message";
 
+// onFailure sends one safe line to a customer a failed run left unanswered; the real database is not reached here.
+const answerRunThatGaveUp = vi.hoisted(() => vi.fn(async () => "nothing_to_do"));
+vi.mock("../agent/pipeline/give-up", () => ({ answerRunThatGaveUp }));
+
 // The wiring of the process-message job: that it is registered, what starts it, and that messages from one
 // customer are handled one at a time and together. What it does is tested in agent/pipeline/process-message.test.ts.
 
@@ -43,6 +47,26 @@ describe("process-message when its retries run out", () => {
     expect(lines[0]).toContain("a0000000-0000-0000-0000-0000000000a1");
     expect(lines[0]).toContain("Error");
     expect(lines[0]).not.toMatch(/10\.0\.0\.5|9812345621|ECONNREFUSED/);
+  });
+
+  it("then sends the customer one safe line if their message is still unanswered (give-up.ts looks first)", async () => {
+    answerRunThatGaveUp.mockClear();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const ids = { tenantId: "e0000000-0000-0000-0000-00000000000a", conversationId: "c0000000-0000-0000-0000-00000000000c", messageId: "a0000000-0000-0000-0000-0000000000a1" };
+    await onFailure()(failure(ids));
+    spy.mockRestore();
+    expect(answerRunThatGaveUp).toHaveBeenCalledWith(ids);
+    expect(log.mock.calls.flat().join(" ")).toContain("safe line after giving up: nothing_to_do");
+    log.mockRestore();
+  });
+
+  it("sends nothing for an event it cannot read", async () => {
+    answerRunThatGaveUp.mockClear();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await onFailure()(failure({ not: "ids" }));
+    spy.mockRestore();
+    expect(answerRunThatGaveUp).not.toHaveBeenCalled();
   });
 
   it("copes with an event it cannot read", async () => {
