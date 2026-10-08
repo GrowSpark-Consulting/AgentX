@@ -272,7 +272,7 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 
 | Event | Payload |
 |---|---|
-| `whatsapp/message.received` | `{ tenantId, conversationId, messageId }` |
+| `whatsapp/message.received` | `{ tenantId, conversationId, messageId }`; sent by the webhook (id `message_received:<messageId>`, also for a replay); starts `process-message` |
 | `kb/document.uploaded` | `{ tenantId, documentId }`; sent by `POST /api/kb/documents` (id `kb_document_uploaded:<documentId>`), starts the `kb-ingest` job |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
 | `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`) |
@@ -281,6 +281,30 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | `handoff.own_number` | `{ tenantId, handoffId }` |
 | `tenant.trial_started` | `{ tenantId }` |
 | `credits.spent` | `{ tenantId, amount, reason, balanceAfter }` |
+
+**The message pipeline (`process-message`, built: steps 2 and 3).** One conversation at a time (concurrency key
+`conversationId`); messages from one conversation within 3 seconds (never longer than 15) start one run. A debounce keeps
+only the LAST event, so the event is only where to look: the run answers a **batch**, the customer's unanswered messages
+from the 15 seconds before the event's message (the newest 10), together. Steps: `resolve` (the message, conversation,
+contact and business, each read for the event's business; the message must be that business's and that conversation's),
+`batch` (the unanswered ones; the event's own message if it was not answered; an empty batch is "already answered"),
+`lead` (the contact's open lead, any stage but won and lost, the oldest if several, or a new one; made even when the AI
+will not answer), `gate` (for the conversation: opted out, then a chat a person has, then `ai_auto_reply` off; then per
+message: a photo, voice note or other message that is not text or a tapped reply is left for staff and the rest are
+answered). A step's result is ids, flags and small facts only: Inngest keeps it, so never message text, a phone number or
+a name.
+
+**An answered message is recorded as an audit row** (`audit_logs`, action `message.answered`, entity `message`,
+entity_id the message id, actor `ai`). The reply step writes **one row for every message in the turn's `messageIds`**,
+in the same step as the send (a crash between the two would send the reply twice on retry), and re-reads the chat's mode
+and the contact's opt-out flag right before sending (staff may have taken over, or the customer sent STOP, since the
+gate looked). `process-message` skips a message that has a row, however many times its event arrives; the lookup reads
+audit rows from a day before the message's time (our clock against Meta's). An outbound message after the inbound one is
+not used as the marker: an inbound message's `created_at` is Meta's send time, so a message sent while the previous one
+was being answered can look older than our reply and would be dropped.
+
+A run that still fails after its 3 retries is not tried again by anything: the message stays in the inbox unanswered and
+`onFailure` logs its id. A sweep for customer messages nobody answered is the follow-up.
 
 ## 6. API routes and errors
 
