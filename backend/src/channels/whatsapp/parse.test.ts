@@ -131,6 +131,8 @@ describe("fixtures", () => {
       messages: [],
       statuses: [],
       templateStatuses: [],
+      qualityUpdates: [],
+      accountUpdates: [],
       ignored: [{ field: "payload", reason: "malformed_payload" }],
     });
   });
@@ -358,8 +360,6 @@ describe("template statuses", () => {
 
 describe("fields that are ignored without guessing their shape", () => {
   it.each([
-    "phone_number_quality_update",
-    "account_update",
     "smb_message_echoes",
     "smb_app_state_sync",
     "history",
@@ -370,9 +370,41 @@ describe("fields that are ignored without guessing their shape", () => {
       messages: [],
       statuses: [],
       templateStatuses: [],
+      qualityUpdates: [],
+      accountUpdates: [],
       ignored: [{ field, reason: "unsupported_field", wabaId: WABA }],
     });
     expect(JSON.stringify(result)).not.toContain("SHOULD_NOT_LEAK");
+  });
+
+  it("cleans and shortens the template's reason before it is passed on", () => {
+    const result = parseWebhook(change("message_template_status_update", { event: "REJECTED", message_template_id: 7, message_template_name: "t", reason: "Bad\u0000 text\n" + "y".repeat(2000) }));
+    const reason = result.templateStatuses[0].reason ?? "";
+    expect([...reason].length).toBeLessThanOrEqual(500);
+    expect(reason).not.toContain("\u0000");
+    expect(reason.startsWith("Bad text")).toBe(true);
+  });
+
+  it("reads a quality update's event and limit, and nothing else of it", () => {
+    const result = parseWebhook(change("phone_number_quality_update", { display_phone_number: "919840012345", event: "UPGRADE", current_limit: "TIER_10K", secret_marker: "SHOULD_NOT_LEAK" }));
+    expect(result.qualityUpdates).toEqual([{ wabaId: WABA, event: "UPGRADE", currentLimit: "TIER_10K" }]);
+    expect(result.ignored).toEqual([]);
+    expect(JSON.stringify(result)).not.toMatch(/SHOULD_NOT_LEAK|919840012345/);
+  });
+
+  it("keeps a quality rating when there is one, and 'unknown' for an event that is not a plain word", () => {
+    expect(parseWebhook(change("phone_number_quality_update", { event: "a b", quality_rating: "GREEN" })).qualityUpdates).toEqual([{ wabaId: WABA, event: "unknown", qualityRating: "GREEN" }]);
+  });
+
+  it("reads an account update's event only", () => {
+    const result = parseWebhook(change("account_update", { phone_number: "919840012345", event: "ACCOUNT_VIOLATION", secret_marker: "SHOULD_NOT_LEAK" }));
+    expect(result.accountUpdates).toEqual([{ wabaId: WABA, event: "ACCOUNT_VIOLATION" }]);
+    expect(JSON.stringify(result)).not.toMatch(/SHOULD_NOT_LEAK|919840012345/);
+  });
+
+  it.each(["phone_number_quality_update", "account_update"])("ignores %s whose value is not an object", (field) => {
+    const result = parseWebhook(change(field, "text"));
+    expect(result.ignored).toEqual([{ field, reason: "invalid_item", wabaId: WABA }]);
   });
 
   it("replaces an odd field name with 'unknown'", () => {

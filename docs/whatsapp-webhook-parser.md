@@ -49,7 +49,8 @@ type IgnoredItem = {
 };
 
 type ParseResult = { messages: ParsedMessage[]; statuses: ParsedStatus[];
-                     templateStatuses: TemplateStatusUpdate[]; ignored: IgnoredItem[] };
+                     templateStatuses: TemplateStatusUpdate[];
+                     qualityUpdates: QualityUpdate[]; accountUpdates: AccountUpdate[]; ignored: IgnoredItem[] };
 ```
 
 Numbers come out as E.164 with a leading "+". Unix-second timestamps come out as ISO strings. Text, button and
@@ -73,6 +74,8 @@ with no body, an image with no MIME type) becomes `type: "unsupported"` and keep
 | `messages` with `type: "unsupported"` | You decide how to store them (for example a placeholder body). The parser keeps the wamid so the customer's message is not lost. |
 | `statuses` | Update `messages.delivery_status` by `providerMsgId`. The **dedupe key is `providerMsgId` plus `status`**, because one message gets several statuses. On `failed`, `error` has the code, title and message. |
 | `templateStatuses` | Call `set_template_status(metaTemplateId, event, reason)` and pass Meta's **raw `event`**. The SQL maps it and ignores events it does not track, so you do not map anything. |
+| `qualityUpdates` | `{ wabaId, event, currentLimit?, qualityRating? }`: plain identifiers only. The handler finds the connection by `wabaId`, logs the event, and, when there is exactly one connection for that account, stores `messaging_limit` and `quality_rating` on it (tenant-filtered). Meta's payload names the number by its display number, not by `phone_number_id`, so with several connections on one account nothing is guessed. Field names are unconfirmed until a real payload is seen. |
+| `accountUpdates` | `{ wabaId, event }`: logged by name with the connection id. Nothing else of the payload is read. |
 | `ignored` | Log only `reason`, `field` and `wabaId`, or counts. **Never log contents**: the parser puts no numbers, names or text in these items, and the route should not add them. Mask any phone number you log with `maskPhone`. |
 
 Parsing is safe to repeat: the same body twice gives the same lists, so de-duplication belongs to the database
@@ -112,8 +115,9 @@ Meta app is available.
   raw bytes is a later task.
 - **Echoes are not handled.** The handover needs them before a coexistence number goes live (the owner's own
   messages switch the conversation to human mode).
-- Other account fields (`phone_number_quality_update`, `account_update`, `history`, `smb_app_state_sync`) are
-  ignored, not parsed.
+- `phone_number_quality_update` and `account_update` are parsed (event name, limit, rating) and handled by the route
+  (`fix/webhook-event-handling`). Other account fields (`history`, `smb_app_state_sync`, echoes) are ignored and
+  counted by name in the log, never an error.
 
 ## 8. Open items (not blocking)
 

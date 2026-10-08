@@ -98,3 +98,46 @@ export async function applyMessageStatus(args: { tenantId: string; providerMsgId
   if (error) throw new WebhookDbError("apply_message_status", error.code);
   return z.boolean().parse(data);
 }
+
+/** The connections of these WhatsApp business accounts (template and quality events name only the account). Reads no secret columns. */
+export async function findConnectionsByWaba(wabaIds: string[]): Promise<ConnectionRow[]> {
+  if (wabaIds.length === 0) return [];
+  const { data, error } = await supabaseAdmin()
+    .from("whatsapp_connections")
+    .select("id, tenant_id, channel_id, phone_number_id, waba_id, method, status")
+    .in("waba_id", wabaIds);
+  if (error) throw new WebhookDbError("connection lookup by account", error.code);
+  return ConnectionRows.parse(data).map((r) => ({
+    id: r.id,
+    tenantId: r.tenant_id,
+    channelId: r.channel_id,
+    phoneNumberId: r.phone_number_id,
+    wabaId: r.waba_id,
+    method: r.method,
+    status: r.status,
+  }));
+}
+
+/** Whether this business has a template with Meta's id. set_template_status is not tenant-scoped, so this is asked first. */
+export async function templateBelongsToTenant(tenantId: string, metaTemplateId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin().from("whatsapp_templates").select("id").eq("tenant_id", tenantId).eq("meta_template_id", metaTemplateId).limit(1);
+  if (error) throw new WebhookDbError("template lookup", error.code);
+  return Array.isArray(data) && data.length > 0;
+}
+
+/** Dev 2's set_template_status (0007): the webhook never writes the table itself. False: a status it does not know, or no such template. */
+export async function setTemplateStatus(args: { metaTemplateId: string; event: string; reason?: string }): Promise<boolean> {
+  const { data, error } = await supabaseAdmin().rpc("set_template_status", { p_meta_template_id: args.metaTemplateId, p_status: args.event, p_reason: args.reason ?? null });
+  if (error) throw new WebhookDbError("set_template_status", error.code);
+  return z.boolean().parse(data);
+}
+
+/** The number's messaging limit and quality rating as Meta last reported them, for this business's connection only. */
+export async function updateConnectionHealth(args: { tenantId: string; connectionId: string; messagingLimit?: string; qualityRating?: string }): Promise<void> {
+  const patch: Record<string, string> = {};
+  if (args.messagingLimit !== undefined) patch.messaging_limit = args.messagingLimit;
+  if (args.qualityRating !== undefined) patch.quality_rating = args.qualityRating;
+  if (Object.keys(patch).length === 0) return;
+  const { error } = await supabaseAdmin().from("whatsapp_connections").update(patch).eq("id", args.connectionId).eq("tenant_id", args.tenantId);
+  if (error) throw new WebhookDbError("connection health update", error.code);
+}
