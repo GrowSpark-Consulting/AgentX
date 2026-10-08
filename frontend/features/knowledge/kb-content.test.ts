@@ -4,6 +4,8 @@ import {
   askedText,
   canAnswerGaps,
   canWriteKnowledge,
+  DOCUMENT_LIMIT,
+  documentLimitReached,
   documentMeta,
   DUPLICATE_FAQ,
   faqChanges,
@@ -14,11 +16,13 @@ import {
   listKbDocuments,
   toKbDocument,
   UPLOAD_MAX_BYTES,
+  UPLOAD_TITLE_MAX,
   upsertDocument,
   upsertFaq,
   validateFaq,
   validateGapAnswer,
   validateUploadFile,
+  validateUploadTitle,
   type FaqItem,
   type KbDocumentRow as Row,
 } from "./kb-content";
@@ -34,6 +38,7 @@ const row = (over: Partial<Row> = {}): Row => ({
   source_url: null,
   title: "Bridal price list.pdf",
   status: "ready",
+  error: null,
   created_at: "2026-10-06T19:00:00+00:00",
   ...over,
 });
@@ -92,7 +97,7 @@ describe("knowledge documents", () => {
     const { client, calls } = fakeClient({ data: [row({ status: "processing" })], error: null });
     const [first] = await listKbDocuments(client, TENANT);
     expect(first.status).toBe("processing");
-    expect(calls).toContainEqual(["select", ["id, tenant_id, source_type, source_url, title, status, created_at"]]);
+    expect(calls).toContainEqual(["select", ["id, tenant_id, source_type, source_url, title, status, error, created_at"]]);
     expect(calls).toContainEqual(["neq", ["source_type", "manual"]]);
   });
 
@@ -105,6 +110,22 @@ describe("knowledge documents", () => {
   it("accepts only processing, ready and failed as a status", () => {
     expect(KbDocumentRow.safeParse(row({ status: "queued" as Row["status"] })).success).toBe(false);
     for (const status of ["processing", "ready", "failed"] as const) expect(doc({ status }).status).toBe(status);
+  });
+
+  it("keeps a failed document's reason as the server wrote it, and nothing for other statuses", () => {
+    const reason = "This document has no text to learn from.";
+    expect(doc({ status: "failed", error: reason }).error).toBe(reason);
+    expect(doc({ status: "failed", error: `  ${reason} ` }).error).toBe(reason);
+    expect(doc({ status: "failed", error: null }).error).toBeNull();
+    expect(doc({ status: "failed", error: "  " }).error).toBeNull();
+    expect(doc({ status: "ready", error: "left over" }).error).toBeNull();
+    expect(KbDocumentRow.safeParse(row({ error: 7 as unknown as string })).success).toBe(false);
+  });
+
+  it("knows when the business has as many documents as it may keep", () => {
+    expect(documentLimitReached(Array.from({ length: DOCUMENT_LIMIT - 1 }))).toBe(false);
+    expect(documentLimitReached(Array.from({ length: DOCUMENT_LIMIT }))).toBe(true);
+    expect(documentLimitReached([])).toBe(false);
   });
 
   it("knows when something is still processing", () => {
@@ -194,6 +215,15 @@ describe("upload validation", () => {
     expect(validateUploadFile(file("a.pdf", 0))).toBe("This file is empty");
     expect(validateUploadFile(file("a.pdf", UPLOAD_MAX_BYTES + 1))).toBe("This file is 5.1 MB. The limit is 5 MB");
     expect(validateUploadFile(file("a.pdf", Math.round(6.4 * 1024 * 1024)))).toBe("This file is 6.4 MB. The limit is 5 MB");
+  });
+
+  it("allows an empty title and up to 200 characters, counted like the API (code points, trimmed)", () => {
+    expect(validateUploadTitle("")).toBeNull();
+    expect(validateUploadTitle("x".repeat(UPLOAD_TITLE_MAX))).toBeNull();
+    expect(validateUploadTitle(`  ${"x".repeat(UPLOAD_TITLE_MAX)}  `)).toBeNull();
+    // 200 emoji are 400 UTF-16 units but 200 characters.
+    expect(validateUploadTitle("📄".repeat(UPLOAD_TITLE_MAX))).toBeNull();
+    expect(validateUploadTitle("x".repeat(UPLOAD_TITLE_MAX + 1))).toBe("Use at most 200 characters");
   });
 });
 

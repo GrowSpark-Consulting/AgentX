@@ -152,6 +152,34 @@ describe("document upload and delete", () => {
     expect(kb.describeKbWriteError(err, "Couldn't upload the document", "document")).toMatchObject({ fields: { file: "Files can be at most 5 MB." } });
   });
 
+  it("passes the API's title error and its 100-document limit through as field errors", async () => {
+    fetchMock.mockResolvedValueOnce(apiError(400, "validation_failed", "Titles can be at most 200 characters.", { title: "Use at most 200 characters." }));
+    const titleErr = await kb.uploadDocument(TENANT, file, "x".repeat(201)).catch((e: unknown) => e);
+    expect(kb.describeKbWriteError(titleErr, "Couldn't upload the document", "document")).toMatchObject({ fields: { title: "Use at most 200 characters." } });
+
+    const limit = "You can keep up to 100 documents. Delete one you no longer need, then upload again.";
+    fetchMock.mockResolvedValueOnce(apiError(400, "validation_failed", limit, { file: limit }));
+    const limitErr = await kb.uploadDocument(TENANT, file).catch((e: unknown) => e);
+    expect(kb.describeKbWriteError(limitErr, "Couldn't upload the document", "document")).toMatchObject({ fields: { file: limit } });
+  });
+
+  it("reports a job that couldn't start (upstream_failed) and a body over 6 MB (413) as they are", async () => {
+    fetchMock.mockResolvedValueOnce(apiError(502, "upstream_failed", "We couldn't start processing this file. Upload it again."));
+    const upstream = await kb.uploadDocument(TENANT, file).catch((e: unknown) => e);
+    expect(upstream).toBeInstanceOf(ApiError);
+    expect(kb.describeKbWriteError(upstream, "Couldn't upload the document", "document")).toMatchObject({
+      code: "upstream_failed",
+      title: "Couldn't upload the document",
+      message: "We couldn't start processing this file. Upload it again.",
+    });
+
+    fetchMock.mockResolvedValueOnce(apiError(413, "validation_failed", "The request body is too large."));
+    const tooBig = await kb.uploadDocument(TENANT, file).catch((e: unknown) => e);
+    const described = kb.describeKbWriteError(tooBig, "Couldn't upload the document", "document");
+    expect(described).toMatchObject({ code: "validation_failed", message: "The request body is too large." });
+    expect(described.fields).toBeUndefined();
+  });
+
   it("rejects an upload reply that isn't the contract's shape", async () => {
     fetchMock.mockResolvedValue(Response.json({ id: DOC_ID, status: "done" }, { status: 202 }));
     await expect(kb.uploadDocument(TENANT, file)).rejects.toBeInstanceOf(kb.KbDataError);
