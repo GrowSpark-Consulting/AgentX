@@ -198,9 +198,13 @@ there is no database (start it with `pnpm db:start`).
 Variables per environment (names in `backend/.env.example`): `NEXT_PUBLIC_APP_URL` (the frontend's
 origin for this environment; always allowed by CORS), `CORS_ALLOWED_ORIGINS` (other exact origins,
 comma-separated, never `*`), `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-`SUPABASE_SERVICE_ROLE_KEY`, `EMBEDDINGS_API_KEY` (required), `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ENCRYPTION_KEY`,
+`SUPABASE_SERVICE_ROLE_KEY`, `EMBEDDINGS_API_KEY` (required), `ANTHROPIC_API_KEY` (required: the server does not start
+without it), `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ENCRYPTION_KEY`,
 `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_SERVE_ORIGIN`, and the rest of the file as
-modules land. Optional: `RAILPACK_NODE_VERSION=22` to build on the same Node as CI (`.nvmrc`).
+modules land. Optional: `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` together (LLM tracing; with neither,
+tracing is off), `LANGFUSE_BASE_URL` (default `https://cloud.langfuse.com`, the EU cloud) and `LANGFUSE_CAPTURE_TEXT`
+(`true` also sends customers' words and replies to Langfuse, masked; off by default). `RAILPACK_NODE_VERSION=22` builds
+on the same Node as CI (`.nvmrc`).
 
 Check a deploy: `https://<API host>/api/health` returns
 `{"ok":true,"env":"<railway environment>","commit":"<sha>"}`.
