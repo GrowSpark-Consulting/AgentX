@@ -32,7 +32,7 @@ test.describe("Booking setup", () => {
 
     const resources = resourcesSection(page);
     await expect(page.getByRole("heading", { name: "Staff & resources · 3" })).toBeVisible();
-    await expect(resources.getByRole("columnheader")).toHaveText(["Name", "Kind", "Working hours", "Service area", "Status", "Actions"]);
+    await expect(resources.getByRole("columnheader")).toHaveText(["Name", "Kind", "Working hours", "Service area", "Google Calendar", "Status", "Actions"]);
     await expect(row(page, resources, "Asha")).toContainText("Mon–Sat 10:00–18:00");
     await expect(row(page, resources, "Asha")).toContainText("Any pincode");
     await expect(row(page, resources, "Ravi")).toContainText("Business hours");
@@ -202,8 +202,10 @@ test.describe("Booking setup", () => {
     await open(page, account, PATH, "Booking setup");
     await expect(page.getByText("Only an owner or admin can change these.")).toBeVisible();
     await expect(row(page, resourcesSection(page), "Asha")).toBeVisible();
-    await expect(page.getByRole("button", { name: /^(Add|Edit|Delete)\b/ })).toHaveCount(0);
-    await expect(resourcesSection(page).getByRole("columnheader")).toHaveText(["Name", "Kind", "Working hours", "Service area", "Status"]);
+    await expect(page.getByRole("button", { name: /^(Add|Edit|Delete|Connect|Reconnect)\b/ })).toHaveCount(0);
+    await expect(resourcesSection(page).getByRole("columnheader")).toHaveText(["Name", "Kind", "Working hours", "Service area", "Google Calendar", "Status"]);
+    // Staff still see whose calendar is connected.
+    await expect(row(page, resourcesSection(page), "Ravi")).toContainText("Connected");
   });
 
   test("a failed read says so and offers to try again", async ({ page, request }) => {
@@ -213,5 +215,58 @@ test.describe("Booking setup", () => {
     await expect(resourcesSection(page).getByRole("button", { name: "Try again" })).toBeVisible();
     // The other sections still work.
     await expect(row(page, servicesSection(page), "Consultation")).toBeVisible();
+  });
+
+  test.describe("Google Calendar per staff member", () => {
+    test("shows each resource's calendar without ever reading the token", async ({ page, request }) => {
+      const account = await newDay3Account(request, { seed: true });
+      await open(page, account, PATH, "Booking setup");
+      const resources = resourcesSection(page);
+      await expect(row(page, resources, "Ravi")).toContainText("Connectedravi@example.com");
+      await expect(row(page, resources, "Asha")).toContainText("Not connected");
+      await expect(row(page, resources, "Room 2")).toContainText("Needs reconnecting");
+      await expect(page.getByRole("button", { name: "Connect Google Calendar for Asha" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Reconnect Google Calendar for Room 2" })).toBeVisible();
+      await expect(page.getByRole("button", { name: /Google Calendar for Ravi/ })).toHaveCount(0);
+      await expect(page.locator("body")).not.toContainText("never-sent-to-the-browser");
+    });
+
+    test("says so when the API hasn't switched Google Calendar on", async ({ page, request }) => {
+      // The real API, with no Google credentials in the test environment: 501 not_available.
+      const account = await newDay3Account(request, { seed: true });
+      await open(page, account, PATH, "Booking setup");
+      const answer = page.waitForResponse((r) => r.url().includes("/api/calendar/google/connect?resourceId="));
+      await page.getByRole("button", { name: "Connect Google Calendar for Asha" }).click();
+      expect((await answer).status()).toBe(501);
+      await expect(appAlert(page).filter({ hasText: "Couldn't connect Google Calendar for Asha" })).toContainText("Google Calendar isn't switched on yet.");
+      await expect(page).toHaveURL(new RegExp(`${PATH}$`));
+      await expect(page.getByRole("button", { name: "Connect Google Calendar for Asha" })).toBeEnabled();
+    });
+
+    test("sends the browser to Google's consent screen for that resource", async ({ page, request }) => {
+      const account = await newDay3Account(request, { seed: true });
+      // The API's answer when Google is configured, and Google itself, stood in for.
+      let asked: URL | null = null;
+      await page.route("**/api/calendar/google/connect?**", (route) => {
+        asked = new URL(route.request().url());
+        return route.fulfill({ json: { url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=test&state=signed" } });
+      });
+      await page.route("https://accounts.google.com/**", (route) => route.fulfill({ contentType: "text/html", body: "<title>Google</title><h1>Choose an account</h1>" }));
+      await open(page, account, PATH, "Booking setup");
+      await page.getByRole("button", { name: "Connect Google Calendar for Asha" }).click();
+      await expect(page).toHaveURL(/^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?client_id=test/);
+      expect(asked!.searchParams.get("resourceId")).toBe(account.ids.asha);
+    });
+
+    test("shows Google's outcome after the callback sends the browser back to the dashboard", async ({ page, request }) => {
+      const account = await newDay3Account(request, { seed: true });
+      await open(page, account, PATH, "Booking setup");
+      await page.goto(`/dashboard?google_calendar=connected&resource=${account.ids.ravi}`);
+      await expect(page.getByRole("status").filter({ hasText: "Google Calendar connected for Ravi." })).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`${PATH}$`)); // forwarded, then the query is cleared
+
+      await page.goto(`/dashboard?google_calendar=denied&resource=${account.ids.asha}`);
+      await expect(page.getByRole("status").filter({ hasText: "Google Calendar wasn't connected for Asha: access was declined" })).toBeVisible();
+    });
   });
 });

@@ -206,6 +206,9 @@ const PACKS = [
 ];
 /** tenant id → { business_hours, vertical_version } for businesses made during a run. */
 const TENANT_EXTRA = new Map();
+/** google_calendar_connections rows (0017). Members may read every column but the token. */
+const CALENDARS = [];
+const CALENDAR_READABLE = ["id", "tenant_id", "resource_id", "google_email", "calendar_id", "scope", "status", "last_error", "created_at", "updated_at"];
 const ist = (date, hhmm) => new Date(`${date}T${hhmm}:00+05:30`).toISOString();
 
 /**
@@ -227,6 +230,12 @@ function createDay3Account({ seed = false, role = "owner", error = null } = {}) 
   const room = resourceRow(t.id, { name: "Room 2", type: "room", active: false });
   RESOURCES.push(asha, ravi, room);
   Object.assign(ids, { asha: asha.id, ravi: ravi.id, room: room.id });
+  // Ravi's calendar works; Room 2's token was refused by Google; Asha has none.
+  const calendar = (resource, google_email, status) => ({
+    id: randomUUID(), tenant_id: t.id, resource_id: resource.id, google_email, calendar_id: "primary", refresh_token_enc: "v1.never-sent-to-the-browser",
+    scope: "calendar.events calendar.freebusy email", status, last_error: status === "connected" ? null : "invalid_grant", created_at: ist("2026-10-09", "10:00"), updated_at: ist("2026-10-09", "10:00"),
+  });
+  CALENDARS.push(calendar(ravi, "ravi@example.com", "connected"), calendar(room, "rooms@example.com", "needs_reconnect"));
   const consult = { id: randomUUID(), tenant_id: t.id, name: "Consultation", duration_min: 60, price_min: null, price_max: null, resource_type: "staff", active: true, buffer_min: 15, min_notice_min: 120 };
   const follow = { id: randomUUID(), tenant_id: t.id, name: "Follow-up", duration_min: 30, price_min: 0, price_max: 0, resource_type: "staff", active: true, buffer_min: 0, min_notice_min: 60 };
   SERVICES.push(consult, follow);
@@ -701,6 +710,16 @@ ${choose("Cancel", "cancel=1")}
         return send(res, 200, ownTenants.map(row));
       }
       return send(res, 200, day3Rows(email, "tenants", ownTenants.map(row)));
+    }
+    if (table === "google_calendar_connections") {
+      // 0017: members read their own businesses' rows, every column but refresh_token_enc; only the server writes.
+      if (!email) return send(res, 200, []);
+      const columns = (url.searchParams.get("select") ?? "*").split(",").map((c) => c.trim());
+      if (req.method !== "GET" || columns.some((c) => !CALENDAR_READABLE.includes(c))) {
+        return send(res, 401, { code: "42501", details: null, hint: null, message: "permission denied for table google_calendar_connections" });
+      }
+      const own = new Set(USERS[email].memberships.map(([t]) => t.id));
+      return send(res, 200, CALENDARS.filter((c) => own.has(c.tenant_id)).filter(filters(url)).map((c) => pick(c, columns)));
     }
     if (table === "vertical_packs") {
       // A global catalogue every signed-in user reads.

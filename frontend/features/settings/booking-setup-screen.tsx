@@ -1,9 +1,11 @@
 "use client";
 
 import type { Role } from "@pakka/types";
+import { useEffect } from "react";
 import { FlashStatus, useFlash } from "@/features/knowledge/flash";
 import { ServicesEditor } from "@/features/knowledge/services-editor";
 import { BusinessHoursSection } from "./business-hours-section";
+import type { CalendarOutcome } from "./google-calendar";
 import { ResourcesSection } from "./resources-section";
 
 // /dashboard/settings/booking: what the slot engine works from (Day 3, "services and resources
@@ -15,9 +17,22 @@ export function canEditBookingSetup(role: Role): boolean {
   return role === "owner" || role === "admin";
 }
 
-export function BookingSetupScreen({ tenantId, role }: { tenantId: string; role: Role }) {
+export function BookingSetupScreen({
+  tenantId,
+  role,
+  calendarReturn,
+}: {
+  tenantId: string;
+  role: Role;
+  calendarReturn: { outcome: CalendarOutcome; resourceId: string | null } | null;
+}) {
   const canWrite = canEditBookingSetup(role);
   const [toast, flash] = useFlash();
+
+  // The outcome is shown once; a reload or a shared link shouldn't repeat it.
+  useEffect(() => {
+    if (calendarReturn) window.history.replaceState(window.history.state, "", window.location.pathname);
+  }, [calendarReturn]);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "36px", maxWidth: "960px", minWidth: 0, color: "var(--color-text)" }}>
       <div>
@@ -30,7 +45,7 @@ export function BookingSetupScreen({ tenantId, role }: { tenantId: string; role:
         )}
       </div>
       <BusinessHoursSection tenantId={tenantId} canWrite={canWrite} onSaved={flash} />
-      <ResourcesSection tenantId={tenantId} canWrite={canWrite} onSaved={flash} />
+      <ResourcesSection tenantId={tenantId} canWrite={canWrite} onSaved={flash} calendarReturn={calendarReturn} />
       <ServicesEditor tenantId={tenantId} canWrite={canWrite} />
       <FlashStatus toast={toast} />
     </div>
