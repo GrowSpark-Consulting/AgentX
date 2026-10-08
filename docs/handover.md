@@ -402,7 +402,7 @@ Every inbound WhatsApp message goes through the same eight steps inside one Inng
 - The webhook only verifies the Meta signature, finds the tenant from `phone_number_id` in `whatsapp_connections`, dedupes on `provider_msg_id`, stores the message and emits `whatsapp/message.received`; it returns 200 within a second so Meta never retries.
 - Inngest runs one conversation at a time (concurrency key = `conversation_id`), so two quick messages from the same customer are processed in order. If a customer sends several messages within 3 seconds, process them together.
 - Every step is an Inngest `step.run`, so a failure (LLM timeout, Meta API error) retries that step only and never sends a reply twice.
-- Steps 4 and 7 are the only LLM calls. Their inputs and outputs are logged to Langfuse with the tenant id.
+- Steps 4 and 7 are the only LLM calls. Every call is traced in Langfuse with the tenant id, the model, the prompt version, the tokens and an estimated cost. By design (DPDP: a customer's words carry names, numbers and addresses) a trace carries **no message text** unless `LANGFUSE_CAPTURE_TEXT=true`, and then phone numbers and emails are masked and each text is cut to 2,000 characters (`backend/src/agent/llm/tracing.ts`).
 
 ## Module specs
 

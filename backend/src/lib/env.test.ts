@@ -8,6 +8,7 @@ const base = {
   NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon",
   SUPABASE_SERVICE_ROLE_KEY: "service",
   EMBEDDINGS_API_KEY: "test-embeddings-key",
+  ANTHROPIC_API_KEY: "test-anthropic-key",
 };
 
 describe("parseServerEnv", () => {
@@ -21,8 +22,48 @@ describe("parseServerEnv", () => {
     expect(() =>
       parseServerEnv({ ...base, SUPABASE_SERVICE_ROLE_KEY: "" }),
     ).toThrow(EnvError);
-    expect(parseServerEnv({ ...base, ANTHROPIC_API_KEY: "" }).ANTHROPIC_API_KEY)
-      .toBeUndefined();
+    expect(parseServerEnv({ ...base, META_APP_SECRET: "" }).META_APP_SECRET).toBeUndefined();
+  });
+
+  describe("the language model settings", () => {
+    it("requires ANTHROPIC_API_KEY: the agent calls Anthropic on every message", () => {
+      const without = Object.fromEntries(Object.entries(base).filter(([key]) => key !== "ANTHROPIC_API_KEY"));
+      expect(() => parseServerEnv(without)).toThrow(/ANTHROPIC_API_KEY/);
+      expect(() => parseServerEnv({ ...base, ANTHROPIC_API_KEY: "" })).toThrow(/ANTHROPIC_API_KEY/); // empty is unset
+    });
+
+    it("lets Langfuse stay off: no keys, no tracing", () => {
+      const env = parseServerEnv(base);
+      expect(env.LANGFUSE_PUBLIC_KEY).toBeUndefined();
+      expect(env.LANGFUSE_SECRET_KEY).toBeUndefined();
+    });
+
+    it("takes the two Langfuse keys together, and refuses one without the other, without echoing either", () => {
+      expect(parseServerEnv({ ...base, LANGFUSE_PUBLIC_KEY: "pk-lf-1", LANGFUSE_SECRET_KEY: "sk-lf-2" }).LANGFUSE_PUBLIC_KEY).toBe("pk-lf-1");
+      for (const only of [{ LANGFUSE_PUBLIC_KEY: "pk-lf-1" }, { LANGFUSE_SECRET_KEY: "sk-lf-2" }]) {
+        try {
+          parseServerEnv({ ...base, ...only });
+          expect.unreachable();
+        } catch (e) {
+          expect(e).toBeInstanceOf(EnvError);
+          expect((e as EnvError).message).toContain("LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must be set together");
+          expect((e as EnvError).message).not.toMatch(/pk-lf-1|sk-lf-2/);
+        }
+      }
+    });
+
+    it("takes the Langfuse address as an https URL, and nothing else", () => {
+      expect(parseServerEnv({ ...base, LANGFUSE_BASE_URL: "https://us.cloud.langfuse.com" }).LANGFUSE_BASE_URL).toBe("https://us.cloud.langfuse.com");
+      expect(() => parseServerEnv({ ...base, LANGFUSE_BASE_URL: "http://langfuse.example.com" })).toThrow(/LANGFUSE_BASE_URL/); // the keys travel to it
+      expect(() => parseServerEnv({ ...base, LANGFUSE_BASE_URL: "ftp://example.com" })).toThrow(/LANGFUSE_BASE_URL/);
+      expect(() => parseServerEnv({ ...base, LANGFUSE_BASE_URL: "not a url" })).toThrow(/LANGFUSE_BASE_URL/);
+    });
+
+    it('takes LANGFUSE_CAPTURE_TEXT as exactly "true" or "false"', () => {
+      expect(parseServerEnv({ ...base, LANGFUSE_CAPTURE_TEXT: "true" }).LANGFUSE_CAPTURE_TEXT).toBe("true");
+      expect(parseServerEnv({ ...base, LANGFUSE_CAPTURE_TEXT: "false" }).LANGFUSE_CAPTURE_TEXT).toBe("false");
+      expect(() => parseServerEnv({ ...base, LANGFUSE_CAPTURE_TEXT: "yes" })).toThrow(/LANGFUSE_CAPTURE_TEXT/);
+    });
   });
 
   it("names the bad variable without echoing its value", () => {
