@@ -5,6 +5,7 @@
     "watchPatterns": [
       "backend/**",
       "packages/**",
+      "packs/**",
       "package.json",
       "pnpm-lock.yaml",
       "pnpm-workspace.yaml",

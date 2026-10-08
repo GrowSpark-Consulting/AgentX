@@ -180,14 +180,20 @@ production. Build and deploy settings are in `railway.json` at the repo root and
 | Build Command | `pnpm --filter @pakka/backend typecheck` (railway.json) |
 | Start Command | `pnpm --filter @pakka/backend start` → `tsx src/server/main.ts` (railway.json) |
 | Healthcheck Path | `/api/health` (railway.json) |
-| Watch Paths | `backend/**`, `packages/**`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `railway.json` |
+| Watch Paths | `backend/**`, `packages/**`, `packs/**`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `railway.json` |
 | Branch | staging environment: `main`; production: `production` |
 | Region | the one closest to Mumbai (the Supabase region) |
 | Networking | Generate a public domain, or add `api-staging.pakkaagent.in` / `api.pakkaagent.in` as a custom domain |
 
 The server listens on Railway's `PORT` on `0.0.0.0`, checks its environment before listening (a
 missing or invalid variable fails the deploy and the log names it, never its value), and on SIGTERM
-finishes requests in flight before exiting.
+finishes requests in flight before exiting. It also validates `packs/*.json` and stores new pack versions
+in `vertical_packs` before listening: an invalid pack or a changed published version fails the deploy the same
+way, and so does a database that stays unreachable for about 40 seconds after the process started (a database
+that is only briefly unavailable, such as one restarting during the deploy, is waited for: each wait is logged
+as `[packs] the pack store is unavailable (try N, <code>)`; the waits fit inside the 60 s healthcheck).
+`pnpm packs:sync [--check]` runs the same step by hand. Locally, `pnpm dev` therefore waits and then exits if
+there is no database (start it with `pnpm db:start`).
 
 Variables per environment (names in `backend/.env.example`): `NEXT_PUBLIC_APP_URL` (the frontend's
 origin for this environment; always allowed by CORS), `CORS_ALLOWED_ORIGINS` (other exact origins,

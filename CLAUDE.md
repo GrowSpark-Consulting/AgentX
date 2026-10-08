@@ -40,7 +40,7 @@ packs/ · tests/conversations/ · supabase/migrations/ · docs/frontend-architec
 ## Commands
 pnpm dev (frontend :3000 + API :4000) · pnpm inngest:dev · pnpm test · pnpm typecheck · pnpm lint · pnpm build · pnpm test:e2e
 (root scripts run every workspace; one package: pnpm --filter @pakka/frontend <script>)
-pnpm db:start · pnpm db:reset · pnpm db:test · pnpm db:status · pnpm db:stop
+pnpm db:start · pnpm db:reset · pnpm db:test · pnpm db:status · pnpm db:stop · pnpm packs:sync [-- --check]
 Local env files: frontend/.env.local (public values, from frontend/.env.example) and backend/.env.local
 (server values, from backend/.env.example). Neither is ever committed.
 Coming later: pnpm test:conversations (M3) · pnpm packs:migrate (M7)

@@ -17,7 +17,8 @@
     "db:reset": "supabase db reset",
     "db:test": "supabase test db",
     "db:status": "supabase status",
-    "seed:connection": "pnpm --filter @pakka/backend seed:connection"
+    "seed:connection": "pnpm --filter @pakka/backend seed:connection",
+    "packs:sync": "pnpm --filter @pakka/backend packs:sync"
   },
   "devDependencies": {
     "inngest-cli": "^1.45.1",

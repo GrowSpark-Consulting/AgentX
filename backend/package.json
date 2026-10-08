@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:connection": "tsx --env-file-if-exists=.env.local src/scripts/seed-connection.ts"
+    "seed:connection": "tsx --env-file-if-exists=.env.local src/scripts/seed-connection.ts",
+    "packs:sync": "tsx --env-file-if-exists=.env.local src/scripts/sync-packs.ts"
   },
   "dependencies": {
     "@pakka/types": "workspace:*",

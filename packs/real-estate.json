@@ -1,0 +1,34 @@
+{
+  "key": "real-estate",
+  "version": 1,
+  "label": "Real estate",
+  "bookingModes": ["site_visit"],
+  "fields": [
+    { "key": "budget", "label": "Budget", "type": "range_inr", "required": true },
+    { "key": "location", "label": "Preferred area", "type": "text", "required": true },
+    { "key": "config", "label": "BHK / type", "type": "enum", "options": ["1BHK", "2BHK", "3BHK", "Villa", "Plot"] },
+    { "key": "timeline", "label": "When are you planning to buy?", "type": "enum", "options": ["0-3m", "3-6m", "6m+"], "required": true },
+    { "key": "funding", "label": "Loan or own funds", "type": "enum", "options": ["loan_approved", "loan_needed", "own_funds"] },
+    { "key": "decision_maker", "label": "Are you the buyer or co-buyer?", "type": "boolean" }
+  ],
+  "scoring": {
+    "rules": [
+      { "field": "budget", "match": "within_project_band", "points": 30 },
+      { "field": "timeline", "equals": "0-3m", "points": 25 },
+      { "field": "location", "match": "in_project_areas", "points": 20 },
+      { "field": "funding", "in": ["loan_approved", "own_funds"], "points": 15 },
+      { "field": "decision_maker", "equals": true, "points": 10 }
+    ],
+    "thresholds": { "hot": 70, "warm": 40 },
+    "hardFails": [{ "field": "budget", "below": "min_project_price" }]
+  },
+  "reminders": [
+    { "event": "site_visit", "anchor": "start", "offset": "-24h", "template": "reminder_24h_v1", "feature": "reminder_24h" },
+    { "event": "site_visit", "anchor": "start", "offset": "-2h", "template": "reminder_2h_v1", "feature": "reminder_2h" }
+  ],
+  "feedback": { "event": "site_visit", "anchor": "end", "offset": "+2h", "template": "feedback_v1", "feature": "feedback_request" },
+  "handoffTriggers": ["asked_human", "complaint", "negotiation", "hot_lead", "kb_gap", "stuck"],
+  "templates": ["booking_confirmed_v1", "reminder_24h_v1", "reminder_2h_v1", "feedback_v1", "review_v1", "nudge_v1", "staff_alert_v1"],
+  "kbStarter": ["Projects and locations", "Price bands", "Amenities", "Loan partners", "Site visit timings"],
+  "extraGuardrails": []
+}
