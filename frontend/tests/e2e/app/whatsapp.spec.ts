@@ -97,6 +97,31 @@ test.describe("WhatsApp connection panel", () => {
     await expectNoSecrets(page);
   });
 
+  test("a Spark Agent number offers no recheck or disconnect; the client's own number keeps both", async ({ page }) => {
+    await signIn(page, "wa-platform@test.local", "/dashboard/whatsapp");
+    await expect(card(page)).toHaveCount(2);
+    const platform = card(page).filter({ hasText: "Spark Agent number" });
+    const own = card(page).filter({ hasText: "Connected manually" });
+
+    // Seeded without a check: no number or name yet, so the existing fallback shows.
+    await expect(platform).toContainText("Connected");
+    await expect(platform).toContainText("Number pending");
+    await expect(platform).not.toContainText("Shows as");
+    await expect(platform).toContainText("600000000000001");
+    await expect(platform.getByRole("button")).toHaveCount(0);
+    await expect(platform).not.toContainText(RECHECK_OFF);
+    await expect(platform).not.toContainText(DISCONNECT_OFF);
+
+    // The owner's own number on the same business is unchanged.
+    await expect(own).toContainText("+91 98400 12345");
+    await expect(own.getByRole("button", { name: "Recheck connection" })).toBeDisabled();
+    await expect(own.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible();
+    await expect(recheck(page)).toHaveCount(1);
+    await expect(disconnect(page)).toHaveCount(1);
+    await expectNoSecrets(page);
+    await expectNoHorizontalOverflow(page);
+  });
+
   test("checking", async ({ page }) => {
     await signIn(page, "validating@test.local", "/dashboard/whatsapp");
     await expect(card(page)).toContainText("Checking");

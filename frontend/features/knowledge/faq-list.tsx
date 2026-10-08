@@ -2,24 +2,28 @@
 
 import { useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "@/components/shared/states";
-import type { FaqItem, SectionSource } from "./kb-content";
+import { KB_UNAVAILABLE_TITLE, type FaqItem, type SectionSource } from "./kb-content";
 
 // "FAQs · n", ported from the /dashboard/preview Knowledge base (features/knowledge/pakka-knowledge.tsx):
 // title over a 2px ink rule with a ghost Add, then an accordion (question row with +/−, the answer
 // below; the first one starts open). An open FAQ has Edit and Delete for owners and admins; staff
-// read only. A FAQ that isn't ready (its save failed to reach the AI) says so.
+// read only. A FAQ that isn't ready (its save failed to reach the AI) says so. Once a write finds the
+// FAQ routes aren't deployed yet, the section says so and its write buttons are switched off.
 
 const NOT_READY: Record<Exclude<FaqItem["status"], "ready">, string> = { processing: "Processing", failed: "Not in use: edit to try again" };
 
 export function FaqList({
   source,
   canWrite,
+  writesUnavailable = false,
   onAdd,
   onEdit,
   onDelete,
 }: {
   source: SectionSource<FaqItem>;
   canWrite: boolean;
+  /** The FAQ routes aren't deployed yet: the list is shown, nothing can be changed. */
+  writesUnavailable?: boolean;
   onAdd: () => void;
   onEdit: (faq: FaqItem) => void;
   onDelete: (faq: FaqItem) => void;
@@ -38,8 +42,8 @@ export function FaqList({
           type="button"
           className="btn btn-ghost"
           onClick={onAdd}
-          disabled={!canWrite || source.status !== "ready"}
-          aria-describedby={canWrite ? undefined : "faqs-add-note"}
+          disabled={!canWrite || writesUnavailable || source.status !== "ready"}
+          aria-describedby={!canWrite ? "faqs-add-note" : writesUnavailable ? "faqs-unavailable" : undefined}
         >
           Add
         </button>
@@ -49,6 +53,12 @@ export function FaqList({
           Only an owner or admin can change FAQs.
         </p>
       )}
+
+      {canWrite && writesUnavailable ? (
+        <div id="faqs-unavailable" style={{ paddingTop: "12px" }}>
+          <EmptyState compact title={KB_UNAVAILABLE_TITLE} description="The knowledge-base service is still being connected, so FAQs can’t be added or changed yet." />
+        </div>
+      ) : null}
 
       {source.status === "loading" ? (
         <div style={{ paddingTop: "12px" }}>
@@ -92,10 +102,10 @@ export function FaqList({
                 <p style={{ margin: 0, fontSize: "14px", color: "var(--color-neutral-800)", maxWidth: "720px", whiteSpace: "pre-line", overflowWrap: "anywhere" }}>{f.a}</p>
                 {canWrite ? (
                   <div style={{ display: "flex", gap: "4px", marginTop: "8px", marginLeft: "-6px" }}>
-                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px" }} aria-label={`Edit FAQ: ${f.q}`} onClick={() => onEdit(f)}>
+                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px" }} aria-label={`Edit FAQ: ${f.q}`} disabled={writesUnavailable} onClick={() => onEdit(f)}>
                       Edit
                     </button>
-                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px" }} aria-label={`Delete FAQ: ${f.q}`} onClick={() => onDelete(f)}>
+                    <button type="button" className="btn btn-ghost" style={{ padding: "2px 6px" }} aria-label={`Delete FAQ: ${f.q}`} disabled={writesUnavailable} onClick={() => onDelete(f)}>
                       Delete
                     </button>
                   </div>

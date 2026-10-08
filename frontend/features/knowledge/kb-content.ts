@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { apiFetch, patchJson, postForm, postJson, sendNoContent, type ApiPath } from "@/lib/api/client";
-import { apiErrorFrom, formatError, type FormattedError } from "@/lib/errors";
+import { ApiError, apiErrorFrom, formatError, type FormattedError } from "@/lib/errors";
 
 // The Knowledge base sections other than services: documents, FAQs and "questions the AI couldn't
 // answer" (gaps), against docs/contracts.md section 9 and docs/kb-contract-checklist.md.
@@ -24,6 +24,57 @@ export class KbDataError extends Error {
   constructor(what: string) {
     super(`The ${what} data had an unexpected shape.`);
     this.name = "KbDataError";
+  }
+}
+
+// Not deployed yet --------------------------------------------------------------------------------
+//
+// The API answers a route it doesn't have with 404 not_found "Not found." (backend/src/server/app.ts),
+// the same code a route uses for a missing row, so the two are told apart by what was asked:
+//   * A route without an id (POST /api/kb/faqs, POST /api/kb/documents, GET /api/kb/gaps): section 9
+//     lists no not_found for these, so a 404 can only mean the route itself isn't there yet.
+//   * A route with an id (PATCH|DELETE /api/kb/faqs/:id, DELETE /api/kb/documents/:id, the gap
+//     answer and dismiss): the list is read again (explainNotFound). If the row is still in it, the
+//     route is what's missing; if not, the row is gone and the usual "no longer exists" stands.
+// not_available (501) means the same on any route. Every other error (signed out, forbidden,
+// conflict, validation, server errors) is reported as it is.
+
+/** The knowledge-base API, or this part of it, isn't deployed yet. */
+export class KbUnavailableError extends Error {
+  constructor() {
+    super("The knowledge-base service isn't available yet.");
+    this.name = "KbUnavailableError";
+  }
+}
+
+export const KB_UNAVAILABLE_TITLE = "Knowledge base is not available yet.";
+/** For a write that was refused because the service isn't there: nothing was changed. */
+export const KB_UNAVAILABLE_TEXT = "The knowledge-base service is still being connected. Nothing was changed.";
+
+const isNotFound = (err: unknown) => err instanceof ApiError && err.status === 404 && err.body.error.code === "not_found";
+const isNotAvailable = (err: unknown) => err instanceof ApiError && err.body.error.code === "not_available";
+
+/** For a route without an id: a 404 or not_available means the route isn't deployed. */
+function unavailableIfMissing(err: unknown): never {
+  throw isNotFound(err) || isNotAvailable(err) ? new KbUnavailableError() : err;
+}
+
+/** For a route with an id: not_available is the service; a 404 is left to explainNotFound. */
+function unavailableIfNotAvailable(err: unknown): never {
+  throw isNotAvailable(err) ? new KbUnavailableError() : err;
+}
+
+/**
+ * A 404 from a route with an id: the row is gone, or the route isn't deployed. `stillListed` reads the
+ * list again; if the row is still in it, the route is what's missing. Anything else is returned as is,
+ * and so is the 404 if the list can't be read (the existing message is the safer one then).
+ */
+export async function explainNotFound(err: unknown, stillListed: () => Promise<boolean>): Promise<unknown> {
+  if (!isNotFound(err)) return err;
+  try {
+    return (await stillListed()) ? new KbUnavailableError() : err;
+  } catch (readErr) {
+    return readErr instanceof KbUnavailableError ? readErr : err;
   }
 }
 
@@ -170,14 +221,15 @@ export async function uploadDocument(tenantId: string, file: File, title?: strin
   form.append("file", file);
   const trimmed = title?.trim();
   if (trimmed) form.append("title", trimmed);
-  const parsed = UploadResponse.safeParse(await postForm(kbPath("documents"), form, { tenantId }));
+  const parsed = UploadResponse.safeParse(await postForm(kbPath("documents"), form, { tenantId }).catch(unavailableIfMissing));
   if (!parsed.success) throw new KbDataError("upload");
   const r = parsed.data;
   return toKbDocument({ id: r.id, tenant_id: tenantId, source_type: r.sourceType, source_url: null, title: r.title || file.name, status: r.status, created_at: r.createdAt });
 }
 
+/** A 404 is passed on as is: the caller tells a deleted document from a missing route (explainNotFound). */
 export async function deleteDocument(tenantId: string, id: string): Promise<void> {
-  await sendNoContent(kbPath("documents", id), "DELETE", { tenantId });
+  await sendNoContent(kbPath("documents", id), "DELETE", { tenantId }).catch(unavailableIfNotAvailable);
 }
 
 // FAQs ---------------------------------------------------------------------------------------------
@@ -269,15 +321,17 @@ function toFaq(json: unknown): FaqItem {
 }
 
 export async function createFaq(tenantId: string, input: FaqInput): Promise<FaqItem> {
-  return toFaq(await postJson(kbPath("faqs"), input, { tenantId }));
+  return toFaq(await postJson(kbPath("faqs"), input, { tenantId }).catch(unavailableIfMissing));
 }
 
+/** A 404 is passed on as is: the caller tells a deleted FAQ from a missing route (explainNotFound). */
 export async function updateFaq(tenantId: string, id: string, changes: Partial<FaqInput>): Promise<FaqItem> {
-  return toFaq(await patchJson(kbPath("faqs", id), changes, { tenantId }));
+  return toFaq(await patchJson(kbPath("faqs", id), changes, { tenantId }).catch(unavailableIfNotAvailable));
 }
 
+/** A 404 is passed on as is: the caller tells a deleted FAQ from a missing route (explainNotFound). */
 export async function deleteFaq(tenantId: string, id: string): Promise<void> {
-  await sendNoContent(kbPath("faqs", id), "DELETE", { tenantId });
+  await sendNoContent(kbPath("faqs", id), "DELETE", { tenantId }).catch(unavailableIfNotAvailable);
 }
 
 /** Replaces an FAQ in place, or adds it at the end. */
@@ -305,7 +359,7 @@ const GapResponse = z.object({
 /** GET /api/kb/gaps: open questions, most asked first (the API's order is kept). */
 export async function listGaps(tenantId: string, signal?: AbortSignal): Promise<GapItem[]> {
   const res = await apiFetch(kbPath("gaps"), { method: "GET", tenantId, signal });
-  if (!res.ok) throw await apiErrorFrom(res);
+  if (!res.ok) unavailableIfMissing(await apiErrorFrom(res));
   const parsed = z.array(GapResponse).safeParse(await res.json());
   if (!parsed.success) throw new KbDataError("questions");
   return parsed.data;
@@ -313,15 +367,19 @@ export async function listGaps(tenantId: string, signal?: AbortSignal): Promise<
 
 const AnswerResponse = z.object({ faq: FaqResponse });
 
-/** POST /api/kb/gaps/:id/answer `{ a }`: the API creates the FAQ and closes the gap together. */
+/**
+ * POST /api/kb/gaps/:id/answer `{ a }`: the API creates the FAQ and closes the gap together. A 404 is
+ * passed on as is: the caller tells an answered question from a missing route (explainNotFound).
+ */
 export async function answerGap(tenantId: string, id: string, answer: string): Promise<FaqItem> {
-  const parsed = AnswerResponse.safeParse(await postJson(kbPath("gaps", id, "answer"), { a: answer }, { tenantId }));
+  const parsed = AnswerResponse.safeParse(await postJson(kbPath("gaps", id, "answer"), { a: answer }, { tenantId }).catch(unavailableIfNotAvailable));
   if (!parsed.success) throw new KbDataError("FAQ");
   return { ...parsed.data.faq, status: "ready" };
 }
 
+/** A 404 is passed on as is: the caller tells a closed question from a missing route (explainNotFound). */
 export async function dismissGap(tenantId: string, id: string): Promise<void> {
-  await sendNoContent(kbPath("gaps", id, "dismiss"), "POST", { tenantId });
+  await sendNoContent(kbPath("gaps", id, "dismiss"), "POST", { tenantId }).catch(unavailableIfNotAvailable);
 }
 
 export const GAP_ANSWER_MAX = FAQ_A_MAX;
@@ -341,10 +399,11 @@ export function askedText(count: number): string {
 
 // Sections and errors ------------------------------------------------------------------------------
 
-/** Where a section's data comes from. */
+/** Where a section's data comes from. `unavailable`: its API route isn't deployed yet. */
 export type SectionSource<T> =
   | { status: "loading" }
   | { status: "error"; message: string; retry: () => void }
+  | { status: "unavailable" }
   | { status: "ready"; items: T[] };
 
 /**
@@ -353,6 +412,7 @@ export type SectionSource<T> =
  * passed through so forms can mark the field.
  */
 export function describeKbWriteError(err: unknown, title: string, what: "FAQ" | "document" | "question"): FormattedError {
+  if (err instanceof KbUnavailableError) return { code: "not_available", title: KB_UNAVAILABLE_TITLE, message: KB_UNAVAILABLE_TEXT, retryable: false };
   const e = formatError(err);
   if (e.code === "not_found") return { ...e, title, message: `This ${what} no longer exists. Refresh to see the current list.` };
   if (e.code === "forbidden") return { ...e, title, message: "Only an owner or admin can change the knowledge base." };

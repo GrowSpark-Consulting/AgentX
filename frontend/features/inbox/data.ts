@@ -14,6 +14,9 @@ import { z } from "zod";
 //   * The list loads the newest CONVERSATION_LIMIT conversations by creation time and is sorted by
 //     each one's newest loaded message. Migration 0010 adds conversations.last_message_at; once it is
 //     applied everywhere, order and page by that column in the query instead.
+//   * Media files aren't downloaded: messages.media holds Meta's media id and mime type only
+//     (docs/task-notes/2026-10-08-feat-agent-webhook-post.md), so photos, documents and voice
+//     messages show a placeholder, never a preview, a player or a link.
 
 export const CONVERSATION_LIMIT = 200;
 /** Newest messages loaded per chat; older history needs paging (not built). */
@@ -39,11 +42,21 @@ export type Sender = z.infer<typeof Sender>;
 export const ConversationMode = z.enum(["ai", "human", "external"]);
 export type ConversationMode = z.infer<typeof ConversationMode>;
 
+/**
+ * messages.kind and messages.meta (migration 0013): what an inbound message is, and what doesn't fit a
+ * column. Null on outbound rows and rows from before 0013. Kept loose (any string) so a kind added
+ * later is shown from its body rather than failing the whole read.
+ */
+const Kind = z.string().nullable().optional();
+const Meta = z.unknown().optional();
+
 const LatestMessageRow = z.object({
   id: z.guid(),
   sender: Sender,
+  kind: Kind,
   body: z.string().nullable(),
   media: z.unknown().optional(),
+  meta: Meta,
   template_name: z.string().nullable(),
   created_at: Timestamp,
 });
@@ -69,8 +82,10 @@ export const MessageRow = z.object({
   conversation_id: z.guid(),
   direction: z.enum(["in", "out"]),
   sender: Sender,
+  kind: Kind,
   body: z.string().nullable(),
   media: z.unknown().optional(),
+  meta: Meta,
   template_name: z.string().nullable(),
   delivery_status: z.string().nullable(),
   created_at: Timestamp,
@@ -97,9 +112,9 @@ export const HandoffChangeRow = z.object({
 const CONVERSATION_COLUMNS =
   "id, tenant_id, mode, status, last_customer_msg_at, created_at, " +
   "contacts (name, phone, language), handoffs (id, trigger), " +
-  "messages (id, sender, body, media, template_name, created_at)";
+  "messages (id, sender, kind, body, media, meta, template_name, created_at)";
 const MESSAGE_COLUMNS =
-  "id, tenant_id, conversation_id, direction, sender, body, media, template_name, delivery_status, created_at";
+  "id, tenant_id, conversation_id, direction, sender, kind, body, media, meta, template_name, delivery_status, created_at";
 
 // View model -------------------------------------------------------------------------------------
 
@@ -107,6 +122,8 @@ export interface Attachment {
   /** Short label for the file tile, e.g. "PDF" or "IMG". */
   label: string;
   name: string;
+  /** A second line under the name: why the file can't be opened, or a location's coordinates. */
+  note?: string;
 }
 
 export interface LastMessage {
@@ -140,9 +157,17 @@ export interface ChatMessage {
   conversationId: string;
   direction: "in" | "out";
   sender: Sender;
+  /** messages.kind; null on outbound rows and rows from before migration 0013. */
+  kind: string | null;
   body: string | null;
   templateName: string | null;
   attachment: Attachment | null;
+  /** What the bubble shows under the attachment, if anything (see describeMessage). */
+  text: string | null;
+  /** The text is ours (e.g. "Message type not supported"), not the customer's words. */
+  textIsNotice: boolean;
+  /** For the conversation list, without the sender prefix. */
+  preview: string;
   deliveryStatus: string | null;
   createdAt: string;
 }
@@ -177,28 +202,146 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** The stored media shape isn't agreed yet, so read only a kind and a file name when present. */
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+type MediaKind = "image" | "audio" | "document";
+
+/** Tile labels for the document types customers usually send; others fall back to "DOC". */
+const MIME_LABEL: Record<string, string> = {
+  "application/pdf": "PDF",
+  "application/msword": "DOC",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+  "application/vnd.ms-excel": "XLS",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+  "application/vnd.ms-powerpoint": "PPT",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
+  "text/plain": "TXT",
+  "text/csv": "CSV",
+};
+
+/** "audio/ogg; codecs=opus" → "audio/ogg". */
+function baseMime(media: Record<string, unknown>): string | null {
+  return stringField(media, "mime")?.split(";")[0].trim().toLowerCase() || null;
+}
+
+/**
+ * The placeholder for a photo, voice message or document (migration 0013's media `{ id, mime }`). The
+ * file isn't downloaded, so nothing links to it. A file name is used when the row has one; #50 stores
+ * none, so documents are named by type.
+ */
+function mediaAttachment(kind: MediaKind, media: unknown): Attachment {
+  const record = isRecord(media) ? media : {};
+  const fileName = stringField(record, "name") ?? stringField(record, "filename");
+  const ext = fileName ? /\.([a-z0-9]{2,4})$/i.exec(fileName)?.[1]?.toUpperCase() : undefined;
+  const mime = baseMime(record);
+  if (kind === "image") return { label: "IMG", name: fileName ?? "Photo", note: "Can't be shown here yet" };
+  if (kind === "audio") return { label: "AUD", name: "Voice message", note: "Can't be played here yet" };
+  return { label: ext ?? (mime ? MIME_LABEL[mime] : undefined) ?? "DOC", name: fileName ?? "Document", note: "Can't be opened here yet" };
+}
+
+/**
+ * Media on a row without a kind (outbound rows, or rows from before migration 0013). A kind or file
+ * name in the media is used when present; otherwise the mime type decides what it is.
+ */
 export function attachmentOf(media: unknown): Attachment | null {
   if (!isRecord(media)) return null;
-  const text = (k: string) => (typeof media[k] === "string" && (media[k] as string).trim() ? (media[k] as string).trim() : null);
-  const name = text("name") ?? text("filename") ?? text("caption");
-  const kind = text("kind") ?? text("type");
-  if (!name && !kind) return null;
+  const name = stringField(media, "name") ?? stringField(media, "filename") ?? stringField(media, "caption");
+  const kind = stringField(media, "kind") ?? stringField(media, "type");
+  if (!name && !kind) {
+    const mime = baseMime(media);
+    if (!mime) return null;
+    return mediaAttachment(mime.startsWith("image/") ? "image" : mime.startsWith("audio/") ? "audio" : "document", media);
+  }
   const ext = name && /\.([a-z0-9]{2,4})$/i.exec(name)?.[1];
   const label = (ext ?? (kind === "image" ? "img" : kind === "audio" ? "aud" : "doc")).toUpperCase();
   return { label, name: name ?? (kind ? kind[0].toUpperCase() + kind.slice(1) : "Attachment") };
 }
 
+/** A location's body as #50 writes it: "<lat>,<lng> <name> <address>" (name and address optional). */
+export function locationOf(body: string | null): { coordinates: string; place: string | null } | null {
+  const match = /^\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)(?:\s+([\s\S]*))?$/.exec(body ?? "");
+  if (!match) return null;
+  return { coordinates: `${match[1]}, ${match[2]}`, place: match[3]?.trim() || null };
+}
+
+/** "Message type not supported (sticker)": Meta's own word for the type, from meta.unsupportedType. */
+export function unsupportedText(meta: unknown): string {
+  const type = isRecord(meta) ? stringField(meta, "unsupportedType") : null;
+  return type && type !== "unknown" && /^[a-z0-9_]{1,40}$/i.test(type) ? `Message type not supported (${type})` : "Message type not supported";
+}
+
+export interface MessageDisplay {
+  attachment: Attachment | null;
+  text: string | null;
+  textIsNotice: boolean;
+  preview: string;
+}
+
+/**
+ * What a message looks like in its bubble and in the conversation list, by messages.kind (the shapes in
+ * docs/task-notes/2026-10-08-feat-agent-webhook-post.md, section 6). Rows without a kind are shown as
+ * before: the body or template, plus any media.
+ */
+export function describeMessage(m: {
+  kind: string | null;
+  body: string | null;
+  media: unknown;
+  meta: unknown;
+  templateName: string | null;
+}): MessageDisplay {
+  const body = m.body?.trim() ? m.body : null;
+  switch (m.kind) {
+    case "image":
+    case "audio":
+    case "document": {
+      // The body is the caption (#50 never sets one on audio).
+      const attachment = mediaAttachment(m.kind, m.media);
+      return { attachment, text: body, textIsNotice: false, preview: body ? `${attachment.name} · ${body.trim()}` : attachment.name };
+    }
+    case "location": {
+      const location = locationOf(m.body);
+      if (!location) return { attachment: { label: "LOC", name: "Location" }, text: body, textIsNotice: false, preview: "Location" };
+      return {
+        attachment: { label: "LOC", name: location.place ?? "Location", note: location.coordinates },
+        text: null,
+        textIsNotice: false,
+        preview: location.place ? `Location · ${location.place}` : "Location",
+      };
+    }
+    case "interactive": {
+      // The body is the title of the button or list row the customer chose: their reply.
+      const text = body ?? "Replied with a button";
+      return { attachment: null, text, textIsNotice: !body, preview: text.trim() };
+    }
+    case "unsupported": {
+      const text = unsupportedText(m.meta);
+      return { attachment: null, text, textIsNotice: true, preview: text };
+    }
+    default: {
+      const attachment = attachmentOf(m.media);
+      const template = m.templateName ? `Template · ${m.templateName}` : null;
+      // A kind added later that has nothing to show here: say so, rather than an empty bubble.
+      if (m.kind && m.kind !== "text" && !body && !template && !attachment) {
+        const notice = unsupportedText(null);
+        return { attachment: null, text: notice, textIsNotice: true, preview: notice };
+      }
+      return {
+        attachment,
+        text: m.body ?? template,
+        textIsNotice: false,
+        preview: body?.trim() || template || attachment?.name || "",
+      };
+    }
+  }
+}
+
 const PREFIX: Record<Exclude<Sender, "system">, string> = { customer: "", ai: "AI: ", staff: "Staff: " };
 
-export function messagePreview(m: {
-  sender: Exclude<Sender, "system">;
-  body: string | null;
-  templateName: string | null;
-  attachment: Attachment | null;
-}): string {
-  const text = m.body?.trim() || (m.templateName ? `Template · ${m.templateName}` : m.attachment ? m.attachment.name : "");
-  return PREFIX[m.sender] + text;
+export function messagePreview(sender: Exclude<Sender, "system">, preview: string): string {
+  return PREFIX[sender] + preview;
 }
 
 /**
@@ -235,29 +378,25 @@ export function languageName(code: string | null): string | null {
 }
 
 export function toChatMessage(row: z.output<typeof MessageRow>): ChatMessage {
+  const kind = row.kind ?? null;
+  const display = describeMessage({ kind, body: row.body, media: row.media, meta: row.meta, templateName: row.template_name });
   return {
     id: row.id,
     conversationId: row.conversation_id,
     direction: row.direction,
     sender: row.sender,
+    kind,
     body: row.body,
     templateName: row.template_name,
-    attachment: attachmentOf(row.media),
+    ...display,
     deliveryStatus: row.delivery_status,
     createdAt: row.created_at,
   };
 }
 
-function toLastMessage(m: {
-  id: string;
-  sender: Sender;
-  body: string | null;
-  templateName: string | null;
-  attachment: Attachment | null;
-  at: string;
-}): LastMessage | null {
+function toLastMessage(m: { id: string; sender: Sender; preview: string; at: string }): LastMessage | null {
   if (m.sender === "system") return null;
-  return { id: m.id, sender: m.sender, preview: messagePreview({ ...m, sender: m.sender }), at: m.at };
+  return { id: m.id, sender: m.sender, preview: messagePreview(m.sender, m.preview), at: m.at };
 }
 
 export function toConversationSummary(row: z.output<typeof ConversationListRow>): ConversationSummary {
@@ -280,9 +419,13 @@ export function toConversationSummary(row: z.output<typeof ConversationListRow>)
       ? toLastMessage({
           id: latest.id,
           sender: latest.sender,
-          body: latest.body,
-          templateName: latest.template_name,
-          attachment: attachmentOf(latest.media),
+          preview: describeMessage({
+            kind: latest.kind ?? null,
+            body: latest.body,
+            media: latest.media,
+            meta: latest.meta,
+            templateName: latest.template_name,
+          }).preview,
           at: latest.created_at,
         })
       : null,

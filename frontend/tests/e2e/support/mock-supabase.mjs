@@ -59,6 +59,19 @@ const USERS = {
   // Same active number, seen by an admin and by staff: what each may do differs, the data doesn't.
   "wa-admin@test.local": { memberships: [[T.interiors, "admin"]], view: { status: 200, body: [connection(T.interiors.id, "active")] } },
   "wa-staff@test.local": { memberships: [[T.interiors, "staff"]], view: { status: 200, body: [connection(T.interiors.id, "active")] } },
+  // Our own number (method platform, migration 0014), seeded with --skip-check so it has no number or
+  // name yet, next to a client's own number on the same business.
+  "wa-platform@test.local": {
+    memberships: [[T.interiors, "owner"]],
+    view: {
+      status: 200,
+      body: [
+        { ...connection(T.interiors.id, "active"), id: "30000000-0000-0000-0000-000000000002", method: "platform", waba_id: "500000000000001",
+          phone_number_id: "600000000000001", display_phone: null, verified_name: null, coexistence: false, quality_rating: null, messaging_limit: null },
+        { ...connection(T.interiors.id, "active"), method: "manual_byo", coexistence: false },
+      ],
+    },
+  },
 };
 
 // Inbox rows for T.inbox (conversations, contacts, handoffs, messages), with times relative to when the
@@ -91,11 +104,19 @@ const INBOX = {
     [3, cid(1), "out", "system", "Handed to team · asked for a person", ago(21)],
     [4, cid(1), "in", "customer", "Can I talk to someone about the price?", ago(20)],
     [5, cid(2), "in", "customer", "Hi, OMR 2BHK price enna?", ago(121)],
+    // Inbound kinds as the webhook stores them (migration 0013; docs/task-notes/2026-10-08-feat-agent-webhook-post.md).
+    [9, cid(2), "in", "customer", "This one, near the lake?", ago(120.9), "image", { id: "media-9", mime: "image/jpeg" }],
+    [10, cid(2), "in", "customer", null, ago(120.8), "image", { id: "media-10", mime: "image/webp" }],
+    [11, cid(2), "in", "customer", "My salary slip", ago(120.7), "document", { id: "media-11", mime: "application/pdf" }],
+    [12, cid(2), "in", "customer", null, ago(120.6), "audio", { id: "media-12", mime: "audio/ogg; codecs=opus" }],
+    [13, cid(2), "in", "customer", "12.9791,80.2209 Phoenix Marketcity Velachery Main Road, Chennai", ago(120.5), "location"],
+    [14, cid(2), "in", "customer", null, ago(120.4), "unsupported", null, { unsupportedType: "sticker" }],
+    [15, cid(2), "in", "customer", "Book a site visit", ago(120.3), "interactive", null, { buttonId: "book_visit" }],
     [6, cid(2), "out", "ai", "Hi Priya! 2BHKs on OMR start from ₹62 L.", ago(120)],
     [7, cid(3), "in", "customer", "Visit ku varen, parking iruka?", ago(3 * 24 * 60)],
     [8, cid(3), "out", "staff", "Yes ma’am, visitor parking is at the site office.", ago(3 * 24 * 60 - 5)],
-  ].map(([n, conversation_id, direction, sender, body, created_at]) => ({
-    id: mid(n), tenant_id: T.inbox.id, conversation_id, direction, sender, body, media: null, template_name: null,
+  ].map(([n, conversation_id, direction, sender, body, created_at, kind = null, media = null, meta = kind ? {} : null]) => ({
+    id: mid(n), tenant_id: T.inbox.id, conversation_id, direction, sender, kind, body, media, meta, template_name: null,
     delivery_status: null, created_at,
   })),
 };
@@ -165,7 +186,7 @@ const inboxListRow = ({ handoffs, ...c }) => ({
     .filter((m) => m.conversation_id === c.id && m.sender !== "system")
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
     .slice(0, 1)
-    .map(({ id, sender, body, media, template_name, created_at }) => ({ id, sender, body, media, template_name, created_at })),
+    .map(({ id, sender, kind, body, media, meta, template_name, created_at }) => ({ id, sender, kind, body, media, meta, template_name, created_at })),
 });
 const idOf = (email) => `00000000-0000-0000-0000-${String(Object.keys(USERS).indexOf(email) + 1).padStart(12, "0")}`;
 const userJson = (email) => ({ id: idOf(email), aud: "authenticated", role: "authenticated", email, app_metadata: { provider: USERS[email]?.provider ?? "email" }, user_metadata: {}, identities: [{ provider: USERS[email]?.provider ?? "email" }], created_at: "2026-10-01T00:00:00Z" });

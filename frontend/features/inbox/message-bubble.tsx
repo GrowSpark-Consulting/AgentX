@@ -22,11 +22,12 @@ export function MessageBubble({ message, timeZone }: { message: ChatMessage; tim
 
   const outgoing = message.sender !== "customer";
   const who = WHO[message.sender];
-  const text = message.body ?? (message.templateName ? `Template · ${message.templateName}` : null);
+  const { text, attachment } = message;
 
   return (
     <div
       data-sender={message.sender}
+      data-kind={message.kind ?? undefined}
       style={{
         alignSelf: outgoing ? "flex-end" : "flex-start",
         maxWidth: "var(--inbox-bubble-max, 72%)",
@@ -40,18 +41,29 @@ export function MessageBubble({ message, timeZone }: { message: ChatMessage; tim
       {outgoing && who ? (
         <div style={{ fontSize: "12px", fontWeight: "600", color: who.color, marginBottom: "2px" }}>{who.label}</div>
       ) : null}
-      {message.attachment ? (
+      {attachment ? (
         <div style={{ display: "flex", gap: "10px", alignItems: "center", background: "rgba(0,0,0,.05)", padding: "8px", marginBottom: "4px", minWidth: "min(220px, 100%)" }}>
           <span style={{ width: "32px", height: "38px", flex: "none", background: "#e2412f", color: "#fff", fontSize: "10px", fontWeight: "800", display: "grid", placeItems: "center" }}>
-            {message.attachment.label}
+            {attachment.label}
           </span>
           <span style={{ fontSize: "13px", lineHeight: "1.3", minWidth: "0" }}>
-            <span style={{ fontWeight: "600", display: "block" }}>{message.attachment.name}</span>
+            <span style={{ fontWeight: "600", display: "block" }}>{attachment.name}</span>
+            {attachment.note ? <span style={{ display: "block", fontSize: "12px", opacity: ".7" }}>{attachment.note}</span> : null}
           </span>
         </div>
       ) : null}
       {text ? (
-        <div style={{ fontSize: "14px", lineHeight: "1.4", whiteSpace: "pre-wrap", textWrap: "pretty" } as CSSProperties}>{text}</div>
+        <div
+          style={{
+            fontSize: "14px",
+            lineHeight: "1.4",
+            whiteSpace: "pre-wrap",
+            textWrap: "pretty",
+            ...(message.textIsNotice ? { fontStyle: "italic", opacity: ".75" } : {}),
+          } as CSSProperties}
+        >
+          {text}
+        </div>
       ) : null}
       <div style={{ fontSize: "11px", opacity: ".6", textAlign: "right", marginTop: "1px" }}>
         <time dateTime={message.createdAt}>{formatClock(message.createdAt, timeZone)}</time>
