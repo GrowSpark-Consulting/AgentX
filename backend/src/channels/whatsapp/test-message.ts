@@ -25,7 +25,7 @@ const isErrorCode = (code: string): code is ErrorCode => (ERROR_CODES as readonl
  * Sends a test WhatsApp message from the business's connected number (Meta App Review flow),
  * through notify.send (docs/contracts.md, section 4, test_message): 0 credits, free text inside
  * the 24-hour window only, 10 an hour per business, recorded with the staff member as the actor.
- * Until Dev 1's adapter is registered, notify.send answers not_available.
+ * The WhatsApp sender is registered at startup (server/main.ts); without it, notify.send answers not_available.
  */
 export async function sendTestMessage(
   client: SupabaseClient,

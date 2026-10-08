@@ -1,7 +1,16 @@
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectionSecretContext, encryptSecret } from "../../lib/crypto";
-import { ADAPTER_MESSAGES, markRead, sendText, type AdapterDeps, type AdapterResult, type SendConnection } from "./adapter";
+import {
+  ADAPTER_MESSAGES,
+  markRead,
+  sendTemplate,
+  sendText,
+  type AdapterDeps,
+  type AdapterResult,
+  type SendConnection,
+  type TemplateMessage,
+} from "./adapter";
 
 // Synthetic values only: nothing here is a real token, number or Meta response.
 const KEY = randomBytes(32).toString("base64");
@@ -321,6 +330,135 @@ describe("sendText", () => {
     for (const message of FIXED_MESSAGES) {
       expect(message).not.toMatch(/MARKER|EAA|Bearer|wamid|\+?\d{8,}/);
     }
+  });
+});
+
+describe("sendTemplate", () => {
+  const template = (over: Partial<TemplateMessage> = {}): TemplateMessage => ({
+    name: "reminder_24h_v2",
+    language: "en",
+    params: ["Karthik", "4 pm"],
+    ...over,
+  });
+
+  it("sends the exact request, with the body variables in order, and returns the wamid", async () => {
+    const f = fakeFetch(async () => okSend());
+    const result = await sendTemplate(connection(), "+910000000101", template(), deps(f));
+
+    expect(result).toEqual({ ok: true, value: { providerMsgId: "wamid.SYNTHETIC_OUT_0001" } });
+    expect(f).toHaveBeenCalledTimes(1);
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe(URL_EXPECTED);
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toEqual({ Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" });
+    expect(JSON.parse(init?.body as string)).toEqual({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: "+910000000101",
+      type: "template",
+      template: {
+        name: "reminder_24h_v2",
+        language: { code: "en" },
+        components: [{ type: "body", parameters: [{ type: "text", text: "Karthik" }, { type: "text", text: "4 pm" }] }],
+      },
+    });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("leaves out components for a template without variables", async () => {
+    const f = fakeFetch(async () => okSend());
+    await sendTemplate(connection(), "+910000000101", template({ params: [] }), deps(f));
+    expect(JSON.parse(f.mock.calls[0][1]?.body as string).template).toEqual({ name: "reminder_24h_v2", language: { code: "en" } });
+  });
+
+  it("keeps Tamil text intact, accepts locale codes, four spaces and exactly 1024 characters", async () => {
+    const f = fakeFetch(async () => okSend());
+    await sendTemplate(connection(), "910000000101", template({ language: "ta", params: ["கார்த்திக்", "₹1,499"] }), deps(f));
+    const sent = JSON.parse(f.mock.calls[0][1]?.body as string);
+    expect(sent.to).toBe("+910000000101");
+    expect(sent.template.language).toEqual({ code: "ta" });
+    expect(sent.template.components[0].parameters).toEqual([{ type: "text", text: "கார்த்திக்" }, { type: "text", text: "₹1,499" }]);
+    for (const over of [{ language: "en_US" }, { params: ["a    b"] }, { params: ["x".repeat(1024)] }]) {
+      expect((await sendTemplate(connection(), "+910000000101", template(over), deps(f))).ok).toBe(true);
+    }
+  });
+
+  describe("checks before any network call", () => {
+    it.each([
+      ["a number that is not E.164", "abc", template()],
+      ["an upper-case name", "+910000000101", template({ name: "Reminder_24h_v2" })],
+      ["a name with a space", "+910000000101", template({ name: "reminder 24h" })],
+      ["an empty name", "+910000000101", template({ name: "" })],
+      ["a language that is not a code", "+910000000101", template({ language: "english" })],
+      ["an empty language", "+910000000101", template({ language: "" })],
+      ["an empty variable", "+910000000101", template({ params: ["Karthik", ""] })],
+      ["a blank variable", "+910000000101", template({ params: ["   "] })],
+      ["a variable with a newline", "+910000000101", template({ params: ["line one\nline two"] })],
+      ["a variable with a tab", "+910000000101", template({ params: ["a\tb"] })],
+      ["a variable with five spaces in a row", "+910000000101", template({ params: ["a     b"] })],
+      ["a variable over 1024 characters", "+910000000101", template({ params: ["x".repeat(1025)] })],
+      ["variables that are not a list", "+910000000101", template({ params: "Karthik" as never })],
+      ["a variable that is not text", "+910000000101", template({ params: [42 as never] })],
+    ])("rejects %s", async (_why, to, message) => {
+      const f = fakeFetch(async () => okSend());
+      const error = expectFailure(await sendTemplate(connection(), to, message, deps(f)));
+      expect(error).toMatchObject({ code: "validation_failed", retryable: false, outcomeUnknown: false });
+      expect(FIXED_MESSAGES).toContain(error.message);
+      expect(f).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    [131047, 400, "outside_window", false],
+    [132000, 400, "validation_failed", false],
+    [132001, 404, "upstream_failed", false],
+    [132015, 400, "upstream_failed", false],
+    [130429, 429, "rate_limited", true],
+    [190, 401, "whatsapp_not_connected", false],
+  ] as const)("maps Meta code %i (HTTP %i) to %s", async (metaCode, status, code, retryable) => {
+    const f = fakeFetch(async () => reply(status, metaError(metaCode)));
+    const error = expectFailure(await sendTemplate(connection(), "+910000000101", template(), deps(f)));
+    expect(error).toMatchObject({ code, retryable, outcomeUnknown: false });
+    expect(FIXED_MESSAGES).toContain(error.message);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a timeout and an unreadable 200 as unknown outcomes", async () => {
+    const slow = fakeFetch(() => new Promise<Response>(() => {}));
+    expect(expectFailure(await sendTemplate(connection(), "+910000000101", template(), deps(slow, { timeoutMs: 20 })))).toMatchObject({
+      code: "upstream_failed",
+      retryable: true,
+      outcomeUnknown: true,
+    });
+    const unclear = fakeFetch(async () => reply(200, "<html></html>"));
+    expect(expectFailure(await sendTemplate(connection(), "+910000000101", template(), deps(unclear)))).toMatchObject({
+      code: "upstream_failed",
+      outcomeUnknown: true,
+    });
+  });
+
+  it("keeps the token in the Authorization header only, and logs nothing", async () => {
+    const f = fakeFetch(async () => okSend());
+    const result = await sendTemplate(connection(), "+910000000101", template(), deps(f));
+    const [url, init] = f.mock.calls[0];
+    expect(String(url) + String(init?.body)).not.toContain(TOKEN);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    expect(logs).toEqual([]);
+  });
+
+  it("gives whatsapp_not_connected for a tampered token without calling fetch", async () => {
+    const f = fakeFetch(async () => okSend());
+    const result = await sendTemplate(connection({ tokenEnc: "not-an-encrypted-value" }), "+910000000101", template(), deps(f));
+    expect(expectFailure(result).code).toBe("whatsapp_not_connected");
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("never throws on junk input and returns a failure", async () => {
+    const f = fakeFetch(async () => okSend());
+    for (const bad of [undefined, null, {}, [], "text", 42]) {
+      await expect(sendTemplate(bad as never, bad as never, bad as never, deps(f))).resolves.toMatchObject({ ok: false });
+    }
+    expect(f).not.toHaveBeenCalled();
   });
 });
 

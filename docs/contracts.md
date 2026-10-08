@@ -118,7 +118,7 @@ type NotificationKind =               // decides toggle, template and credit cos
 type SendOutcome =
   | { status: 'sent'; messageId: string; providerMsgId: string; creditsCharged: number; usedTemplate: boolean }
   | { status: 'skipped'; reason: 'feature_off' | 'opted_out' | 'insufficient_credits' | 'outside_window' | 'conversation_not_ai' }
-  | { status: 'failed'; error: { code: string; message: string } };
+  | { status: 'failed'; error: { code: string; message: string; retryable: boolean; outcomeUnknown: boolean } };
 
 type NotifyPayload = {
   conversationId?: string;   // customer messages
@@ -134,12 +134,18 @@ type NotifyPayload = {
 `NotificationKind` covers `ai_reply`, `staff_reply`, `test_message` and the customer automations;
 staff-facing kinds arrive with their jobs.
 
-**Adapter plug-in (Dev 1):** `registerSender(factory)`, where
+**Adapter plug-in (built by Dev 2, 8 Oct):** `registerSender(factory)`, where
 `factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params) }`
-and both return `{ providerMsgId }`. Until it is registered, `notify.send` answers `not_available`
-before spending credits. Both throw when WhatsApp refuses the message. When Meta refuses free text
-because the 24-hour window has closed (131047, the adapter's `outside_window`), `sendText` throws
-`OutsideWindowError` from `backend/src/notify/sender.ts`; any other refusal can throw a plain `Error`.
+and both return `{ providerMsgId }`. `server/main.ts` registers the WhatsApp factory at startup
+(`registerWhatsAppSender()`, `backend/src/channels/whatsapp/message-sender.ts`). It loads the connection with
+the service role; one that is not `active` is `whatsapp_not_connected`, before any credits are spent. With no
+factory registered, `notify.send` answers `not_available`, also before spending.
+Both methods throw a `SendError` (`backend/src/notify/sender.ts`) when WhatsApp refuses the message: a code
+from `ERROR_CODES` plus `retryable` and `outcomeUnknown` (the message may have gone out anyway). When Meta
+refuses free text because the 24-hour window has closed (131047), `sendText` throws `OutsideWindowError`, a
+`SendError` with code `outside_window`, and `notify.send` sends the approved template instead. Every other code
+passes through in the `failed` outcome. A plain `Error` is unexpected: it is logged (redacted) and answered as
+`upstream_failed`.
 
 `FeatureKey` lives in `backend/src/billing/credit-costs.ts` for now and moves here with the above.
 
@@ -330,8 +336,10 @@ other origins get no CORS headers.
 - `POST /api/templates` `{ name, category, language, body, examples, header?, footer?, buttons?, connectionId? }`
   → `{ id, name, language, status: "pending" | "draft" }`; owner or admin.
 - The test route sends through `notify.send`: `outside_window` (409) when the number has not
-  messaged in 24 hours, `conflict` (409) when it opted out, and `notify.send`'s own codes otherwise.
-  Both routes answer `not_available` until Dev 1's adapter is registered.
+  messaged in 24 hours, `conflict` (409) when it opted out, and `notify.send`'s codes otherwise. Since the
+  WhatsApp sender is registered (8 Oct), these include the real send's: `rate_limited` (429),
+  `whatsapp_not_connected` (409), `validation_failed` (422) and `upstream_failed` (502). The template route
+  still answers `not_available` until submission to Meta is built.
 
 **Google Calendar per staff member (built, Day 3; `backend/src/booking/google-calendar.ts`):**
 
@@ -379,7 +387,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 |---|---|---|---|
 | 1 | Template status table | **Agreed** (section 1) | Dev 1 + Dev 2 |
 | 2 | Refund when a send fails after spending | **Agreed**: `refund_credits` (0008), same buckets and expiry, once per message | Dev 2 |
-| 3 | `NotificationKind`, `SendOutcome`, `NotifyPayload` | Proposed (`test_message` Agreed) | Dev 1 + Dev 2 |
+| 3 | `NotificationKind`, `SendOutcome`, `NotifyPayload` | Proposed (`test_message` Agreed). **Agreed 8 Oct:** a `failed` outcome keeps the sender's code and carries `retryable` and `outcomeUnknown` | Dev 1 + Dev 2 |
 | 4 | Event payloads: ids only, fixed ids for re-sendable events | Proposed | All |
 | 5 | Read routes vs views (screen-contracts Q1) | Proposed: routes | Dev 2 + Dev 3 |
 | 6 | Prices (screen-contracts Q6) | Handover v1.0 prices, seeded; Raja to confirm | Raja |
@@ -392,6 +400,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 13 | One self-serve business per account; repeat signup returns it | Built in #18; confirm | Dev 2 + Dev 3 |
 | 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**; schema, router and gap functions built (Shaaz); any team member can answer gaps (Raja); pending Dhatri, and Raja on the rest | Dev 1 |
 | 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed; `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. **Built:** `platform_admins`, `adminRoute`, hashed tokens (0016), `secretParams` log masking (section 6). Roles on recheck and disconnect: Raja | Dev 1 |
+| 16 | A send whose outcome is unknown (a timeout, a network failure or an unreadable answer from Meta) | **Proposed:** hold the credit until Meta's status says sent or failed, instead of refunding (Dev 1 + Dev 2 agree, 8 Oct). Needs Raja, because it changes billing, and a way to match Meta's status webhook to the send. Until then `notify.send` refunds (decision 2) and reports `outcomeUnknown: true`, so no caller sends the message again | Raja |
 
 ## 9. Knowledge base (PROPOSED, not agreed)
 
