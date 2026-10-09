@@ -3,6 +3,7 @@ import { ManualConnectInput, WhatsAppConnectionPublic } from "@pakka/types";
 import { z } from "zod";
 import { connectionSecretContext, encryptSecret } from "../../../lib/crypto";
 import { serverEnv } from "../../../lib/env";
+import { writeAudit, type AuditEntry } from "../../../lib/audit";
 import { AppError, zodFieldErrors } from "../../../lib/errors";
 import { supabaseAdmin } from "../../../lib/supabase-admin";
 
@@ -66,6 +67,8 @@ export type ManualConnectDeps = {
   encrypt: typeof encryptSecret;
   now: () => Date;
   newId: () => string;
+  /** Records who connected the number. Never given a secret. */
+  audit: (entry: AuditEntry) => Promise<void>;
 };
 
 /**
@@ -139,7 +142,7 @@ function buildChecks(probe: Extract<MetaProbe, { state: "ok" | "rejected" }>, at
 export async function connectManual(
   rawInput: unknown,
   actor: string,
-  deps: ManualConnectDeps = { db: realDb(), probe: probeMeta, encrypt: encryptSecret, now: () => new Date(), newId: randomUUID },
+  deps: ManualConnectDeps = { db: realDb(), probe: probeMeta, encrypt: encryptSecret, now: () => new Date(), newId: randomUUID, audit: writeAudit },
 ): Promise<WhatsAppConnectionPublic> {
   const parsed = StrictInput.safeParse(rawInput);
   if (!parsed.success) throw new AppError("validation_failed", "Some details need fixing.", zodFieldErrors(parsed.error));
@@ -180,6 +183,21 @@ export async function connectManual(
   };
   const saved = WhatsAppConnectionPublic.safeParse(await deps.db.save(record, retry));
   if (!saved.success) throw new AppError("upstream_failed", "We couldn't save the connection. Try again in a moment.");
+
+  // After the save, so the connection exists whatever happens here. A failed audit write is logged with a
+  // fixed line (no values) and does not undo or fail the connect. The diff carries ids and the outcome only.
+  try {
+    await deps.audit({
+      tenantId: saved.data.tenant_id,
+      actor,
+      action: "whatsapp_connection.connected",
+      entity: "whatsapp_connection",
+      entityId: saved.data.id,
+      diff: { method: saved.data.method, status: saved.data.status, waba_id: saved.data.waba_id, phone_number_id: saved.data.phone_number_id, reconnected: retry },
+    });
+  } catch {
+    console.error("[whatsapp-connect] audit write failed");
+  }
   return saved.data;
 }
 

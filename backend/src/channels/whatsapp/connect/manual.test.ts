@@ -44,8 +44,9 @@ function setup(probe: MetaProbe = GOOD, existing: Existing | null = null) {
     },
   };
   const probeFn = vi.fn(async () => probe);
-  const deps = { db, probe: probeFn, encrypt: encryptSecret, now: () => new Date("2026-10-09T00:00:00Z"), newId: () => NEW_ID };
-  return { saved, probeFn, run: (input: unknown = INPUT, actor = "user-1") => connectManual(input, actor, deps) };
+  const audit = vi.fn(async () => {});
+  const deps = { db, probe: probeFn, audit, encrypt: encryptSecret, now: () => new Date("2026-10-09T00:00:00Z"), newId: () => NEW_ID };
+  return { saved, probeFn, audit, run: (input: unknown = INPUT, actor = "user-1") => connectManual(input, actor, deps) };
 }
 
 describe("connectManual", () => {
@@ -99,6 +100,41 @@ describe("connectManual", () => {
     const s = setup({ state: "unreachable" });
     await expect(s.run()).rejects.toMatchObject({ code: "upstream_failed" });
     expect(s.saved).toEqual([]);
+  });
+
+  describe("audit log", () => {
+    it("records the connect with the user as actor and no secret in the diff", async () => {
+      const s = setup();
+      const result = await s.run(INPUT, "8f0e0000-0000-4000-8000-000000000001");
+      expect(s.audit).toHaveBeenCalledTimes(1);
+      const entry = (s.audit.mock.calls[0] as unknown[])[0];
+      expect(entry).toMatchObject({ tenantId: A, actor: "8f0e0000-0000-4000-8000-000000000001", action: "whatsapp_connection.connected", entity: "whatsapp_connection", entityId: result.id });
+      const text = JSON.stringify(entry);
+      expect(text).not.toContain(TOKEN);
+      expect(text).not.toContain(APP_SECRET);
+    });
+
+    it("uses admin:<id> as the actor for the admin route", async () => {
+      const s = setup();
+      await s.run(INPUT, "admin:8f0e0000-0000-4000-8000-000000000001");
+      expect((s.audit.mock.calls[0] as unknown[])[0]).toMatchObject({ actor: "admin:8f0e0000-0000-4000-8000-000000000001" });
+    });
+
+    it("records a failed connection too, and writes nothing when the connect is refused", async () => {
+      const failed = setup({ state: "rejected" });
+      await failed.run();
+      expect((failed.audit.mock.calls[0] as unknown[])[0]).toMatchObject({ diff: expect.objectContaining({ status: "failed" }) });
+      const refused = setup({ state: "unreachable" });
+      await refused.run().catch(() => {});
+      expect(refused.audit).not.toHaveBeenCalled();
+    });
+
+    it("still returns the connection when the audit write fails", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const s = setup();
+      s.audit.mockRejectedValue(new Error("db down"));
+      await expect(s.run()).resolves.toMatchObject({ status: "active" });
+    });
   });
 
   describe("validation", () => {
