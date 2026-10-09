@@ -1,0 +1,21 @@
+name: Tanglish price question is answered in Tanglish from the knowledge base only
+kb:
+  - "2BHK of 950 sq ft in Velachery starts at ₹78 lakh. Site visits are free on weekdays."
+turns:
+  - customer: "Velachery la 2BHK price enna sir?"
+    mock:
+      extraction:
+        language: ta-en
+        intent: question
+        fields: { location: Velachery, config: 2BHK }
+        question: "What is the price of a 2BHK in Velachery?"
+      reply: "Velachery la 2BHK ₹78 lakh la irundhu start aagum. Site visit plan pannalama?"
+    expect:
+      extracted: { intent: question, language: ta-en }
+      reply: { sent: true }
+      noInventedPrice: true
+      aiReplies: 1
+    mockOnly:
+      extracted: { fields: { location: Velachery, config: 2BHK } }
+      case: answered_from_kb
+      reply: { contains: ["₹78 lakh"] }

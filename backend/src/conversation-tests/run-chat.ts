@@ -1,0 +1,233 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { AuditEntry } from "../lib/audit";
+import type { LlmClient, LlmRequest, LlmResult } from "../agent/llm";
+import { NonRetriableError } from "inngest";
+import { amountsIn } from "../agent/pipeline/postcheck";
+import { fixedText, type TextLanguage } from "../agent/pipeline/fixed-texts";
+import type { StepRunner, TurnContext } from "../agent/pipeline/process-message";
+import { replyTurn, type ReplyDeps, type ReplyOutcome } from "../agent/pipeline/reply";
+import { stopCheck } from "../agent/pipeline/stop";
+import { understandTurn, type UnderstandDeps, type UnderstandResult } from "../agent/pipeline/understand";
+import type { SendOutcome } from "../notify/send";
+import { fakePipelineStore, type FakeMessage } from "../test-support/fake-pipeline-store";
+import type { Chat, TurnExpect } from "./schema";
+
+// Runs one scripted chat through the real pipeline steps (stop check, understanding, reply) on an in-memory store, as
+// process-message runs them. In the default (mock) mode the language models are scripted by the chat, the knowledge
+// base returns the chat's own chunks and nothing is ever sent: it checks the code around the models. In live mode the
+// models are the real ones (the knowledge base and the sender stay fakes), so only `expect` is checked: what the real
+// model understood. See tests/conversations/README.md.
+
+const PACKS_DIR = fileURLToPath(new URL("../../../packs", import.meta.url));
+const A = "e0000000-0000-0000-0000-00000000000a";
+const CONV = "c0000000-0000-0000-0000-00000000000c";
+const CONTACT = "b0000000-0000-0000-0000-0000000000b1";
+const LEAD = "10000000-0000-0000-0000-0000000000f1";
+export const PRIVACY_URL = "https://example.test/privacy";
+const messageId = (kind: "in" | "out", n: number) => `${kind === "in" ? "a" : "d"}0000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+
+export interface RunOptions {
+  mode: "mock" | "live";
+  /** The real client, in live mode. */
+  llm?: LlmClient;
+}
+
+export interface TurnTranscript {
+  customer: string;
+  reply: string | null;
+  intent: string | null;
+  confidence: number | null;
+  planCase: string;
+  optedOut: boolean;
+  handoff: string | null;
+}
+export interface ChatReport {
+  failures: string[];
+  transcript: TurnTranscript[];
+}
+
+const result = (text: string): LlmResult => ({ text, model: "mock", stopReason: "end_turn", usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, costUsd: 0, latencyMs: 0, attempts: 1, requestId: null });
+const QUIET_EXTRACTION = { language: "en", intent: "question", fields: {}, question: null, preferredTime: null, sentiment: "neutral", asksIfHuman: false, confidence: 0.9 };
+
+function memoRunner(): StepRunner {
+  const memo = new Map<string, unknown>();
+  return {
+    async run(id, fn) {
+      if (memo.has(id)) return memo.get(id) as never;
+      const value = await fn();
+      memo.set(id, value);
+      return value;
+    },
+  };
+}
+
+const subset = (actual: Record<string, unknown> | undefined, wanted: Record<string, unknown>): string[] =>
+  Object.entries(wanted).filter(([key, value]) => actual?.[key] !== value).map(([key, value]) => `${key}: wanted ${JSON.stringify(value)}, got ${JSON.stringify(actual?.[key])}`);
+
+export async function runChat(chat: Chat, options: RunOptions): Promise<ChatReport> {
+  const pack = JSON.parse(readFileSync(`${PACKS_DIR}/${chat.pack}.json`, "utf8")) as { key: string; version: number };
+  const live = options.mode === "live";
+  const failures: string[] = [];
+  const transcript: TurnTranscript[] = [];
+
+  const base = Date.now() - 6 * 3_600_000;
+  const fake = fakePipelineStore({
+    tenants: [{ id: A, vertical: pack.key, verticalVersion: pack.version }],
+    messages: [],
+    conversations: [{ id: CONV, tenantId: A, contactId: CONTACT, mode: "ai" }],
+    contacts: [{ id: CONTACT, tenantId: A, language: chat.contact.language, optedOut: false, consentAt: chat.contact.alreadySawNotice ? "2026-10-01T00:00:00Z" : null }],
+    leads: [{ id: LEAD, tenantId: A, contactId: CONTACT, stage: "new", createdAt: 1, fields: {} }],
+    tenantInfo: { [A]: { name: "Skyline Homes", agentSettings: chat.settings } },
+  });
+
+  // Per turn: what the mocked models say, and what the pipeline did.
+  let extractionScript: Record<string, unknown> = {};
+  let replyScript: string[] = [];
+  let kb: string[] = chat.kb;
+  const sends: { kind: string; text: string }[] = [];
+  const confirmations: string[] = [];
+  const audits: AuditEntry[] = [];
+  let outCount = 0;
+
+  const mockLlm: LlmClient = {
+    async complete(request: LlmRequest) {
+      if (request.role === "extraction") return result(JSON.stringify({ ...QUIET_EXTRACTION, ...extractionScript }));
+      const next = replyScript.shift();
+      if (next === undefined) throw new Error("the mocked reply model was called more often than the chat scripts");
+      return result(next);
+    },
+  };
+  const llm = live ? options.llm : mockLlm;
+  if (!llm) throw new Error("live mode needs a language-model client");
+
+  const send: ReplyDeps["send"] = async (_tenantId, kind, payload): Promise<SendOutcome> => {
+    sends.push({ kind, text: payload.text ?? "" });
+    const sentAt = new Date(Date.now()).toISOString();
+    fake.messages.set(messageId("out", ++outCount), { id: messageId("out", outCount), tenantId: A, conversationId: CONV, direction: "out", sender: "ai", kind: "text", createdAt: sentAt, body: payload.text ?? "", meta: {} } as FakeMessage);
+    return { status: "sent", messageId: `m-out-${outCount}`, providerMsgId: `wamid.${outCount}`, creditsCharged: 1, usedTemplate: false };
+  };
+  const audit = async (entry: AuditEntry) => {
+    audits.push(entry);
+    if (entry.action === "message.answered" && entry.entityId) fake.answered.set(entry.entityId, Date.now());
+  };
+  const systemNotice = {
+    send: async (input: { text: string }) => {
+      confirmations.push(input.text);
+      return { status: "sent" as const };
+    },
+  };
+  const staffAlert = { send: async () => ({ status: "sent" as const }) };
+  const handoffEvents: string[] = [];
+  const sendEvent: ReplyDeps["sendEvent"] = async (event) => {
+    handoffEvents.push(event.id);
+  };
+  const replyDeps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice, staffAlert, privacyPolicyUrl: PRIVACY_URL, now: Date.now };
+  const understandDeps: UnderstandDeps = {
+    store: fake.store,
+    llm,
+    loadPackDefinition: async (key, version) => (key === pack.key && version === pack.version ? (pack as unknown) : null),
+    retrieve: async () => kb.map((content, i) => ({ chunkId: `chunk-${i}`, documentId: "doc-1", title: "Knowledge base", content, similarity: 0.8 })),
+  };
+
+  for (const [index, turnSpec] of chat.turns.entries()) {
+    const label = `turn ${index + 1} (${JSON.stringify(turnSpec.customer.slice(0, 40))})`;
+    const fail = (message: string) => failures.push(`${label}: ${message}`);
+    extractionScript = turnSpec.mock?.extraction ?? {};
+    replyScript = turnSpec.mock?.reply === undefined ? [] : [...(Array.isArray(turnSpec.mock.reply) ? turnSpec.mock.reply : [turnSpec.mock.reply])];
+    kb = turnSpec.mock?.kb ?? chat.kb;
+    const sendsBefore = sends.length;
+    const confirmationsBefore = confirmations.length;
+    const logsBefore = fake.consentLogs.length;
+    const handoffsBefore = fake.handoffs.length;
+
+    const id = messageId("in", index + 1);
+    fake.messages.set(id, { id, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: new Date(base + index * 60_000).toISOString(), body: turnSpec.customer, meta: {} } as FakeMessage);
+    const turn: TurnContext = { tenantId: A, conversationId: CONV, contactId: CONTACT, leadId: LEAD, leadCreated: false, messageIds: [id], language: null, vertical: pack.key, verticalVersion: pack.version };
+    const step = memoRunner();
+
+    let stopped = false;
+    let understood: UnderstandResult | null = null;
+    let outcome: ReplyOutcome | null = null;
+    const optedOutAtStart = fake.contacts.get(CONTACT)?.optedOut === true;
+    try {
+      if (optedOutAtStart) {
+        // The gate (step 3) stops a contact who opted out: nothing is read or answered.
+      } else {
+        stopped = (await stopCheck(step, turn, { store: fake.store, audit, systemNotice, sendEvent })).status === "opted_out";
+        if (!stopped) {
+          understood = await understandTurn(step, turn, understandDeps);
+          outcome = await replyTurn(step, turn, understood, Date.now(), replyDeps);
+        }
+      }
+    } catch (error) {
+      fail(`the pipeline threw: ${error instanceof NonRetriableError ? "non-retriable " : ""}${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const turnSends = sends.slice(sendsBefore);
+    const replyText = turnSends[0]?.text ?? null;
+    const contact = fake.contacts.get(CONTACT);
+    const meta = fake.messages.get(id)?.meta?.agent as { extraction?: Record<string, unknown>; planCase?: string } | undefined;
+    const lastHandoff = fake.handoffs[fake.handoffs.length - 1];
+    transcript.push({
+      customer: turnSpec.customer,
+      reply: replyText,
+      intent: typeof meta?.extraction?.intent === "string" ? meta.extraction.intent : null,
+      confidence: typeof meta?.extraction?.confidence === "number" ? meta.extraction.confidence : null,
+      planCase: stopped ? "stop_phrase" : (outcome?.case ?? (optedOutAtStart ? "gated_opted_out" : "none")),
+      optedOut: contact?.optedOut === true,
+      handoff: fake.handoffs.length > handoffsBefore ? `${lastHandoff.trigger}/${lastHandoff.priority}` : null,
+    });
+
+    // What must hold for every chat, in every mode.
+    if (turnSends.length > 1) fail(`more than one AI reply was sent (${turnSends.length})`);
+    if (turnSends.some((s) => s.kind !== "ai_reply")) fail("an outbound message did not go as an ai_reply through notify.send");
+    if (contact?.optedOut && turnSends.length > 0) fail("a reply was sent to a contact who opted out");
+
+    const check = (expect: TurnExpect | undefined) => {
+      if (!expect) return;
+      if (expect.stop !== undefined && stopped !== expect.stop) fail(`stop: wanted ${expect.stop}, got ${stopped}`);
+      if (expect.extracted) {
+        const { fields, ...top } = expect.extracted;
+        for (const problem of subset(meta?.extraction, top)) fail(`extracted ${problem}`);
+        if (fields) for (const problem of subset(meta?.extraction?.fields as Record<string, unknown> | undefined, fields)) fail(`extracted field ${problem}`);
+      }
+      if (expect.case !== undefined && transcript[index].planCase !== expect.case) fail(`case: wanted ${expect.case}, got ${transcript[index].planCase}`);
+      if (expect.reply) {
+        const r = expect.reply;
+        if (r.sent !== undefined && (turnSends.length === 1) !== r.sent) fail(`reply sent: wanted ${r.sent}, got ${turnSends.length} AI replies`);
+        if (r.fixed) {
+          const wanted = fixedText(r.fixed.key as never, r.fixed.language as TextLanguage);
+          if (!replyText?.includes(wanted)) fail(`reply: wanted the fixed line ${r.fixed.key}/${r.fixed.language}, got ${JSON.stringify(replyText)}`);
+        }
+        for (const text of r.contains ?? []) if (!replyText?.includes(text)) fail(`reply: should contain ${JSON.stringify(text)}, got ${JSON.stringify(replyText)}`);
+        for (const text of r.notContains ?? []) if (replyText?.includes(text)) fail(`reply: must not contain ${JSON.stringify(text)}`);
+        if (r.notice !== undefined && (replyText?.includes(PRIVACY_URL) ?? false) !== r.notice) fail(`privacy notice on the reply: wanted ${r.notice}`);
+      }
+      if (expect.noInventedPrice && replyText) {
+        const known = amountsIn(kb.join(" "));
+        for (const amount of amountsIn(replyText)) if (!known.has(amount)) fail(`the reply has an amount that is not in the knowledge base: ${amount}`);
+      }
+      if (expect.optedOut !== undefined && (contact?.optedOut === true) !== expect.optedOut) fail(`optedOut: wanted ${expect.optedOut}`);
+      if (expect.consent) {
+        const logs = fake.consentLogs.slice(logsBefore).map((l) => ({ event: l.event, source: l.source }));
+        if (JSON.stringify(logs) !== JSON.stringify(expect.consent)) fail(`consent_logs: wanted ${JSON.stringify(expect.consent)}, got ${JSON.stringify(logs)}`);
+      }
+      if (expect.handoff !== undefined) {
+        const opened = fake.handoffs.length > handoffsBefore ? { trigger: lastHandoff.trigger, priority: lastHandoff.priority } : null;
+        if (JSON.stringify(opened) !== JSON.stringify(expect.handoff)) fail(`handoff: wanted ${JSON.stringify(expect.handoff)}, got ${JSON.stringify(opened)}`);
+      }
+      if (expect.mode !== undefined && fake.conversations.get(CONV)?.mode !== expect.mode) fail(`mode: wanted ${expect.mode}, got ${fake.conversations.get(CONV)?.mode}`);
+      if (expect.leadStage !== undefined && fake.leads.get(LEAD)?.stage !== expect.leadStage) fail(`lead stage: wanted ${expect.leadStage}, got ${fake.leads.get(LEAD)?.stage}`);
+      if (expect.leadFields) for (const problem of subset(fake.leads.get(LEAD)?.fields as Record<string, unknown> | undefined, expect.leadFields)) fail(`lead field ${problem}`);
+      if (expect.aiReplies !== undefined && turnSends.length !== expect.aiReplies) fail(`AI replies: wanted ${expect.aiReplies}, got ${turnSends.length}`);
+      if (expect.confirmations !== undefined && confirmations.length - confirmationsBefore !== expect.confirmations) fail(`confirmations: wanted ${expect.confirmations}, got ${confirmations.length - confirmationsBefore}`);
+    };
+    check(turnSpec.expect);
+    if (!live) check(turnSpec.mockOnly);
+
+    // Unused script is a mistake in the chat, not in the code: say so (mock mode only).
+    if (!live && replyScript.length > 0) fail(`the chat scripts ${replyScript.length} more mocked reply than the pipeline asked for`);
+  }
+  return { failures, transcript };
+}
