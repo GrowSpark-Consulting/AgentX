@@ -1,14 +1,17 @@
 "use client";
 
+import * as React from "react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { OwnAppConnect } from "@/components/onboarding/own-app-connect";
+import { loadWebhookConfig, type WebhookConfigResult } from "@/lib/whatsapp/manual-connect";
 import {
   CHECKS,
   COEX_OPTIONS,
   MANUAL_MODES,
-  OWN_APP_COPY,
   PARTNER_COPY,
   WA_METHODS,
   type CheckKind,
@@ -41,15 +44,34 @@ export function StepWhatsApp({
   const kind = s.chkKind;
   const list = CHECKS[kind];
 
-  const copy = (item: CopyItem) => {
-    if (item.value === null) return;
+  const copyValue = (label: string, value: string) => {
     try {
-      navigator.clipboard?.writeText(item.value);
+      navigator.clipboard?.writeText(value);
     } catch {
       /* clipboard unavailable */
     }
-    set({ copied: item.label });
+    set({ copied: label });
   };
+  const copy = (item: CopyItem) => {
+    if (item.value !== null) copyValue(item.label, item.value);
+  };
+
+  // The webhook details come from the API (this business's own verify token, the API's public address). Read
+  // once the customer opens a manual path, and again on "Try again".
+  const manualOpen = idle && !meta;
+  const [config, setConfig] = React.useState<WebhookConfigResult | null>(null);
+  const [configTry, setConfigTry] = React.useState(0);
+  React.useEffect(() => {
+    if (!manualOpen) return;
+    const controller = new AbortController();
+    loadWebhookConfig(controller.signal).then(setConfig, () => {});
+    return () => controller.abort();
+  }, [manualOpen, configTry]);
+  // Spark Agent's portfolio id for partner access, only when the API has it configured.
+  const partnerCopy: CopyItem[] = PARTNER_COPY.map((item) => ({
+    ...item,
+    value: config?.state === "ready" ? config.config.partnerBusinessId : null,
+  }));
 
   const need2 =
     s.coex === "yes"
@@ -86,6 +108,7 @@ export function StepWhatsApp({
         once it’s connected.
       </StepIntro>
 
+      {!(idle && !meta && s.mMode === "own") && (
       <div
         role="note"
         aria-label="Preview"
@@ -97,6 +120,7 @@ export function StepWhatsApp({
           You can skip this step and connect later from your dashboard.
         </span>
       </div>
+      )}
 
       {/* ── choose a method ── */}
       {idle && (
@@ -249,7 +273,7 @@ export function StepWhatsApp({
                     Enter our Business Portfolio ID and choose <strong>Full control</strong>.
                   </span>
                   <div className="bg-surface px-3.5 py-3">
-                    {PARTNER_COPY.map((item) => (
+                    {partnerCopy.map((item) => (
                       <CopyRow
                         key={item.label}
                         item={item}
@@ -269,25 +293,15 @@ export function StepWhatsApp({
           )}
 
           {s.mMode === "own" && (
-            <div className="flex flex-col gap-3">
-              <p className="m-0 text-sm text-neutral-700">
-                For businesses and agencies running their own Meta app. Our team sets this
-                up with you: access tokens and app secrets are never typed into this page.
-              </p>
-              <div className="bg-surface px-4 py-3.5 flex flex-col gap-2.5">
-                <div className="text-[13px] font-extrabold">
-                  You’ll point your Meta app’s webhook at Spark Agent:
-                </div>
-                {OWN_APP_COPY.map((item) => (
-                  <CopyRow
-                    key={item.label}
-                    item={item}
-                    copied={s.copied === item.label}
-                    onCopy={() => copy(item)}
-                  />
-                ))}
-              </div>
-            </div>
+            <OwnAppConnect
+              config={config}
+              onRetryConfig={() => {
+                setConfig(null);
+                setConfigTry((n) => n + 1);
+              }}
+              copied={s.copied}
+              onCopy={copyValue}
+            />
           )}
 
           {s.mMode === "partner" && (
