@@ -16,6 +16,7 @@ const HandoffOpened = z.object({ tenantId: z.guid(), handoffId: z.guid(), conver
 export function alertKindFor(trigger: string): StaffAlertKind {
   if (trigger === "credits_exhausted") return "credits_exhausted";
   if (trigger === "stuck") return "setup_problem";
+  if (trigger === "opt_out") return "opted_out";
   return "handoff_opened";
 }
 
