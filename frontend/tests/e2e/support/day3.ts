@@ -25,7 +25,7 @@ export interface Day3Account {
 
 export async function newDay3Account(
   request: APIRequestContext,
-  options: { seed?: boolean; role?: Day3Role; error?: "leads" | "bookings" | "resources" | "tenants" } = {},
+  options: { seed?: boolean; role?: Day3Role; error?: "leads" | "bookings" | "resources" | "tenants"; inbox?: boolean } = {},
 ): Promise<Day3Account> {
   return (await request.post(`${MOCK_SUPABASE_URL}/__mock/day3-account`, { data: options })).json();
 }

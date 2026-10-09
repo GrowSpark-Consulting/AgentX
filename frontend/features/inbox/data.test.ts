@@ -41,6 +41,7 @@ function listRow(over: Partial<ConversationListRow> = {}): ConversationListRow {
   return {
     id: id(1),
     tenant_id: TENANT,
+    contact_id: id(201),
     mode: "ai",
     status: "open",
     last_customer_msg_at: "2026-10-07T04:00:00+00:00",
