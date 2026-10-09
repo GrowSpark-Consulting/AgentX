@@ -639,6 +639,20 @@ describe("the privacy notice on a contact's first AI reply (setting on)", () => 
     expect(w.consentLogs).toHaveLength(1);
   });
 
+  it("a STOP there opens the opt_out handoff and sends the event", async () => {
+    const w = world({ messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "STOP", meta: {} }] });
+    await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);
+    expect(w.handoffs).toEqual([expect.objectContaining({ trigger: "opt_out", priority: "high" })]);
+    expect(w.sendEvent).toHaveBeenCalledOnce();
+  });
+
+  it("still sends the safe line, without the notice, when the business's settings cannot be read", async () => {
+    const w = first({ language: "ta" });
+    w.state.failNext.add("getTenantReplyInfo");
+    expect(await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps)).toBe("sent");
+    expect(sentText(w)).toBe(fixedText("fallback", "ta"));
+  });
+
   it("is not on the safe line when the setting is off (the default)", async () => {
     const w = world({ consentAt: null, language: "ta" });
     await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);

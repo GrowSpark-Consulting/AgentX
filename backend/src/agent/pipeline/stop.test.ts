@@ -80,6 +80,27 @@ describe("a message that is STOP", () => {
     expect(w.systemNotice.send).toHaveBeenCalledOnce(); // and still one confirmation
   });
 
+  it("a failing handoff still marks the messages answered, then fails the step so the retry tells staff", async () => {
+    const w = world(["STOP"]);
+    w.state.failNext.add("openHandoff");
+    await expect(stopCheck(runner().step, w.turn, w.deps)).rejects.toThrow(/openHandoff failed/);
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
+    expect(w.systemNotice.send).toHaveBeenCalledOnce();
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1]);
+    await stopCheck(runner().step, w.turn, w.deps); // the retry
+    expect(w.handoffs).toHaveLength(1);
+    expect(w.sendEvent).toHaveBeenCalledOnce();
+    expect(w.systemNotice.send).toHaveBeenCalledOnce(); // never a second confirmation
+  });
+
+  it("with another handoff already open, that one is reused: no second row", async () => {
+    const w = world(["STOP"]);
+    w.handoffs.push({ id: "f0000000-0000-0000-0000-0000000000f1", tenantId: A, conversationId: CONV, trigger: "kb_gap", priority: "normal", resolved: false });
+    await stopCheck(runner().step, w.turn, w.deps);
+    expect(w.handoffs).toHaveLength(1);
+    expect(w.handoffs[0].trigger).toBe("kb_gap");
+  });
+
   it("does nothing of the kind for an ordinary message", async () => {
     const w = world(["2BHK price?"]);
     await stopCheck(runner().step, w.turn, w.deps);

@@ -335,7 +335,8 @@ export async function answerAfterFailure(ids: { tenantId: string; conversationId
     if (conversation.mode !== "ai") return "nothing_to_do";
 
     const language = textLanguage(contact.language);
-    const info = await store.getTenantReplyInfo(ids.tenantId);
+    // The notice is optional: if the business's settings cannot be read, the safe line still goes out, without it.
+    const info = await store.getTenantReplyInfo(ids.tenantId).catch(() => null);
     const notice = parseReplySettings(info?.agentSettings).privacyNotice && contact.consentAt === null ? `\n\n${consentNotice(language, deps.privacyPolicyUrl)}` : "";
     const outcome = await deps.send(ids.tenantId, "ai_reply", { conversationId: ids.conversationId, text: fixedText("fallback", language) + notice });
     if (outcome.status === "sent" || (outcome.status === "failed" && outcome.error.outcomeUnknown)) {

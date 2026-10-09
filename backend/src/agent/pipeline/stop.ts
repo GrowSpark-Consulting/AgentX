@@ -57,8 +57,14 @@ export async function applyStop(scope: StopScope, deps: StopDeps): Promise<Opted
   // alert says "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer." (Raja, 9 Oct). Done
   // on every run that finds the STOP (an open handoff is reused, the event id is fixed), so a retry still tells staff. The
   // chat's mode is not touched: nobody can message this contact anyway (the gate and notify.send refuse), and a person only calls.
-  await recordHandoff(scope, { trigger: "opt_out", priority: "high" }, deps);
+  let handoffError: unknown = null;
+  try {
+    await recordHandoff(scope, { trigger: "opt_out", priority: "high" }, deps);
+  } catch (error) {
+    handoffError = error; // thrown after the answered rows, so the retry still tells staff
+  }
   await recordAnswered(scope, deps); // every message of the turn: it was handled, and is not looked at again
+  if (handoffError !== null) throw handoffError;
   return { status: "opted_out", confirmation };
 }
 

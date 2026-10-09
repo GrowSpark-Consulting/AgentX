@@ -119,6 +119,11 @@ Need review by Dev 2 (Shaaz):
 
 ## 7. Follow-ups
 
+- **Dhatri:** the inbox's `TRIGGER_TEXT` map (`frontend/features/inbox/data.ts`) has no `opt_out` entry; it falls back to "opt out". A clearer reason such as "opted out: call instead of messaging" would help staff. I did not touch your file.
+- **Shaaz:** `handoff.opened` carries no trigger, so the alert job must read the handoff row to pick the `opt_out` wording.
+- If the chat already has an open handoff, the STOP reuses it (no new alert). A STOP never fails because of that, and the contact is opted out either way.
+- A failing handoff write in the STOP step still marks the messages answered, then fails the step so the retry opens the handoff; the confirmation is never sent twice.
+
 - Opting in again, deletion requests (`deletion_requested`, `deleted`) and the dashboard's own opt-out (source `dashboard`)
   are not part of this PR.
 - Pending reminders or follow-ups for a contact who opts out are not cancelled here (they do not exist yet); when they do,
