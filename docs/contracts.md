@@ -132,6 +132,7 @@ type NotifyPayload = {
   staffUserId?: string;      // staff_alert only: the member to alert
   text?: string;             // free text, inside the 24-hour window
   templateParams?: string[]; // in {{1}}… order, outside the window
+  template?: { name: string; language: string; params: string[] }; // staff_reply only: an approved template staff chose
   interactive?: Interactive; // reply buttons or a list, sent instead of `text` inside the window
   idempotencyKey?: string;   // names this exact message; a repeat returns the first send instead of sending again
   actorId?: string;          // the staff user (staff_reply, test_message); recorded in audit_logs
@@ -175,6 +176,16 @@ tabs or runs of spaces (Meta refuses them, 132018); customer and business names 
 
 **For the inbox (Dev 3):** contacts tagged `staff` or `test` are our own numbers; their chats should be hidden
 from the inbox list (or shown under a separate filter).
+
+**A template chosen by staff (built, 9 Oct; for Dev 3's template picker):** `staff_reply` may pass
+`template: { name, language, params }`, an approved template by its exact versioned name (`reminder_24h_v2`), its
+language and its body variables in {{1}}… order. It is sent whatever the 24-hour window, free like any staff reply, and
+recorded with its name (`messages.template_name`). Only a template with `status = 'approved'` on the business's
+connected number is used (`not_found`, "That template isn't approved for this WhatsApp number."); the number of values
+must match the body's variables (`validation_failed`, "This template needs 2 values."); a malformed name or language is
+`validation_failed` before anything is read. Other kinds cannot pass `template`. For the inbox route
+(`POST /api/conversations/:id/messages`), the body would be `{ "template": { "name", "language", "params" } }`
+instead of `{ "body" }`, passed through to `notify.send` with the staff member as actor.
 
 **Idempotency key (built, 9 Oct):** a job that may retry passes `idempotencyKey` (up to 200 characters, for example
 `reminder_24h:<bookingId>:<start>`). The message id is derived from the business, the kind and the key, so once

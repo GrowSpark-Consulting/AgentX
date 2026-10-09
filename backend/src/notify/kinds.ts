@@ -40,11 +40,13 @@ export type KindConfig = {
    * was received and the holding message when the business is out of credits.
    */
   ignoresOptOut?: boolean;
+  /** Staff may send an approved template they chose (payload.template), whatever the window. Only staff_reply. */
+  chosenTemplate?: boolean;
 };
 
 export const KINDS: Record<NotificationKind, KindConfig> = {
   ai_reply: { feature: "ai_auto_reply", charged: true, freeTextReason: "ai_reply", sender: "ai", audience: "conversation" },
-  staff_reply: { charged: false, sender: "staff", audience: "conversation" },
+  staff_reply: { charged: false, sender: "staff", audience: "conversation", chosenTemplate: true },
   test_message: { charged: false, sender: "staff", audience: "number" },
   booking_confirmation: { feature: "booking_confirmation", charged: true, freeTextReason: "template_utility", template: "booking_confirmed", sender: "system", audience: "conversation" },
   reminder_24h: { feature: "reminder_24h", charged: true, freeTextReason: "template_utility", template: "reminder_24h", sender: "system", audience: "conversation" },
