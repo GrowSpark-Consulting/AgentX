@@ -305,7 +305,9 @@ localWindow(timeZone, { day: 'today' | 'tomorrow' | 'YYYY-MM-DD', part?: 'mornin
   sides of a booking) and `min_notice_min`, and held or confirmed bookings (an expired hold no longer
   counts). Start times are every 30 minutes from opening; each time comes with the least busy free resource
   of the service's `resource_type`. With `pincode`, only resources whose `service_area.pincodes` has it, or
-  that have no area set. The window is at most 14 days. Google free/busy comes with the calendar sync (Day 4).
+  that have no area set. The window is at most 14 days. A person with a connected Google Calendar is also busy when
+  Google's free/busy says so (`googleBusyTimes`); Google can only take times away, and a Google failure is logged and
+  never stops slot search.
 - `holdSlot` holds for 10 minutes (`status 'held'`). `kind` defaults to `slot`; `slot`, `site_visit` and
   `field_visit` need a resource and a service; `callback`, `date_range` and `reservation` may have no resource
   and then never clash. A lead holds one time at a time: a new hold releases its earlier one
@@ -320,6 +322,12 @@ localWindow(timeZone, { day: 'today' | 'tomorrow' | 'YYYY-MM-DD', part?: 'mornin
   business's lead, service, resource or booking is `not_found`; a hold that expired or a booking in the wrong
   state is `conflict`; bad times, kinds or resources are `validation_failed`.
 - **Jobs:** `release-holds` (Inngest cron, every minute) marks holds past their expiry `expired`.
+  `google-calendar-sync` (built 9 Oct; `backend/src/booking/google-sync.ts`): `booking.confirmed` puts the booking on
+  its person's Google Calendar ("{service}: {customer name}", no phone number, a link to the dashboard's calendar)
+  and keeps the event id in `bookings.calendar_event_id`; `booking.changed` with `cancelled` or `rescheduled` takes it
+  off (the new time of a reschedule is its own `booking.confirmed`). The event id is fixed per booking
+  (`pk<booking id without dashes>`), so a retry finds the event instead of adding another. Only for a person with a
+  connected calendar; a Google error retries the step.
 - **Double booking:** blocked by the database: `scripts/db/hold-slot-concurrency.sh` (CI) runs 20 holds for one
   slot at the same moment; exactly one wins and the other 19 get `slot_taken`. Holds and moves for one person take
   turns (0023): without that, Postgres could report a racing loser as a deadlock (a server error) instead.
@@ -362,8 +370,8 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | `whatsapp/message.received` | `{ tenantId, conversationId, messageId }`; sent by the webhook (id `message_received:<messageId>`, also for a replay); starts `process-message`, and `lead-nudges` (the chat's next message cancels its earlier run) |
 | `kb/document.uploaded` | `{ tenantId, documentId }`; sent by `POST /api/kb/documents` (id `kb_document_uploaded:<documentId>`), starts the `kb-ingest` job |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
-| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` and `post-visit` |
-| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run, and its `post-visit` run unless the change is `completed` |
+| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` and `post-visit`, and `google-calendar-sync` adds the booking to Google |
+| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run, and its `post-visit` run unless the change is `completed`; `google-calendar-sync` removes its Google event when `cancelled` or `rescheduled` |
 | `booking.rated` | `{ tenantId, bookingId, rating }` (1–5); sent by `recordVisitRating` when the customer taps a rating (id `booking.rated:<bookingId>`, so the first rating counts); the `post-visit` run waits for it |
 | `handoff.opened` | `{ tenantId, handoffId, conversationId }`; sent by Dev 1's reply step when it opens a handoff (id `handoff_opened:<handoffId>`); starts `handoff-alert`, which sends one `staff_alert` to each owner and admin with an alert number (section 2). A handoff already resolved by the time the job runs gets no alert. **The job is the only sender of handoff alerts:** the reply step does not alert staff itself. Also starts `handoff-sla`: after the SLA (section 3) it alerts the owners again (`handoff_waiting`) unless someone has the chat: the handoff was picked up, assigned or resolved, a staff member took the chat over, or it is no longer in `human` mode (back with the AI, or on the business's own number) |
 | `handoff.own_number` | `{ tenantId, handoffId }` |
