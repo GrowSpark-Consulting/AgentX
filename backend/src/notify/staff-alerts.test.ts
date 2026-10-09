@@ -83,6 +83,19 @@ describe("staffAlertContent", () => {
     expect(one.headline).toContain("waited 1 minute and");
   });
 
+  it("tells staff a customer opted out, so they call instead of messaging", async () => {
+    const outcome = await staffAlertContent(TENANT, { kind: "opted_out", conversationId: CONVERSATION }, deps());
+    expect(outcome.headline).toBe("Asha Raman sent STOP, so the assistant won't message them again. Call them if you need to.");
+  });
+
+  it("asks staff how a visit went, and tells the owner about a low rating", async () => {
+    const outcome = await staffAlertContent(TENANT, { kind: "visit_outcome", conversationId: CONVERSATION, what: "site visit" }, deps());
+    expect(outcome.headline).toBe("How did the site visit with Asha Raman go? Update the lead so follow-ups stay right.");
+    const low = await staffAlertContent(TENANT, { kind: "low_rating", conversationId: CONVERSATION, what: "site visit", rating: 2 }, deps());
+    expect(low.headline).toBe("Asha Raman rated their site visit 2 out of 5.");
+    expect(low.link).toBe(`https://app.test/dashboard/inbox?conversation=${CONVERSATION}`);
+  });
+
   it("tells the owner the business is out of credits, with the billing link", async () => {
     await expect(staffAlertContent(TENANT, { kind: "credits_exhausted" }, deps())).resolves.toEqual({
       headline: "Skyline Homes is out of credits, so the assistant has stopped replying.",

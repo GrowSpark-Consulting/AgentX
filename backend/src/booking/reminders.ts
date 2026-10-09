@@ -38,12 +38,17 @@ export async function reminderOffsets(tenantId: string, db: SupabaseClient): Pro
   return offsets;
 }
 
-/** What a reminder needs about one booking, read for this business only. */
+/** What the reminder and post-visit jobs need about one booking, read for this business only. */
 export interface ReminderBooking {
   bookingId: string;
   status: string;
   /** ISO 8601 UTC. */
   start: string;
+  /** ISO 8601 UTC. */
+  end: string;
+  leadId: string;
+  /** The booked resource's staff member (resources.user_id), if it has one. */
+  staffUserId: string | null;
   /** The service's name, else the kind of booking in words. */
   what: string;
   business: string;
@@ -56,9 +61,12 @@ const BookingRow = z.object({
   id: z.guid(),
   status: z.string(),
   start_at: z.string(),
+  end_at: z.string(),
   kind: z.enum(BOOKING_KINDS),
+  lead_id: z.guid(),
   leads: z.object({ contact_id: z.guid() }).nullable(),
   services: z.object({ name: z.string() }).nullable(),
+  resources: z.object({ user_id: z.string().nullable() }).nullable(),
 });
 const TenantRow = z.object({ name: z.string(), timezone: z.string() });
 
@@ -75,7 +83,7 @@ const KIND_WORDS: Record<BookingKind, string> = {
 export async function loadReminderBooking(tenantId: string, bookingId: string, db: SupabaseClient): Promise<ReminderBooking | null> {
   const bookingRead = await db
     .from("bookings")
-    .select("id, status, start_at, kind, leads(contact_id), services(name)")
+    .select("id, status, start_at, end_at, kind, lead_id, leads(contact_id), services(name), resources(user_id)")
     .eq("tenant_id", tenantId)
     .eq("id", bookingId)
     .limit(1);
@@ -106,6 +114,9 @@ export async function loadReminderBooking(tenantId: string, bookingId: string, d
     bookingId: booking.id,
     status: booking.status,
     start: new Date(booking.start_at).toISOString(),
+    end: new Date(booking.end_at).toISOString(),
+    leadId: booking.lead_id,
+    staffUserId: booking.resources?.user_id ?? null,
     what: booking.services?.name ?? KIND_WORDS[booking.kind],
     business: tenant.name,
     timeZone: tenant.timezone,
@@ -113,8 +124,8 @@ export async function loadReminderBooking(tenantId: string, bookingId: string, d
   };
 }
 
-// Template variables may not hold a line break, a tab or a run of spaces (Meta 132018), and names can be long.
-const oneLine = (text: string, max: number) => {
+/** A template variable: one line (Meta 132018 refuses line breaks, tabs and runs of spaces), cut to `max` characters. */
+export const oneLine = (text: string, max: number) => {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };

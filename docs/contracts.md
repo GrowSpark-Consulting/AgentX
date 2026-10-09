@@ -162,6 +162,9 @@ otherwise the approved `staff_alert_vN` template: `{{1}}` the one-line headline,
 | `credits_exhausted` | handoff trigger `credits_exhausted` | "{business} is out of credits, so the assistant has stopped replying." | `/dashboard/billing` |
 | `setup_problem` | handoff trigger `stuck` | "The assistant couldn't continue the chat with {name}." | `/dashboard/inbox?conversation=<id>` |
 | `handoff_waiting` | `handoff-sla`: no one picked the chat up within the SLA; **owners only** | "{name} has waited {N} minutes and no one has picked up the chat yet." | `/dashboard/inbox?conversation=<id>` |
+| `opted_out` | handoff trigger `opt_out` (the customer sent STOP; Dev 1's #69) | "{name} sent STOP, so the assistant won't message them again. Call them if you need to." | `/dashboard/inbox?conversation=<id>` |
+| `visit_outcome` | `post-visit`, after the visit: to the booked staff member if they have an alert number, else owners and admins | "How did the {what} with {name} go? Update the lead so follow-ups stay right." | `/dashboard/inbox?conversation=<id>` |
+| `low_rating` | `post-visit`: the customer rated the visit 1–3; **owners only** | "{name} rated their {what} {n} out of 5." | `/dashboard/inbox?conversation=<id>` |
 
 `{name}` is the contact's name, else the masked number (`+9198xxxxxx45`). Every parameter is one line with no
 tabs or runs of spaces (Meta refuses them, 132018); customer and business names are cut to 40 characters.
@@ -221,6 +224,8 @@ passes through in the `failed` outcome. A plain `Error` is unexpected: it is log
 | `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits); a resource with no area serves every pincode | Fixed: read by `findSlots` |
 | `tenant_features.settings` | Reminders: `{ "offset_minutes": 1440 }`, minutes before the booking's start, a whole number from 1 to 10080 (a week); anything else uses the default (`reminder_24h` 1440, `reminder_2h` 120). Other features `{}` | Fixed for reminders: read by `booking-reminders` (`backend/src/booking/reminders.ts`) |
 | `tenant_features.settings` of `handoff_triggers` | `{ "sla_minutes": 15 }`: minutes a handoff may wait before the owner is alerted again, 1 to 1440; anything else uses 15 | Proposed (decision 17): read by `handoff-sla` |
+| `tenant_features.settings` of `feedback_request` | `{ "offset_minutes": 120 }`: minutes after the booking's end before the rating question, 0 to 10080; anything else uses 120 | Built: read by `post-visit` |
+| `tenant_features.settings` of `review_request` | `{ "review_url": "https://…" }`: the business's review page (https only). Without it no review link is sent | Proposed: read by `post-visit`; Dev 3's settings screen to edit it |
 | `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
 | `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
 | `tenants.agent_settings` | Persona name, tone, languages, handoff default, scoring overrides | **To define: Dev 1 + Dev 3** |
@@ -340,8 +345,9 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | `whatsapp/message.received` | `{ tenantId, conversationId, messageId }`; sent by the webhook (id `message_received:<messageId>`, also for a replay); starts `process-message` |
 | `kb/document.uploaded` | `{ tenantId, documentId }`; sent by `POST /api/kb/documents` (id `kb_document_uploaded:<documentId>`), starts the `kb-ingest` job |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
-| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` |
-| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run |
+| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` and `post-visit` |
+| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run, and its `post-visit` run unless the change is `completed` |
+| `booking.rated` | `{ tenantId, bookingId, rating }` (1–5); sent by `recordVisitRating` when the customer taps a rating (id `booking.rated:<bookingId>`, so the first rating counts); the `post-visit` run waits for it |
 | `handoff.opened` | `{ tenantId, handoffId, conversationId }`; sent by Dev 1's reply step when it opens a handoff (id `handoff_opened:<handoffId>`); starts `handoff-alert`, which sends one `staff_alert` to each owner and admin with an alert number (section 2). A handoff already resolved by the time the job runs gets no alert. **The job is the only sender of handoff alerts:** the reply step does not alert staff itself. Also starts `handoff-sla`: after the SLA (section 3) it alerts the owners again (`handoff_waiting`) unless someone has the chat: the handoff was picked up, assigned or resolved, a staff member took the chat over, or it is no longer in `human` mode (back with the AI, or on the business's own number) |
 | `handoff.own_number` | `{ tenantId, handoffId }` |
 | `tenant.trial_started` | `{ tenantId }` |
@@ -363,6 +369,22 @@ Each send's idempotency key is `<kind>:<bookingId>:<start>`. **For Dev 1:** a ta
 `buttonId` is one of those ids; `parseBookingButton(buttonId)` (`backend/src/booking/reminders.ts`) returns
 `{ bookingId, action }` for the pipeline to act on (confirm: thank the customer; reschedule: offer slots; cancel:
 `cancelBooking`).
+
+**After a visit (`post-visit`, built 9 Oct; `backend/src/inngest/post-visit.ts`).** On `booking.confirmed` the run
+sleeps until the booking's end plus the business's delay (section 3, 2 h by default). Then, if the visit happened
+(the booking is still confirmed, or marked completed, at the same time):
+- It asks the customer for a rating (`feedback_request`, 1 credit): inside the window a list of five rows, ids
+  `rating:<bookingId>:<1–5>`; outside it the `feedback_vN` template with {{1}} what and {{2}} the business.
+- It prompts staff for the outcome (`staff_alert` `visit_outcome`).
+- It waits up to 3 days for `booking.rated`. A 4 or 5 gets the business's review link (`review_request`, 1 credit; the
+  `review_vN` template has {{1}} the business and {{2}} the link); without a link nothing is sent. A 1–3 alerts the
+  owners (`low_rating`).
+
+A cancelled, moved or no-show booking ends the run (`cancelOn`); one marked completed does not. **For Dev 1:** a
+rating tap's `buttonId` is `rating:<bookingId>:<n>`; `parseRatingButton(buttonId)` gives `{ bookingId, rating }` and
+`recordVisitRating(tenantId, bookingId, rating)` (`backend/src/booking/post-visit.ts`) saves it on the lead
+(`leads.feedback_rating`) and sends `booking.rated`. For a 4 or 5 the job's review message is the thank-you, so the
+pipeline should not answer the tap; for a 1–3 it may send a short thank-you (staff are alerted by the job).
 
 **The message pipeline (`process-message`, built: steps 2 and 3).** One conversation at a time (concurrency key
 `conversationId`); messages from one conversation within 3 seconds (never longer than 15) start one run. A debounce keeps

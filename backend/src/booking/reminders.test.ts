@@ -7,6 +7,8 @@ const TENANT = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 const BOOKING = "9b2f0a4e-1c3d-4e5f-8a6b-7c8d9e0f1a2b";
 const CONTACT = "6fa459ea-ee8a-4ca4-894e-db77e160355e";
 const CONVERSATION = "3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f601";
+const LEAD = "5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f";
+const STAFF = "16fd2706-8baf-433b-82eb-8c7fada847da";
 
 describe("reminderOffsets", () => {
   it("uses 24 hours and 2 hours when the business set nothing", async () => {
@@ -30,7 +32,20 @@ describe("reminderOffsets", () => {
 describe("loadReminderBooking", () => {
   const tables = (over: Record<string, unknown> = {}) => ({
     bookings: {
-      data: [{ id: BOOKING, status: "confirmed", start_at: "2026-10-10T11:30:00+00:00", kind: "site_visit", leads: { contact_id: CONTACT }, services: { name: "Site visit: Skyline Towers" }, ...over }],
+      data: [
+        {
+          id: BOOKING,
+          status: "confirmed",
+          start_at: "2026-10-10T11:30:00+00:00",
+          end_at: "2026-10-10T12:30:00+00:00",
+          kind: "site_visit",
+          lead_id: LEAD,
+          leads: { contact_id: CONTACT },
+          services: { name: "Site visit: Skyline Towers" },
+          resources: { user_id: STAFF },
+          ...over,
+        },
+      ],
       error: null,
     },
     tenants: { data: [{ name: "Skyline Homes", timezone: "Asia/Kolkata" }], error: null },
@@ -43,6 +58,9 @@ describe("loadReminderBooking", () => {
       bookingId: BOOKING,
       status: "confirmed",
       start: "2026-10-10T11:30:00.000Z",
+      end: "2026-10-10T12:30:00.000Z",
+      leadId: LEAD,
+      staffUserId: STAFF,
       what: "Site visit: Skyline Towers",
       business: "Skyline Homes",
       timeZone: "Asia/Kolkata",
@@ -56,8 +74,8 @@ describe("loadReminderBooking", () => {
   });
 
   it("names the kind of booking when there is no service, and has no chat when there is no lead", async () => {
-    const booking = await loadReminderBooking(TENANT, BOOKING, fakeSupabase(tables({ kind: "callback", services: null, leads: null })).client);
-    expect(booking).toMatchObject({ what: "call", conversationId: null });
+    const booking = await loadReminderBooking(TENANT, BOOKING, fakeSupabase(tables({ kind: "callback", services: null, leads: null, resources: null })).client);
+    expect(booking).toMatchObject({ what: "call", conversationId: null, staffUserId: null });
   });
 
   it("is null for a booking this business doesn't have", async () => {
@@ -70,6 +88,9 @@ describe("reminderMessage", () => {
     bookingId: BOOKING,
     status: "confirmed",
     start: "2026-10-10T11:30:00.000Z",
+    end: "2026-10-10T12:30:00.000Z",
+    leadId: LEAD,
+    staffUserId: null,
     what: "site visit",
     business: "Skyline Homes",
     timeZone: "Asia/Kolkata",
