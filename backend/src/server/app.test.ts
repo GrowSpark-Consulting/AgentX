@@ -153,21 +153,21 @@ describe("errors the frontend can read", () => {
     app(new Request(`http://localhost:4000${path}`, { method: "OPTIONS", headers: { origin, "access-control-request-method": method } }));
 
   it("lets the frontend preflight a missing route, so its 404 reads as not_found instead of a network error", async () => {
-    const pre = await preflight(FRONTEND, "GET", "/api/kb/gaps");
+    const pre = await preflight(FRONTEND, "GET", "/api/not-built-yet");
     expect(pre.status).toBe(204);
     expect(pre.headers.get("access-control-allow-origin")).toBe(FRONTEND);
     expect(pre.headers.get("access-control-allow-methods")).toContain("GET");
-    const res = await app(new Request("http://localhost:4000/api/kb/gaps", { headers: { origin: FRONTEND } }));
+    const res = await app(new Request("http://localhost:4000/api/not-built-yet", { headers: { origin: FRONTEND } }));
     expect(res.status).toBe(404);
     expect(res.headers.get("access-control-allow-origin")).toBe(FRONTEND);
     expect(await errorOf(res)).toEqual({ code: "not_found", message: "Not found." });
   });
 
   it("still gives other origins nothing on a missing route", async () => {
-    const pre = await preflight("https://evil.example", "GET", "/api/kb/gaps");
+    const pre = await preflight("https://evil.example", "GET", "/api/not-built-yet");
     expect(pre.status).toBe(403);
     expect(pre.headers.get("access-control-allow-origin")).toBeNull();
-    const res = await app(new Request("http://localhost:4000/api/kb/gaps", { headers: { origin: "https://evil.example" } }));
+    const res = await app(new Request("http://localhost:4000/api/not-built-yet", { headers: { origin: "https://evil.example" } }));
     expect(res.status).toBe(404);
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });

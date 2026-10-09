@@ -93,6 +93,17 @@ const db = vi.hoisted(() => {
       if (!conversation.lastCustomerMsgAt || conversation.lastCustomerMsgAt < args.sentAt) conversation.lastCustomerMsgAt = args.sentAt;
       return { conversationId: conversation.id, messageId: message.id, inserted: true };
     },
+    // Template and quality events (covered in channels/whatsapp/inbound.test.ts): nothing here is a business's, so nothing changes.
+    async findConnectionsByWaba(ids: string[]) {
+      return state.connections.filter((c) => ids.includes(c.wabaId));
+    },
+    async templateBelongsToTenant() {
+      return false;
+    },
+    async setTemplateStatus() {
+      return false;
+    },
+    async updateConnectionHealth() {},
     async applyMessageStatus(args: { tenantId: string; providerMsgId: string; status: string }) {
       if (state.failStatus) throw state.failStatus;
       const row = state.messages.find((m) => m.tenantId === args.tenantId && m.providerMsgId === args.providerMsgId && m.direction === "out");
@@ -108,6 +119,10 @@ const db = vi.hoisted(() => {
 vi.mock("../channels/whatsapp/inbound-db", () => ({
   WebhookDbError: db.WebhookDbError,
   findConnections: db.findConnections,
+  findConnectionsByWaba: db.findConnectionsByWaba,
+  templateBelongsToTenant: db.templateBelongsToTenant,
+  setTemplateStatus: db.setTemplateStatus,
+  updateConnectionHealth: db.updateConnectionHealth,
   storeInboundMessage: db.storeInboundMessage,
   applyMessageStatus: db.applyMessageStatus,
 }));

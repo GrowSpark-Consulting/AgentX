@@ -20,6 +20,7 @@ const NAV = [
   { href: "/dashboard/calendar", label: "Calendar", d: "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M16 2v4 M8 2v4 M3 10h18" },
   { href: "/dashboard/knowledge", label: "Knowledge base", d: "M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" },
   { href: "/dashboard/settings/booking", label: "Booking setup", d: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2" },
+  { href: "/dashboard/team", label: "Team", d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75" },
   { href: "/dashboard/messages/test", label: "Send test message", d: "M7.9 20A9 9 0 1 0 4 16.1L2 22z" },
   { href: "/dashboard/templates/new", label: "Create template", d: "M4 4h16v12H5.2L4 17.2z M8 8h8 M8 12h5" },
   { href: "/dashboard/whatsapp", label: "WhatsApp", d: "M5 2h14a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z M12 18h.01" },

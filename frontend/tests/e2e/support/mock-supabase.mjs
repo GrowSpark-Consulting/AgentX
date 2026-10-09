@@ -184,6 +184,25 @@ function createServicesAccount({ seed = false, error = false, docs = false, docs
 const SERVICE_COLUMNS = ["id", "tenant_id", "name", "duration_min", "price_min", "price_max", "resource_type", "active", "buffer_min", "min_notice_min"];
 const pickService = (s) => Object.fromEntries(SERVICE_COLUMNS.map((k) => [k, s[k]]));
 
+// Team (0001 memberships, 0002 own_preferences): the member's own alert number and takeover preference,
+// keyed "email|tenant id". Every other seeded account starts with neither. Each Team test makes its own
+// account through POST /__mock/team-account.
+const MEMBER_PREFS = new Map();
+const MEMBER_WRITABLE = ["whatsapp_phone", "takeover_pref"];
+const prefsOf = (email, tenantId) => MEMBER_PREFS.get(`${email}|${tenantId}`) ?? { whatsapp_phone: null, takeover_pref: null };
+/**
+ * { role?, phone?, refused?, readError? } → { email, tenantId, userId }. phone is the stored alert number;
+ * refused makes updates come back empty, as RLS does for a row that isn't the member's; readError makes
+ * the Team screen's read return rows the app can't parse.
+ */
+function createTeamAccount({ role = "owner", phone = null, refused = false, readError = false } = {}) {
+  const email = `team-${randomUUID()}@test.local`;
+  const t = tenant(randomUUID(), "Team Studio", "salon");
+  USERS[email] = { memberships: [[t, role]], view: { status: 200, body: [] }, prefsRefused: refused, prefsError: readError };
+  if (phone) MEMBER_PREFS.set(`${email}|${t.id}`, { whatsapp_phone: phone, takeover_pref: null });
+  return { email, tenantId: t.id, userId: idOf(email) };
+}
+
 // Day 3 (leads, calendar, booking setup). Each test makes its own business through
 // POST /__mock/day3-account, so the desktop, tablet and phone projects never share rows. The business's
 // pack key is made up ("sample-pack"): the screens must work for any pack. Times are fixed (the week of
@@ -618,6 +637,15 @@ ${choose("Cancel", "cancel=1")}
     }));
     return send(res, 200, { memberships, trialCalls: trialCalls.get(email) ?? 0 });
   }
+  if (path === "/__mock/team-account" && req.method === "POST") {
+    return send(res, 200, createTeamAccount(await readBody(req)));
+  }
+  if (path === "/__mock/memberships") {
+    // A user's membership rows as stored, for checking writes: ?email=<email>.
+    const email = String(url.searchParams.get("email") ?? "").toLowerCase();
+    const rows = (USERS[email]?.memberships ?? []).map(([t, role]) => ({ tenant_id: t.id, user_id: idOf(email), role, ...prefsOf(email, t.id) }));
+    return send(res, 200, rows);
+  }
   if (path === "/__mock/day3-account" && req.method === "POST") {
     return send(res, 200, createDay3Account(await readBody(req)));
   }
@@ -716,7 +744,26 @@ ${choose("Cancel", "cancel=1")}
       return send(res, status, result);
     }
     if (table === "memberships") {
-      const rows = email ? USERS[email].memberships.map(([t, role]) => ({ tenant_id: t.id, role, tenants: t })) : [];
+      // RLS as in 0001/0002: a member reads memberships (here only their own: each mock business has one
+      // member) and updates only their own row's whatsapp_phone and takeover_pref; a row that isn't theirs
+      // is left out of the update, so nothing comes back.
+      if (!email) return send(res, 200, []);
+      const user = USERS[email];
+      const rowOf = ([t, role]) => ({ tenant_id: t.id, user_id: idOf(email), role, ...prefsOf(email, t.id), tenants: t });
+      const rows = user.memberships.map(rowOf).filter(filters(url));
+      if (req.method === "PATCH") {
+        const patch = await readBody(req);
+        if (Object.keys(patch).some((k) => !MEMBER_WRITABLE.includes(k))) {
+          return send(res, 403, { code: "42501", details: null, hint: null, message: "permission denied for table memberships" });
+        }
+        if (user.prefsRefused) return send(res, 200, []);
+        for (const r of rows) MEMBER_PREFS.set(`${email}|${r.tenant_id}`, { ...prefsOf(email, r.tenant_id), ...pick(patch, MEMBER_WRITABLE) });
+        return send(res, 200, user.memberships.map(rowOf).filter(filters(url)));
+      }
+      // Only the Team screen selects whatsapp_phone, so sign-in's read of memberships is never broken.
+      if (user.prefsError && (url.searchParams.get("select") ?? "").includes("whatsapp_phone")) {
+        return send(res, 200, [{ tenant_id: "not-a-tenant", whatsapp_phone: 42 }]);
+      }
       return send(res, 200, rows);
     }
     if (table === "whatsapp_connections_public") {

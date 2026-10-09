@@ -15,7 +15,8 @@ export type NotificationKind =
   | "followup_nudge"
   | "noshow_rebooking"
   | "feedback_request"
-  | "review_request";
+  | "review_request"
+  | "system_notice";
 
 export type KindConfig = {
   /** isEnabled gate; kinds without one are always allowed. */
@@ -30,6 +31,11 @@ export type KindConfig = {
   sender: "ai" | "staff" | "system";
   /** Who receives it: an existing conversation, or a number typed by staff (test message). */
   audience: "conversation" | "number";
+  /**
+   * Sent even to a contact who opted out. Only system_notice, and only for the confirmation that a STOP
+   * was received and the holding message when the business is out of credits.
+   */
+  ignoresOptOut?: boolean;
 };
 
 export const KINDS: Record<NotificationKind, KindConfig> = {
@@ -43,4 +49,7 @@ export const KINDS: Record<NotificationKind, KindConfig> = {
   noshow_rebooking: { feature: "noshow_rebooking", charged: true, freeTextReason: "template_marketing", template: "noshow_rebook", sender: "system", audience: "conversation" },
   feedback_request: { feature: "feedback_request", charged: true, freeTextReason: "template_marketing", template: "feedback", sender: "system", audience: "conversation" },
   review_request: { feature: "review_request", charged: true, freeTextReason: "template_marketing", template: "review", sender: "system", audience: "conversation" },
+  // A fixed line from the system to the customer: free, no toggle, free text inside the 24-hour window only
+  // (no template, so outside it is skipped).
+  system_notice: { charged: false, sender: "system", audience: "conversation", ignoresOptOut: true },
 };

@@ -1,5 +1,6 @@
 import type { InboundMessage, StatusUpdate } from "@pakka/types";
 import { z } from "zod";
+import { stripUnsafeCharacters } from "../../lib/text";
 import { normalizeE164 } from "./phone";
 
 // Turns a VERIFIED, already JSON-parsed WhatsApp webhook body into what the route needs. It checks no
@@ -32,13 +33,29 @@ export const TemplateStatusUpdate = z.object({
   name: z.string().min(1),
   language: z.string().min(1).optional(), // never filled: Meta's field name is unconfirmed
   event: z.string().min(1),
-  reason: z.string().optional(), // Meta's reason, possibly "NONE"
+  reason: z.string().optional(), // Meta's reason, possibly "NONE": cleaned and cut to REASON_MAX_CHARS before it gets here
   timestamp: z.iso.datetime({ offset: true }).optional(), // never filled: Meta's field name is unconfirmed
 });
 export type TemplateStatusUpdate = z.infer<typeof TemplateStatusUpdate>;
 
+/** From phone_number_quality_update. Meta's field names are unconfirmed, so only plain identifiers are kept. */
+export const QualityUpdate = z.object({
+  wabaId: z.string().min(1),
+  event: z.string().min(1), // UPGRADE, DOWNGRADE, ONBOARDING, ...: a plain word, or "unknown"
+  currentLimit: z.string().optional(), // for example TIER_1K
+  qualityRating: z.string().optional(), // GREEN, YELLOW, RED, if the payload carries one
+});
+export type QualityUpdate = z.infer<typeof QualityUpdate>;
+
+/** From account_update. Only the event's name is kept: it is logged, nothing else is read. */
+export const AccountUpdate = z.object({ wabaId: z.string().min(1), event: z.string().min(1) });
+export type AccountUpdate = z.infer<typeof AccountUpdate>;
+
+/** A template's rejection reason is stored on the template: Meta's words, cleaned and short. */
+export const REASON_MAX_CHARS = 500;
+
 export type IgnoredReason =
-  | "unsupported_field" // a webhook field we do not handle (quality, account update, echoes, ...)
+  | "unsupported_field" // a webhook field we do not handle (echoes, history, app state, anything new)
   | "unsupported_status" // for example "played"
   | "invalid_item" // failed validation: bad number, bad timestamp, unsafe template id
   | "malformed_payload";
@@ -55,6 +72,8 @@ export type ParseResult = {
   messages: ParsedMessage[];
   statuses: ParsedStatus[];
   templateStatuses: TemplateStatusUpdate[];
+  qualityUpdates: QualityUpdate[];
+  accountUpdates: AccountUpdate[];
   ignored: IgnoredItem[];
 };
 
@@ -229,9 +248,28 @@ function parseTemplateStatus(value: unknown, wabaId: string): TemplateStatusUpda
     metaTemplateId: id,
     name: v.message_template_name,
     event: v.event,
-    ...(v.reason !== undefined && { reason: v.reason }),
+    ...(v.reason !== undefined && { reason: [...stripUnsafeCharacters(v.reason)].slice(0, REASON_MAX_CHARS).join("") }),
   });
   return update.success ? update.data : invalid(field, wabaId);
+}
+
+const PlainObject = z.looseObject({});
+/** A plain identifier (upper or lower case letters, digits, _ . -) or undefined: nothing else from a payload is kept. */
+const plain = (value: unknown): string | undefined => (typeof value === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : undefined);
+
+function parseQuality(value: unknown, wabaId: string): QualityUpdate | IgnoredItem {
+  const field = "phone_number_quality_update";
+  const parsed = PlainObject.safeParse(value);
+  if (!parsed.success) return invalid(field, wabaId);
+  const v = parsed.data as Record<string, unknown>;
+  const qualityRating = plain(v.quality_rating) ?? plain(v.current_quality_rating);
+  return { wabaId, event: plain(v.event) ?? "unknown", ...(plain(v.current_limit) !== undefined && { currentLimit: plain(v.current_limit) }), ...(qualityRating !== undefined && { qualityRating }) };
+}
+
+function parseAccount(value: unknown, wabaId: string): AccountUpdate | IgnoredItem {
+  const parsed = PlainObject.safeParse(value);
+  if (!parsed.success) return invalid("account_update", wabaId);
+  return { wabaId, event: plain((parsed.data as Record<string, unknown>).event) ?? "unknown" };
 }
 
 function parseChange(rawChange: unknown, wabaId: string, result: ParseResult): void {
@@ -248,8 +286,20 @@ function parseChange(rawChange: unknown, wabaId: string, result: ParseResult): v
     else result.ignored.push(item);
     return;
   }
+  if (field === "phone_number_quality_update") {
+    const item = parseQuality(value, wabaId);
+    if ("event" in item) result.qualityUpdates.push(item);
+    else result.ignored.push(item);
+    return;
+  }
+  if (field === "account_update") {
+    const item = parseAccount(value, wabaId);
+    if ("event" in item) result.accountUpdates.push(item);
+    else result.ignored.push(item);
+    return;
+  }
   if (field !== "messages") {
-    // Quality, account updates, coexistence echoes, history and anything new: not parsed, shape not guessed.
+    // Coexistence echoes, history and anything new: counted by name, shape not guessed.
     result.ignored.push({ field: safeWord(field), reason: "unsupported_field", wabaId });
     return;
   }
@@ -288,7 +338,7 @@ function parseChange(rawChange: unknown, wabaId: string, result: ParseResult): v
 
 /** Never throws. Takes a verified, already-parsed body. No de-duplication: the wamid is the dedupe key. */
 export function parseWebhook(body: unknown): ParseResult {
-  const result: ParseResult = { messages: [], statuses: [], templateStatuses: [], ignored: [] };
+  const result: ParseResult = { messages: [], statuses: [], templateStatuses: [], qualityUpdates: [], accountUpdates: [], ignored: [] };
   try {
     const envelope = Envelope.safeParse(body);
     if (!envelope.success) {
@@ -314,7 +364,7 @@ export function parseWebhook(body: unknown): ParseResult {
       }
     }
   } catch {
-    return { messages: [], statuses: [], templateStatuses: [], ignored: [{ field: "payload", reason: "malformed_payload" }] };
+    return { messages: [], statuses: [], templateStatuses: [], qualityUpdates: [], accountUpdates: [], ignored: [{ field: "payload", reason: "malformed_payload" }] };
   }
   return result;
 }

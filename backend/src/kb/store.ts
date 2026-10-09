@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { maskPhone } from "../channels/whatsapp/phone";
 import { AppError } from "../lib/errors";
 import { supabaseAdmin } from "../lib/supabase-admin";
 import { TimeoutError, withTimeout } from "../lib/timeout";
@@ -24,6 +25,22 @@ export interface KbDocument {
   sourceType: string;
 }
 
+/** A FAQ as the dashboard shows it: the question (`title`), the answer (`body`) and whether it is searchable yet. */
+export interface Faq {
+  id: string;
+  q: string;
+  a: string;
+  status: KbDocumentStatus;
+}
+
+/** An open knowledge-base gap, as the dashboard lists it. `lastAskedBy` is a contact's name or a masked number, or null if the contact was deleted. */
+export interface OpenGap {
+  id: string;
+  question: string;
+  askedCount: number;
+  lastAskedBy: string | null;
+}
+
 export interface KbStore {
   /** A new upload for the business, `processing`, with its text. */
   insertUpload(tenantId: string, input: { title: string; body: string }): Promise<{ id: string; createdAt: string }>;
@@ -39,11 +56,32 @@ export interface KbStore {
    * `document_gone`: the document is not the business's (or was deleted meanwhile), so nothing was written.
    */
   replaceChunks(tenantId: string, id: string, rows: { content: string; embedding: number[] }[]): Promise<"stored" | "document_gone">;
+  /** A new FAQ (`manual`), `processing` until its chunks are stored. A question the business already has is a `conflict`. */
+  insertFaq(tenantId: string, input: { q: string; a: string }): Promise<{ id: string }>;
+  /** A FAQ of the business with this question (ignoring case) that is `failed`: where a second save of the same question picks up. Null when there is none. */
+  findFailedFaq(tenantId: string, q: string): Promise<Faq | null>;
+  /** The business's FAQ by id (never an upload), or null. */
+  getFaq(tenantId: string, id: string): Promise<Faq | null>;
+  /** Changes the FAQ's question and/or answer and makes it `processing` again (its chunks are old). Null when there is no such FAQ; a question another FAQ has is a `conflict`. */
+  updateFaq(tenantId: string, id: string, changes: { q?: string; a?: string }): Promise<Faq | null>;
+  /** Deletes a FAQ of the business (never an upload); its chunks go with it. False when there was none. */
+  deleteFaq(tenantId: string, id: string): Promise<boolean>;
+  /** The business's open gaps, most asked first (then most recent). */
+  listOpenGaps(tenantId: string): Promise<OpenGap[]>;
+  /** Closes an open (or already dismissed) gap as dismissed. False when it is not the business's, or was answered. */
+  dismissGap(tenantId: string, id: string): Promise<boolean>;
+  /**
+   * answer_kb_gap (0012): in one transaction the FAQ is written (`processing`) and the gap closed with it. Errors:
+   * not_found (not the business's gap), conflict (already answered, or the question duplicates an FAQ),
+   * validation_failed (answer empty or too long, unknown user).
+   */
+  answerGap(tenantId: string, gapId: string, input: { answer: string; answeredBy: string }): Promise<{ faqId: string; question: string; answer: string }>;
   /** Deletes an uploaded or imported document (never an FAQ); its chunks go with it. False when there was none. */
   deleteDocument(tenantId: string, id: string): Promise<boolean>;
   /**
-   * Marks documents that have been `processing` for longer than `olderThanMs` as failed, across all
-   * businesses: the ones whose job never started or never finished. Returns how many.
+   * Marks uploads that have been `processing` for longer than `olderThanMs` as failed, across all
+   * businesses: the ones whose job never started or never finished. Returns how many. FAQs are not swept: they are
+   * embedded inside the request that saves them, and `created_at` says nothing about when an edit began.
    */
   failStaleProcessing(olderThanMs: number, error: string): Promise<number>;
 }
@@ -53,6 +91,8 @@ export const CHUNK_INSERT_BATCH = 100;
 /** One query. Inserts of a batch of vectors get twice as much. A call that has not answered by then is not going to. */
 export const KB_DB_TIMEOUT_MS = 10_000;
 const ERROR_MAX = 200;
+/** The gaps list is a screen, not an export: the most asked hundred. */
+export const GAP_LIST_LIMIT = 100;
 
 const DocumentRow = z.object({
   id: z.string(),
@@ -62,6 +102,16 @@ const DocumentRow = z.object({
   source_type: z.string(),
 });
 const InsertedRow = z.object({ id: z.string(), created_at: z.string() });
+const FaqRow = z.object({ id: z.string(), title: z.string().nullable(), body: z.string().nullable(), status: z.enum(["processing", "ready", "failed"]) });
+const GapRow = z.object({
+  id: z.string(),
+  question: z.string(),
+  asked_count: z.number().int().positive(),
+  contact: z.object({ name: z.string().nullable(), phone: z.string() }).nullable(),
+});
+const AnsweredRow = z.array(z.object({ faq_id: z.string(), question: z.string(), answer: z.string() })).min(1);
+const toFaq = (row: z.infer<typeof FaqRow>): Faq => ({ id: row.id, q: row.title ?? "", a: row.body ?? "", status: row.status });
+const DUPLICATE_FAQ = "You already have a question like this. Edit the existing one instead.";
 
 type Result = { data: unknown; error: { code?: string; message?: string } | null; count?: number | null };
 
@@ -150,6 +200,105 @@ export function createKbStore(db: SupabaseClient = supabaseAdmin(), { timeoutMs 
       return "stored";
     },
 
+    async insertFaq(tenantId, { q, a }) {
+      const { data, error } = await run("insert faq", (signal) =>
+        db.from("kb_documents").insert({ tenant_id: tenantId, source_type: "manual", title: q, body: a, status: "processing" }).select("id, created_at").abortSignal(signal).single(),
+      );
+      if (error?.code === "23505") throw new AppError("conflict", DUPLICATE_FAQ);
+      if (error) fail("insert faq", error);
+      return { id: InsertedRow.parse(data).id };
+    },
+
+    async getFaq(tenantId, id) {
+      const { data, error } = await run("read faq", (signal) =>
+        db.from("kb_documents").select("id, title, body, status").eq("id", id).eq("tenant_id", tenantId).eq("source_type", "manual").abortSignal(signal).maybeSingle(),
+      );
+      if (error) fail("read faq", error);
+      return data === null ? null : toFaq(FaqRow.parse(data));
+    },
+
+    async findFailedFaq(tenantId, q) {
+      // ilike with the question's own % _ and \ escaped, so it is an equality that ignores case, as the unique index does
+      const pattern = q.replace(/[\\%_]/g, "\\$&");
+      const { data, error } = await run("find failed faq", (signal) =>
+        db.from("kb_documents").select("id, title, body, status").eq("tenant_id", tenantId).eq("source_type", "manual").eq("status", "failed").ilike("title", pattern).limit(1).abortSignal(signal),
+      );
+      if (error) fail("find failed faq", error);
+      return Array.isArray(data) && data.length > 0 ? toFaq(FaqRow.parse(data[0])) : null;
+    },
+
+    async updateFaq(tenantId, id, { q, a }) {
+      const { data, error } = await run("update faq", (signal) =>
+        db
+          .from("kb_documents")
+          .update({ ...(q !== undefined && { title: q }), ...(a !== undefined && { body: a }), status: "processing", error: null })
+          .eq("id", id)
+          .eq("tenant_id", tenantId)
+          .eq("source_type", "manual")
+          .select("id, title, body, status")
+          .abortSignal(signal)
+          .maybeSingle(),
+      );
+      if (error?.code === "23505") throw new AppError("conflict", DUPLICATE_FAQ);
+      if (error) fail("update faq", error);
+      return data === null ? null : toFaq(FaqRow.parse(data));
+    },
+
+    async deleteFaq(tenantId, id) {
+      const { data, error } = await run("delete faq", (signal) =>
+        db.from("kb_documents").delete().eq("id", id).eq("tenant_id", tenantId).eq("source_type", "manual").select("id").abortSignal(signal),
+      );
+      if (error) fail("delete faq", error);
+      return Array.isArray(data) && data.length > 0;
+    },
+
+    async listOpenGaps(tenantId) {
+      const { data, error } = await run("list gaps", (signal) =>
+        db
+          .from("kb_gaps")
+          .select("id, question, asked_count, contact:contacts!last_contact_id(name, phone)")
+          .eq("tenant_id", tenantId)
+          .eq("status", "open")
+          .order("asked_count", { ascending: false })
+          .order("last_asked_at", { ascending: false })
+          .order("id")
+          .limit(GAP_LIST_LIMIT)
+          .abortSignal(signal),
+      );
+      if (error) fail("list gaps", error);
+      return z.array(GapRow).parse(data ?? []).map((row) => ({
+        id: row.id,
+        question: row.question,
+        askedCount: row.asked_count,
+        lastAskedBy: row.contact === null ? null : row.contact.name?.trim() || maskPhone(row.contact.phone),
+      }));
+    },
+
+    async dismissGap(tenantId, id) {
+      const { data, error } = await run("dismiss gap", (signal) =>
+        db.from("kb_gaps").update({ status: "dismissed" }).eq("id", id).eq("tenant_id", tenantId).in("status", ["open", "dismissed"]).select("id").abortSignal(signal),
+      );
+      if (error) fail("dismiss gap", error);
+      return Array.isArray(data) && data.length > 0;
+    },
+
+    async answerGap(tenantId, gapId, { answer, answeredBy }) {
+      const { data, error } = await run("answer gap", (signal) =>
+        db.rpc("answer_kb_gap", { p_tenant_id: tenantId, p_gap_id: gapId, p_answer: answer, p_answered_by: answeredBy }).abortSignal(signal),
+      );
+      if (error) {
+        // answer_kb_gap's own codes (0012): PA404 not this business's gap, PA409 already answered, 23505 the question
+        // duplicates an FAQ, P0001 the input was refused. The words are fixed: the database's own are never shown.
+        if (error.code === "PA404") throw new AppError("not_found", "That question was not found.");
+        if (error.code === "PA409") throw new AppError("conflict", "This question was already answered.");
+        if (error.code === "23505") throw new AppError("conflict", DUPLICATE_FAQ);
+        if (error.code === "P0001") throw new AppError("validation_failed", "Check the answer and try again.", { a: "The answer must be 1 to 2000 characters." });
+        fail("answer gap", error);
+      }
+      const row = AnsweredRow.parse(data)[0];
+      return { faqId: row.faq_id, question: row.question, answer: row.answer };
+    },
+
     async deleteDocument(tenantId, id) {
       const { data, error } = await run("delete document", (signal) =>
         db.from("kb_documents").delete().eq("id", id).eq("tenant_id", tenantId).neq("source_type", "manual").select("id").abortSignal(signal),
@@ -161,7 +310,7 @@ export function createKbStore(db: SupabaseClient = supabaseAdmin(), { timeoutMs 
     async failStaleProcessing(olderThanMs, error) {
       const cutoff = new Date(Date.now() - olderThanMs).toISOString();
       const { data, error: failure } = await run("fail stale documents", (signal) =>
-        db.from("kb_documents").update({ status: "failed", error: error.slice(0, ERROR_MAX) }).eq("status", "processing").lt("created_at", cutoff).select("id").abortSignal(signal),
+        db.from("kb_documents").update({ status: "failed", error: error.slice(0, ERROR_MAX) }).eq("status", "processing").neq("source_type", "manual").lt("created_at", cutoff).select("id").abortSignal(signal),
       );
       if (failure) fail("fail stale documents", failure);
       return Array.isArray(data) ? data.length : 0;
