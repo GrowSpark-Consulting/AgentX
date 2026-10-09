@@ -17,8 +17,11 @@ const LEAD = "d0000000-0000-0000-0000-0000000000d1";
 type Answer = { data?: unknown; error?: { code?: string; message: string } | null };
 interface Call {
   table: string;
-  op: "select" | "insert";
+  op: "select" | "insert" | "update" | "rpc";
   payload?: unknown;
+  /** rpc: the function's name and its arguments */
+  fn?: string;
+  args?: Record<string, unknown>;
   returning?: string;
   filters: [string, string, unknown][];
   order?: [string, boolean];
@@ -30,11 +33,20 @@ interface Call {
 function fakeDb(answer: (call: Call) => Answer | Promise<Answer>) {
   const calls: Call[] = [];
   const db = {
+    rpc(fn: string, args: Record<string, unknown>) {
+      return makeBuilder({ table: "", op: "rpc", filters: [], fn, args });
+    },
     from(table: string) {
-      const call: Call = { table, op: "select", filters: [] };
+      return makeBuilder({ table, op: "select", filters: [] });
+    },
+  };
+  function makeBuilder(call: Call) {
+    {
       const builder: Record<string, unknown> = {
         select: (columns?: string) => ((call.returning ??= columns ?? "*"), builder),
         insert: (payload: unknown) => ((call.op = "insert"), (call.payload = payload), builder),
+        update: (payload: unknown) => ((call.op = "update"), (call.payload = payload), builder),
+        lt: (c: string, v: unknown) => (call.filters.push([c, "lt", v]), builder),
         eq: (c: string, v: unknown) => (call.filters.push([c, "eq", v]), builder),
         gte: (c: string, v: unknown) => (call.filters.push([c, "gte", v]), builder),
         in: (c: string, v: unknown) => (call.filters.push([c, "in", v]), builder),
@@ -50,8 +62,8 @@ function fakeDb(answer: (call: Call) => Answer | Promise<Answer>) {
         },
       };
       return builder;
-    },
-  };
+    }
+  }
   return { db: db as unknown as SupabaseClient, calls };
 }
 
@@ -251,5 +263,125 @@ describe("failures", () => {
     expect(error.code).toBe("upstream_failed");
     expect(seen).toBeInstanceOf(AbortSignal);
     expect(seen?.aborted).toBe(true);
+  });
+});
+
+// --- what step 4 (understanding the message) needs ----------------------------------------------------------
+
+describe("getPackOverrides", () => {
+  it("reads the business's pack overrides by the business's own id", async () => {
+    const { db, calls } = fakeDb(() => ({ data: { pack_overrides: { labels: { budget: "Your budget" } } } }));
+    expect(await createPipelineStore(db).getPackOverrides(T)).toEqual({ labels: { budget: "Your budget" } });
+    expect(calls[0].returning).toBe("pack_overrides");
+    expect(filter(calls[0], "id")).toEqual(["id", "eq", T]);
+  });
+
+  it("is an empty object when there is no such business or none set", async () => {
+    expect(await createPipelineStore(fakeDb(() => ({ data: null })).db).getPackOverrides(T)).toEqual({});
+    expect(await createPipelineStore(fakeDb(() => ({ data: { pack_overrides: null } })).db).getPackOverrides(T)).toEqual({});
+  });
+});
+
+describe("getLead", () => {
+  it("reads the lead's stage and answers, only for this business", async () => {
+    const { db, calls } = fakeDb(() => ({ data: { id: LEAD, stage: "new", fields: { budget: "80L" } } }));
+    expect(await createPipelineStore(db).getLead(T, LEAD)).toEqual({ id: LEAD, stage: "new", fields: { budget: "80L" } });
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "id")).toEqual(["id", "eq", LEAD]);
+  });
+
+  it("answers null when it is not the business's, and treats a fields column that is not an object as empty", async () => {
+    expect(await createPipelineStore(fakeDb(() => ({ data: null })).db).getLead(T, LEAD)).toBeNull();
+    expect((await createPipelineStore(fakeDb(() => ({ data: { id: LEAD, stage: "new", fields: [1] } })).db).getLead(T, LEAD))?.fields).toEqual({});
+  });
+});
+
+describe("mergeLeadFields", () => {
+  it("merges the patch into the lead's answers in one database call, naming the business", async () => {
+    const { db, calls } = fakeDb(() => ({ data: true }));
+    expect(await createPipelineStore(db).mergeLeadFields(T, LEAD, { budget: "80L", location: "OMR" }, true)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ op: "rpc", fn: "merge_lead_fields", args: { p_tenant_id: T, p_lead_id: LEAD, p_patch: { budget: "80L", location: "OMR" }, p_engage: true } });
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("says false when the lead is not this business's", async () => {
+    const { db } = fakeDb(() => ({ data: false }));
+    expect(await createPipelineStore(db).mergeLeadFields(T, LEAD, {}, false)).toBe(false);
+  });
+
+  it("fails with fixed words, retried for a database that is down and not for a refused statement", async () => {
+    await expect(createPipelineStore(fakeDb(() => ({ error: { code: "08006", message: "secret detail" } })).db).mergeLeadFields(T, LEAD, {}, true)).rejects.toBeInstanceOf(AppError);
+    await expect(createPipelineStore(fakeDb(() => ({ error: { code: "P0001", message: "secret detail" } })).db).mergeLeadFields(T, LEAD, {}, true)).rejects.toBeInstanceOf(NonRetriableError);
+  });
+});
+
+describe("getBatchTexts", () => {
+  it("reads the text of these customer messages of this conversation, oldest first", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: "m1", body: "hi", created_at: "2026-10-08T10:00:00+00:00" }, { id: "m2", body: null, created_at: "2026-10-08T10:00:02+00:00" }] }));
+    expect(await createPipelineStore(db).getBatchTexts(T, CONV, ["m1", "m2"])).toEqual([
+      { id: "m1", body: "hi", createdAt: "2026-10-08T10:00:00.000Z" },
+      { id: "m2", body: null, createdAt: "2026-10-08T10:00:02.000Z" },
+    ]);
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
+    expect(filter(calls[0], "id")).toEqual(["id", "in", ["m1", "m2"]]);
+    expect(filter(calls[0], "sender")).toEqual(["sender", "eq", "customer"]);
+    expect(calls[0].order).toEqual(["created_at", true]);
+  });
+
+  it("asks nothing for no ids", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [] }));
+    expect(await createPipelineStore(db).getBatchTexts(T, CONV, [])).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("getHistory", () => {
+  it("reads the last few messages before a time, oldest first, leaving out system notes and messages with no text", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ sender: "ai", body: "Hello" }, { sender: "customer", body: "price?" }] }));
+    expect(await createPipelineStore(db).getHistory(T, CONV, "2026-10-08T10:00:00.000Z", 4)).toEqual([
+      { sender: "customer", body: "price?" },
+      { sender: "ai", body: "Hello" },
+    ]);
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
+    expect(filter(calls[0], "created_at")).toEqual(["created_at", "lt", "2026-10-08T10:00:00.000Z"]);
+    expect(filter(calls[0], "sender")).toEqual(["sender", "in", ["customer", "ai", "staff"]]);
+    expect(filter(calls[0], "body")).toEqual(["body", "not.is", null]); // the limit counts messages with text only
+    expect(calls[0].order).toEqual(["created_at", false]); // the latest, then put back in order
+    expect(calls[0].limit).toBe(4);
+  });
+});
+
+describe("saveAgentMeta and getAgentMeta", () => {
+  const read = (meta: unknown) => (call: Call) => (call.op === "select" ? { data: { meta } } : {});
+
+  it("merges what the turn worked out into the message's meta under `agent` in one database call, naming business, conversation and message", async () => {
+    const { db, calls } = fakeDb(() => ({ data: true }));
+    expect(await createPipelineStore(db).saveAgentMeta(T, CONV, MSG, { extraction: { intent: "question" } })).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      op: "rpc",
+      fn: "merge_message_agent_meta",
+      args: { p_tenant_id: T, p_conversation_id: CONV, p_message_id: MSG, p_agent: { extraction: { intent: "question" } } },
+    });
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("says false when the message is not this business's and conversation's", async () => {
+    const { db } = fakeDb(() => ({ data: false }));
+    expect(await createPipelineStore(db).saveAgentMeta(T, CONV, MSG, { a: 1 })).toBe(false);
+  });
+
+  it("fails with fixed words, retried for a database that is down and not for a refused statement", async () => {
+    await expect(createPipelineStore(fakeDb(() => ({ error: { code: "57P01", message: "secret detail" } })).db).saveAgentMeta(T, CONV, MSG, { a: 1 })).rejects.toBeInstanceOf(AppError);
+    await expect(createPipelineStore(fakeDb(() => ({ error: { code: "P0001", message: "secret detail" } })).db).saveAgentMeta(T, CONV, MSG, { a: 1 })).rejects.toBeInstanceOf(NonRetriableError);
+  });
+
+  it("reads it back", async () => {
+    expect(await createPipelineStore(fakeDb(read({ agent: { extraction: { intent: "question" } } })).db).getAgentMeta(T, CONV, MSG)).toEqual({ extraction: { intent: "question" } });
+    expect(await createPipelineStore(fakeDb(read({})).db).getAgentMeta(T, CONV, MSG)).toBeNull();
+    expect(await createPipelineStore(fakeDb(() => ({ data: null })).db).getAgentMeta(T, CONV, MSG)).toBeNull();
   });
 });

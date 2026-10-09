@@ -1,4 +1,4 @@
-import type { ContactRow, ConversationRow, InboundMessage, LeadRow, PendingMessage, PipelineStore, TenantRow } from "../agent/pipeline/store";
+import type { BatchText, ContactRow, ConversationRow, HistoryItem, InboundMessage, LeadRow, LeadState, PendingMessage, PipelineStore, TenantRow } from "../agent/pipeline/store";
 
 // An in-memory PipelineStore for tests. It enforces the same filtering the real store does: a message,
 // conversation or contact is only found for the business that owns it, an "answered" row only counts if it is
@@ -12,6 +12,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface FakeMessage extends InboundMessage {
   tenantId: string;
   conversationId: string;
+  /** The message's text. Only the methods that read text return it. */
+  body?: string | null;
+  meta?: Record<string, unknown>;
 }
 export interface FakeContact extends ContactRow {
   tenantId: string;
@@ -25,6 +28,7 @@ export interface FakeLead {
   contactId: string;
   stage: string;
   createdAt: number;
+  fields?: Record<string, unknown>;
 }
 
 export function fakePipelineStore(
@@ -37,6 +41,8 @@ export function fakePipelineStore(
     /** Message ids that have an "answered" audit row, written 10 seconds after the message unless `answeredAt` says otherwise. */
     answered?: string[];
     answeredAt?: Record<string, string>;
+    /** tenants.pack_overrides by business id. */
+    packOverrides?: Record<string, unknown>;
   } = {},
 ) {
   const tenants = new Map((seed.tenants ?? []).map((t) => [t.id, t]));
@@ -99,6 +105,61 @@ export function fakePipelineStore(
       const lead: FakeLead = { id: `10000000-0000-0000-0000-${String(++state.leadCounter).padStart(12, "0")}`, tenantId, contactId, stage: "new", createdAt: Date.now() + state.leadCounter };
       leads.set(lead.id, lead);
       return { id: lead.id, stage: lead.stage, created: true };
+    },
+    async getPackOverrides(tenantId) {
+      calls.push("getPackOverrides");
+      maybeFail("getPackOverrides");
+      return seed.packOverrides?.[tenantId] ?? {};
+    },
+    async getLead(tenantId, leadId): Promise<LeadState | null> {
+      calls.push("getLead");
+      maybeFail("getLead");
+      const l = leads.get(leadId);
+      return l && l.tenantId === tenantId ? { id: l.id, stage: l.stage, fields: structuredClone(l.fields ?? {}) } : null;
+    },
+    async mergeLeadFields(tenantId, leadId, patch, engage) {
+      calls.push("mergeLeadFields");
+      maybeFail("mergeLeadFields");
+      const l = leads.get(leadId);
+      if (!l || l.tenantId !== tenantId) return false;
+      l.fields = { ...(l.fields ?? {}), ...structuredClone(patch) };
+      if (engage && l.stage === "new") l.stage = "engaged";
+      return true;
+    },
+    async getBatchTexts(tenantId, conversationId, messageIds): Promise<BatchText[]> {
+      calls.push("getBatchTexts");
+      maybeFail("getBatchTexts");
+      return messageIds
+        .map((id) => messages.get(id))
+        .filter((m): m is FakeMessage => !!m && m.tenantId === tenantId && m.conversationId === conversationId && m.sender === "customer")
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+        .map((m) => ({ id: m.id, body: m.body ?? null, createdAt: m.createdAt }));
+    },
+    async getHistory(tenantId, conversationId, before, limit): Promise<HistoryItem[]> {
+      calls.push("getHistory");
+      maybeFail("getHistory");
+      return [...messages.values()]
+        .filter((m) => m.tenantId === tenantId && m.conversationId === conversationId && m.sender !== "system" && Date.parse(m.createdAt) < Date.parse(before) && m.body)
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .slice(0, limit)
+        .reverse()
+        .map((m) => ({ sender: m.sender as HistoryItem["sender"], body: m.body as string }));
+    },
+    async saveAgentMeta(tenantId, conversationId, messageId, agent) {
+      calls.push("saveAgentMeta");
+      maybeFail("saveAgentMeta");
+      const m = messages.get(messageId);
+      if (!m || m.tenantId !== tenantId || m.conversationId !== conversationId) return false;
+      const existing = m.meta?.agent && typeof m.meta.agent === "object" ? (m.meta.agent as Record<string, unknown>) : {};
+      m.meta = { ...(m.meta ?? {}), agent: { ...existing, ...structuredClone(agent) } };
+      return true;
+    },
+    async getAgentMeta(tenantId, conversationId, messageId) {
+      calls.push("getAgentMeta");
+      maybeFail("getAgentMeta");
+      const m = messages.get(messageId);
+      const agent = m && m.tenantId === tenantId && m.conversationId === conversationId ? m.meta?.agent : undefined;
+      return agent && typeof agent === "object" ? (structuredClone(agent) as Record<string, unknown>) : null;
     },
     async recentUnanswered(tenantId, conversationId, since): Promise<PendingMessage[]> {
       calls.push("recentUnanswered");

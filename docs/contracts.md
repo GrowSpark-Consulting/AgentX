@@ -309,6 +309,32 @@ audit rows from a day before the message's time (our clock against Meta's). An o
 not used as the marker: an inbound message's `created_at` is Meta's send time, so a message sent while the previous one
 was being answered can look older than our reply and would be dropped.
 
+**Step 4, understanding the message (`understandTurn`, built).** Steps: `extract` (loads the business's pack; none or
+invalid is `no_pack`), `save-fields`, `retrieve`. `extract` asks the fast model (Haiku 4.5, `extraction_v1`) what the batch of messages says,
+with the pack's fields, the last four messages before the burst and what the lead already has, and validates the answer:
+JSON (a code fence is tolerated), the `Extraction` schema, and the details limited to the pack's own fields, each
+checked against the pack's type for it (the rest are dropped and counted). A bad answer is asked for once more, with the
+reason; a second bad answer, or a refusal, is the **clarifying-question fallback**; a model that cannot be reached
+(the client has already tried 3 times) is `model_unavailable`, returned by the step itself so Inngest does not pay for the
+same calls again. The batch text sent to the model is capped (4000 characters, the end kept). `save-fields` merges the
+details into the lead's `fields` in one statement (`merge_lead_fields`, migration 0018: a member's edit made in the
+meantime survives) and moves a `new` lead to `engaged`; it re-checks the details against the pack as it is now, writes
+only what changed, lets a low-confidence reading (< 0.5) fill a gap but not replace an answer, and does nothing for the
+intent `opt_out`. `retrieve` searches the knowledge base for the English question, only for the intents `question`,
+`give_details` and `book`; its outcome is `found`, `none` (a gap), `unavailable` (an outage, not a gap) or `skipped`.
+**The extraction is kept on the newest message of the turn, in `messages.meta.agent`** (merged by
+`merge_message_agent_meta`, which leaves the rest of the meta and the other keys of `agent` alone): `{ extraction,
+droppedFields: { unknownKeys, invalidValues }, at }`, or `{ extractionFailed: "no_text" | "invalid_output" |
+"model_declined" | "model_unavailable", at }`. Writing one outcome clears the other's keys (`extraction: null` with a failure, `extractionFailed: null` with a success), so
+read `null` as absent. A run that finds a valid `extraction` already on the message uses it and does not ask the model
+again; for the intent `opt_out` the saved extraction has no details and no question. A message with no text (media only)
+is the `no_text` fallback and does not engage the lead. The history sent to the model is the last four messages with text
+strictly before the first message of the burst (by its `created_at`). `confidence` is the model's own word, not a trust
+boundary: an injected message can claim 1.0. **Open risk until the reply step (PR 6): `model_unavailable`, `fallback` and
+`no_pack` end the run as a normal result and nothing answers the customer yet; PR 6 must turn them into a holding reply or
+a handover.** The turn's deadline signal is not wired until PR 6. The customer's words, the question and the details are
+not in Inngest's step results; later steps read them from there.
+
 A run that still fails after its 3 retries is not tried again by anything: the message stays in the inbox unanswered and
 `onFailure` logs its id. A sweep for customer messages nobody answered is the follow-up.
 

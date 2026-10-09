@@ -53,6 +53,23 @@ export interface PendingMessage {
   kind: string | null;
 }
 
+/** A lead as the pipeline needs it: its stage and the answers collected so far (business details, never contact details). */
+export interface LeadState {
+  id: string;
+  stage: string;
+  fields: Record<string, unknown>;
+}
+/** The text of one customer message. Only read inside the step that needs it: a step's result is kept by Inngest. */
+export interface BatchText {
+  id: string;
+  body: string | null;
+  createdAt: string;
+}
+export interface HistoryItem {
+  sender: "customer" | "ai" | "staff";
+  body: string;
+}
+
 export interface PipelineStore {
   /** The message, only if it is this business's and this conversation's. */
   getMessage(tenantId: string, conversationId: string, messageId: string): Promise<InboundMessage | null>;
@@ -75,6 +92,27 @@ export interface PipelineStore {
    * not been answered.
    */
   recentUnanswered(tenantId: string, conversationId: string, since: string): Promise<PendingMessage[]>;
+
+  /** tenants.pack_overrides: what the business changed in its pack (labels, hidden fields, added fields). `{}` when none. */
+  getPackOverrides(tenantId: string): Promise<unknown>;
+  getLead(tenantId: string, leadId: string): Promise<LeadState | null>;
+  /**
+   * Adds the patch's keys to the lead's collected answers in one statement (merge_lead_fields: a key already there
+   * is replaced, every other key, such as a member's edit, is kept), and with `engage` moves a lead that is still
+   * `new` to `engaged`. The caller validates the patch first. False when the lead is not this business's.
+   */
+  mergeLeadFields(tenantId: string, leadId: string, patch: Record<string, unknown>, engage: boolean): Promise<boolean>;
+  /** The text of these customer messages of this conversation, oldest first. */
+  getBatchTexts(tenantId: string, conversationId: string, messageIds: string[]): Promise<BatchText[]>;
+  /** The last `limit` messages (customer, AI and staff, with text) before `before`, oldest first: context for a short reply. */
+  getHistory(tenantId: string, conversationId: string, before: string, limit: number): Promise<HistoryItem[]>;
+  /**
+   * Keeps what the turn worked out about a message under `messages.meta.agent`, leaving the rest of its meta alone.
+   * False when the message is not this business's and conversation's. Where a later step finds the extraction: the
+   * words of the customer's question are not kept in Inngest's step results.
+   */
+  saveAgentMeta(tenantId: string, conversationId: string, messageId: string, agent: Record<string, unknown>): Promise<boolean>;
+  getAgentMeta(tenantId: string, conversationId: string, messageId: string): Promise<Record<string, unknown> | null>;
 }
 
 export const PIPELINE_DB_TIMEOUT_MS = 10_000;
@@ -99,6 +137,10 @@ const ContactSchema = z.object({ id: z.string(), language: z.string().nullable()
 const TenantSchema = z.object({ id: z.string(), vertical: z.string(), vertical_version: z.number().int() });
 const LeadSchema = z.object({ id: z.string(), stage: z.string() });
 const PendingSchema = z.object({ id: z.string(), kind: z.string().nullable() });
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const LeadSchema2 = z.object({ id: z.string(), stage: z.string(), fields: z.unknown() });
+const BatchTextSchema = z.object({ id: z.string(), body: z.string().nullable(), created_at: Iso });
+const HistorySchema = z.object({ sender: z.enum(["customer", "ai", "staff"]), body: z.string().nullable() });
 
 // Postgres codes that mean the database was unreachable, restarting or overloaded: waiting can fix them.
 const TRANSIENT_CODE = /^(08.{3}|53[23]00|57P0[123]|57014|40001|40P01|PGRST00[0-3])$/;
@@ -230,6 +272,87 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
       if (answered.error) fail("check answered", answered.error);
       const done = new Set(parse(z.array(z.object({ entity_id: z.string() })), answered.data ?? [], "check answered").map((row) => row.entity_id));
       return pending.filter((m) => !done.has(m.id));
+    },
+
+    async getPackOverrides(tenantId) {
+      const { data, error } = await run("read pack overrides", (signal) =>
+        db.from("tenants").select("pack_overrides").eq("id", tenantId).abortSignal(signal).maybeSingle(),
+      );
+      if (error) fail("read pack overrides", error);
+      const value = isObject(data) ? data.pack_overrides : null;
+      return isObject(value) ? value : {};
+    },
+
+    async getLead(tenantId, leadId) {
+      const { data, error } = await run("read lead state", (signal) =>
+        db.from("leads").select("id, stage, fields").eq("id", leadId).eq("tenant_id", tenantId).abortSignal(signal).maybeSingle(),
+      );
+      if (error) fail("read lead state", error);
+      if (data === null) return null;
+      const row = parse(LeadSchema2, data, "read lead state");
+      return { id: row.id, stage: row.stage, fields: isObject(row.fields) ? row.fields : {} };
+    },
+
+    async mergeLeadFields(tenantId, leadId, patch, engage) {
+      const { data, error } = await run("merge lead fields", (signal) =>
+        db.rpc("merge_lead_fields", { p_tenant_id: tenantId, p_lead_id: leadId, p_patch: patch, p_engage: engage }).abortSignal(signal),
+      );
+      if (error) fail("merge lead fields", error);
+      return data === true;
+    },
+
+    async getBatchTexts(tenantId, conversationId, messageIds) {
+      if (messageIds.length === 0) return [];
+      const { data, error } = await run("read message texts", (signal) =>
+        db
+          .from("messages")
+          .select("id, body, created_at")
+          .eq("tenant_id", tenantId)
+          .eq("conversation_id", conversationId)
+          .eq("sender", "customer")
+          .in("id", messageIds)
+          .order("created_at", { ascending: true })
+          .abortSignal(signal),
+      );
+      if (error) fail("read message texts", error);
+      return parse(z.array(BatchTextSchema), data ?? [], "read message texts").map((row) => ({ id: row.id, body: row.body, createdAt: row.created_at }));
+    },
+
+    async getHistory(tenantId, conversationId, before, limit) {
+      const { data, error } = await run("read history", (signal) =>
+        db
+          .from("messages")
+          .select("sender, body")
+          .eq("tenant_id", tenantId)
+          .eq("conversation_id", conversationId)
+          .in("sender", ["customer", "ai", "staff"])
+          .not("body", "is", null)
+          .lt("created_at", before)
+          .order("created_at", { ascending: false })
+          .limit(limit)
+          .abortSignal(signal),
+      );
+      if (error) fail("read history", error);
+      return parse(z.array(HistorySchema), data ?? [], "read history")
+        .flatMap((row) => (row.body ? [{ sender: row.sender, body: row.body }] : []))
+        .reverse();
+    },
+
+    async saveAgentMeta(tenantId, conversationId, messageId, agent) {
+      const { data, error } = await run("save message meta", (signal) =>
+        db.rpc("merge_message_agent_meta", { p_tenant_id: tenantId, p_conversation_id: conversationId, p_message_id: messageId, p_agent: agent }).abortSignal(signal),
+      );
+      if (error) fail("save message meta", error);
+      return data === true;
+    },
+
+    async getAgentMeta(tenantId, conversationId, messageId) {
+      const { data, error } = await run("read message meta", (signal) =>
+        db.from("messages").select("meta").eq("id", messageId).eq("tenant_id", tenantId).eq("conversation_id", conversationId).abortSignal(signal).maybeSingle(),
+      );
+      if (error) fail("read message meta", error);
+      const meta = isObject(data) ? data.meta : null;
+      return isObject(meta) && isObject(meta.agent) ? meta.agent : null;
     },
   };
 }
