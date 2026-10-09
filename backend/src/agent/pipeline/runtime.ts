@@ -5,7 +5,7 @@ import { send } from "../../notify/send";
 import { llm } from "../llm";
 import type { PackSource } from "../packs/load";
 import { createDbPackSource } from "../packs/store";
-import { staffAlertPort, systemNoticePort } from "./ports";
+import { createSystemNoticePort, staffAlertPort } from "./ports";
 import type { ReplyDeps } from "./reply";
 import type { PipelineStore } from "./store";
 import type { UnderstandDeps } from "./understand";
@@ -42,7 +42,7 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-/** The real dependencies of the reply step: notify.send, the audit, the queue, and the two ports that wait for Dev 2's kinds. */
+/** The real dependencies of the reply step: notify.send (including the system notice), the audit, the queue, and the staff-alert port that waits for Dev 2's kind. */
 export function replyDeps(store: PipelineStore): ReplyDeps {
   return {
     store,
@@ -50,7 +50,7 @@ export function replyDeps(store: PipelineStore): ReplyDeps {
     send: (tenantId, kind, payload) => send(tenantId, kind, payload),
     audit: writeAudit,
     sendEvent: (event) => inngest.send(event),
-    systemNotice: systemNoticePort,
+    systemNotice: createSystemNoticePort((tenantId, kind, payload) => send(tenantId, kind, payload)),
     staffAlert: staffAlertPort,
   };
 }

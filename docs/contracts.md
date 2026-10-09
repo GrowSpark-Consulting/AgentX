@@ -355,13 +355,15 @@ contact's opt-out; **in the same step `message.answered` is written for every me
 is logged and never thrown, since a retry would send again), and a send whose outcome is unknown counts as answered.
 `insufficient_credits` sends no AI reply: the chat goes to `human`, a `handoffs` row (`credits_exhausted`, priority
 `high`) opens, `handoff.opened` is sent (id `handoff_opened:<handoffId>`), and the free holding message and the owner alert
-go through two ports (`ports.ts`) that only log `awaiting_notify_kind` until Dev 2 adds the kinds. The whole turn has one
+go through two ports (`ports.ts`): the holding message is `notify.send(..., "system_notice", ...)` (built, #70); the owner alert only logs `awaiting_notify_kind` until Dev 2's `staff_alert` kind and its `handoff.opened` job land (#71). The whole turn has one
 clock (`turn-deadline.ts`): target 10 s, hard stop 25 s, after which the model calls stop and the safe line is sent.
 `persona` and `tone` are read from `tenants.agent_settings` as the Agent settings screen saves them. The turn's clock also
 runs while a failed step waits for its retry, so a slow second attempt can be answered with the safe line. **Never two
 replies:** a step looks at `message.answered` (and at the `reply` marker the send leaves on the message's meta) before and
 right before the send; the marker is written before the rows, so a failure to write the rows does not allow a second
 reply. The handover's event is sent on every run of the step (its id makes it one event), so a retry after a failure still tells staff.
+
+**Reply-button ids (agreed 9 Oct, built on Day 3).** A booking confirmation's reply buttons carry the ids `booking:<bookingId>:confirm`, `booking:<bookingId>:reschedule` and `booking:<bookingId>:cancel` (WhatsApp allows 3 buttons, ids up to 256 characters). The pipeline, not the webhook, routes the tap: the webhook stores it as a customer message, and step 5 reads the id and calls `confirmBooking` / `rescheduleBooking` / `cancelBooking`.
 
 A run that still fails after its 3 retries: `onFailure` logs its id and, if the customer's messages are still unanswered and
 the chat is still the assistant's, sends one safe line and marks them answered (`give-up.ts`). A sweep for customer messages

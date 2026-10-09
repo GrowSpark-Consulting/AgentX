@@ -2,7 +2,7 @@
 
 Audience: Dev 2 (Shaaz) and Dev 3 (Dhatri).
 
-> **STACKED on `feat/agent-extraction` (PR #65). Do not merge before it.** Base tip when this branch was made:
+> **#65 is merged (9 Oct); this branch was rebased onto `main` and its PR base is `main`.** For the record, the base tip when it was made:
 > `641ba9386877c3389e72632ce840074ece57c2db`. After #65 is squash-merged, move this PR onto `main`:
 >
 > ```
@@ -71,7 +71,7 @@ Technical summary (details in `docs/contracts.md`, section 5, "Step 7"):
 | `backend/src/agent/pipeline/fixed-texts.ts` | The fixed lines in four languages |
 | `backend/src/agent/pipeline/persona.ts` | Reads `persona`, `tone` and the knowledge-gap toggle from `agent_settings`, never trusted |
 | `backend/src/agent/pipeline/turn-deadline.ts` | The turn's clock |
-| `backend/src/agent/pipeline/ports.ts` | The two ports that wait for Dev 2's notify kinds |
+| `backend/src/agent/pipeline/ports.ts` | The system-notice port (now real, through notify.send's `system_notice`) and the staff-alert port (still waiting for Dev 2's kind) |
 | `backend/src/agent/pipeline/give-up.ts` | The safe line after a run gave up |
 | `backend/src/agent/pipeline/store.ts` | New: `getTenantReplyInfo`, `getPreviousMisses`, `recordKbGap`, `openHandoff`, `setConversationMode` |
 | `backend/src/agent/pipeline/understand.ts` | Time being up is reported (`model_unavailable`), not retried |
@@ -123,6 +123,7 @@ Fixed-text wording (Tamil, Tanglish, Hindi) is mine, in `fixed-texts.ts`; Raja c
   more steps (`started`, `plan`, `reply`, `handoff`).
 - **Every reply now costs one credit through `notify.send`** (the `ai_reply` kind). From this deploy on, a customer's message
   on a connected number is answered for real. Make sure `ANTHROPIC_API_KEY` is set (Sonnet 5.5, about a cent per reply).
+- **Update 9 Oct: item 1 below is DONE** (your #70, `system_notice`): the holding message now goes through it (`createSystemNoticePort` in `ports.ts`, tested in `ports.test.ts`). Items 2 and 3 are still open (your #71): when it lands, only the staff-alert port in `ports.ts` changes, and the `handoff.opened` event the reply step already sends (id `handoff_opened:<handoffId>`) is what your job reads.
 - **What I need you to add to `notify`** (I did not touch your files; only `backend/src/agent/pipeline/ports.ts` changes when
   you do):
   1. **A free system kind** (suggested name `system_notice`): 0 credits, `sender: "system"`, `audience: "conversation"`, no
@@ -133,7 +134,7 @@ Fixed-text wording (Tamil, Tanglish, Hindi) is mine, in `fixed-texts.ts`; Raja c
      `handoff_opened` and `setup_problem`. Raja is to send the wording.
   3. A consumer for **`handoff.opened`** `{ tenantId, handoffId, conversationId }` (sent for `kb_gap`, `credits_exhausted`
      and `stuck`): it should call the staff alert.
-  Until then both ports log `awaiting_notify_kind` and the rest of the handover (the row, the switch to human, the event,
+  Until items 2 and 3 land the staff-alert port logs `awaiting_notify_kind` and the rest of the handover (the row, the switch to human, the event,
   the audit) still happens.
 - The reply step calls `writeAudit` (`message.answered`, `handoff.opened`) and `record_kb_gap` through the service role.
 
