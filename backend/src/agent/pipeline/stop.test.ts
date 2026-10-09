@@ -62,7 +62,7 @@ describe("a message that is STOP", () => {
 
   it.each([
     ["Tamil script", "நிறுத்துங்கள்", "ta"],
-    ["Tanglish", "Niruthunga", "ta-en"],
+    ["Tanglish", "Message panna vendam", "ta-en"],
     ["Hindi", "बंद करो", "hi"],
     ["Hindi in English letters", "band karo", "hi"],
     ["English", "unsubscribe!", "en"],

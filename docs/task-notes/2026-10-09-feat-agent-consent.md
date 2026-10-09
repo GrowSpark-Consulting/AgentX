@@ -76,20 +76,20 @@ Need review by Dev 2 (Shaaz):
   confirmation would be a second message to someone who said stop). The cost: in that rare case no confirmation goes out.
 - **The notice is recorded as shown only when the send is known to have gone out.** If the outcome is unknown, `consent_at`
   stays null and the next reply carries the notice again: a repeated notice costs nothing, a false "shown" in the log would.
-- **Words on the list that could mean "wait" (needs your decision, Raja):** the list is the approved one, but a lone *ruko* /
-  रुको / रुकिए most often means "wait" in Hindi, and *niruthu* / *niruthunga* ("stop it", "please stop") can mean "stop that
-  for a moment". A customer who sends one of these alone is opted out and gets a goodbye. I kept them as approved; dropping
-  or confirming them first is a one-line change in `consent/stop-words.ts`. Longer phrases (a lot of ways to say "stop
-  messaging me") are not matched either: recall of the list is a product decision.
+- **Ambiguous lone words are off the list (our decision, not Raja's):** *ruko*, रुको, रुकिए, *niruthu* and *niruthunga* (and the
+  spellings *nirutthu*, *nirutthunga*) are removed. They often mean "wait" or "stop that for now", and a wrong opt-out silently
+  cuts a customer off, while someone who really wants out can always type STOP. Kept: every explicit phrase, "don't message
+  me" and "बन्द करो". Longer phrases are not matched either: recall of the list is a product decision. The Tamil-script
+  நிறுத்து / நிறுத்துங்கள் / நிறுத்துங்க have the same ambiguity and are still on the list: say if they should go too.
 - **A STOP is the WHOLE message being one of the phrases.** "bus stop near the project", "don't stop calling me" and
   "stop by tomorrow at 5" are ordinary messages. A message the model reads as wanting to leave, but that is not one of the
   phrases, gets the STOP hint and is not opted out.
 - **Where the STOP list came from** (the approved list, plus two spellings): English: stop, stop all, stopall, unsubscribe,
   opt out, optout, stop messages, stop messaging, stop messaging me, do not message me, dont message me, **don't message
-  me** (added: the apostrophe form), remove me, leave me alone. Tanglish: niruthunga, nirutthunga, niruthu, nirutthu,
+  me** (added: the apostrophe form), remove me, leave me alone. Tanglish:
   message panna vendam, msg panna vendam, message pannadheenga, enakku message vendam. Tamil script: நிறுத்து,
-  நிறுத்துங்கள், நிறுத்துங்க, மெசேஜ் அனுப்பாதீர்கள், மெசேஜ் அனுப்பாதீங்க, எனக்கு மெசேஜ் வேண்டாம். Hindi: रुको, रुकिए, बंद करो,
-  **बन्द करो** (added: the other spelling), बंद करें, मैसेज बंद करो, मैसेज मत भेजो, ruko, band karo, message mat bhejo. Not on
+  நிறுத்துங்கள், நிறுத்துங்க, மெசேஜ் அனுப்பாதீர்கள், மெசேஜ் அனுப்பாதீங்க, எனக்கு மெசேஜ் வேண்டாம். Hindi: बंद करो,
+  **बन्द करो** (added: the other spelling), बंद करें, मैसेज बंद करो, मैसेज मत भेजो, band karo, message mat bhejo. Not on
   the list on purpose: "cancel" alone (a booking), "vendam" alone, "band" alone.
 - **The notice goes on every first reply, including a fixed line** (the safe fallback, a clarifying question), and is not
   part of the 600 characters or the post-check. It is added at the end of the text, after a blank line, with the link last.

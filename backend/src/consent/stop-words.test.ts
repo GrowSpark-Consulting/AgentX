@@ -8,9 +8,9 @@ const ALL = Object.entries(STOP_PHRASES).flatMap(([language, phrases]) => phrase
 describe("the list", () => {
   it("is the approved one: English, Tanglish, Tamil script and Hindi", () => {
     expect(STOP_PHRASES.en).toEqual(expect.arrayContaining(["stop", "stop all", "stopall", "unsubscribe", "opt out", "optout", "stop messages", "stop messaging", "stop messaging me", "do not message me", "dont message me", "remove me", "leave me alone"]));
-    expect(STOP_PHRASES["ta-en"]).toEqual(["niruthunga", "nirutthunga", "niruthu", "nirutthu", "message panna vendam", "msg panna vendam", "message pannadheenga", "enakku message vendam"]);
+    expect(STOP_PHRASES["ta-en"]).toEqual(["message panna vendam", "msg panna vendam", "message pannadheenga", "enakku message vendam"]);
     expect(STOP_PHRASES.ta).toEqual(["நிறுத்து", "நிறுத்துங்கள்", "நிறுத்துங்க", "மெசேஜ் அனுப்பாதீர்கள்", "மெசேஜ் அனுப்பாதீங்க", "எனக்கு மெசேஜ் வேண்டாம்"]);
-    expect(STOP_PHRASES.hi).toEqual(expect.arrayContaining(["रुको", "रुकिए", "बंद करो", "बंद करें", "मैसेज बंद करो", "मैसेज मत भेजो", "ruko", "band karo", "message mat bhejo"]));
+    expect(STOP_PHRASES.hi).toEqual(expect.arrayContaining(["बंद करो", "बंद करें", "मैसेज बंद करो", "मैसेज मत भेजो", "band karo", "message mat bhejo"]));
   });
 
   it.each(ALL)("%s is a STOP, in %s", (phrase, language) => {
@@ -26,7 +26,7 @@ describe("what still counts as the same phrase", () => {
   it("matches Tamil and Hindi with a full stop or a danda after them", () => {
     expect(matchStop("நிறுத்துங்கள்.")).toBe("ta");
     expect(matchStop("मैसेज बंद करो।")).toBe("hi");
-    expect(matchStop("Niruthunga!")).toBe("ta-en");
+    expect(matchStop("Message panna vendam!")).toBe("ta-en");
     expect(matchStop("Band Karo")).toBe("hi");
   });
 
@@ -64,6 +64,14 @@ describe("what is not a STOP", () => {
     "stopping",
     "stopover",
     "நிறுத்து இல்லை, விலை சொல்லுங்கள்",
+    "ruko",
+    "Ruko!",
+    "रुको",
+    "रुकिए",
+    "niruthu",
+    "Niruthunga",
+    "nirutthu",
+    "nirutthunga",
   ])("%j", (text) => {
     expect(matchStop(text)).toBeNull();
   });
