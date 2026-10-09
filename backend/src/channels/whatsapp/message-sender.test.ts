@@ -96,9 +96,17 @@ describe("whatsAppSender", () => {
     expect(JSON.parse(meta.mock.calls[1][1]?.body as string).template).toMatchObject({ name: "booking_confirmed_v1", language: { code: "en" } });
   });
 
+  it("returns Meta's id for reply buttons, sent as an interactive message", async () => {
+    const message = { type: "buttons" as const, body: "Visit tomorrow at 5 pm?", buttons: [{ id: "booking:b1:confirm", title: "Confirm" }] };
+    await expect(sender().sendInteractive("+919840012345", message)).resolves.toEqual({ providerMsgId: WAMID });
+    expect(JSON.parse(meta.mock.calls[0][1]?.body as string)).toMatchObject({ type: "interactive", interactive: { type: "button" } });
+  });
+
   it("throws OutsideWindowError when Meta says the 24-hour window has closed", async () => {
     meta.mockImplementation(async () => reply(400, metaError(131047)));
     await expect(sender().sendText("+919840012345", "Hi")).rejects.toBeInstanceOf(OutsideWindowError);
+    const message = { type: "buttons" as const, body: "Visit tomorrow?", buttons: [{ id: "b", title: "Confirm" }] };
+    await expect(sender().sendInteractive("+919840012345", message)).rejects.toBeInstanceOf(OutsideWindowError);
   });
 
   it.each([
@@ -123,7 +131,7 @@ describe("registerWhatsAppSender", () => {
     const factory = senderFactory();
     expect(factory).toBeTypeOf("function");
     const sender = await factory!(ids);
-    expect(sender).toMatchObject({ sendText: expect.any(Function), sendTemplate: expect.any(Function) });
+    expect(sender).toMatchObject({ sendText: expect.any(Function), sendTemplate: expect.any(Function), sendInteractive: expect.any(Function) });
     expect(db.calls).toContainEqual({ table: "whatsapp_connections", method: "eq", args: ["tenant_id", TENANT] });
   });
 });

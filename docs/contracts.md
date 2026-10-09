@@ -128,6 +128,7 @@ type NotifyPayload = {
   staffUserId?: string;      // staff_alert only: the member to alert
   text?: string;             // free text, inside the 24-hour window
   templateParams?: string[]; // in {{1}}… order, outside the window
+  interactive?: Interactive; // reply buttons or a list, sent instead of `text` inside the window
   actorId?: string;          // the staff user (staff_reply, test_message); recorded in audit_logs
 };
 ```
@@ -166,15 +167,37 @@ tabs or runs of spaces (Meta refuses them, 132018); customer and business names 
 **For the inbox (Dev 3):** contacts tagged `staff` or `test` are our own numbers; their chats should be hidden
 from the inbox list (or shown under a separate filter).
 
+**Reply buttons and lists (built, 9 Oct; `backend/src/notify/interactive.ts`):** any kind can pass
+`interactive` instead of `text`. Inside the 24-hour window it goes as WhatsApp reply buttons or a list and costs
+what the kind's free text costs; outside the window the kind's approved template goes (its own quick-reply buttons
+are part of the template), and if WhatsApp says the window has just closed, the template is sent after a refund,
+as for text.
+
+```ts
+type Interactive =
+  | { type: "buttons"; header?: string; body: string; footer?: string;
+      buttons: { id: string; title: string }[] }                       // 1–3 buttons
+  | { type: "list"; header?: string; body: string; footer?: string; button: string;
+      sections: { title?: string; rows: { id: string; title: string; description?: string }[] }[] };
+```
+
+Meta's limits are checked before anything is read or spent (`validation_failed` otherwise): button title 20
+characters, button id 256, body 1024 (buttons) or 4096 (list), header and footer 60, list button label 20, row
+title 24, row description 72, row id 200, at most 10 rows in all and 10 sections, titles on every section when
+there are several, ids unique, titles and ids one line. A tap comes back as an inbound message of type
+`interactive` whose `buttonId` is the button's or row's `id`, so ids should say what they are for (for example
+`booking:<bookingId>:confirm`). The inbox copy (`messages.body`) is the text followed by the choices: `[Confirm]
+[Cancel]` for buttons, one `• <title> (<description>)` line per list row.
+
 **Adapter plug-in (built by Dev 2, 8 Oct):** `registerSender(factory)`, where
-`factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params) }`
-and both return `{ providerMsgId }`. `server/main.ts` registers the WhatsApp factory at startup
+`factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params), sendInteractive(to, message) }`
+and each returns `{ providerMsgId }`. `server/main.ts` registers the WhatsApp factory at startup
 (`registerWhatsAppSender()`, `backend/src/channels/whatsapp/message-sender.ts`). It loads the connection with
 the service role; one that is not `active` is `whatsapp_not_connected`, before any credits are spent. With no
 factory registered, `notify.send` answers `not_available`, also before spending.
-Both methods throw a `SendError` (`backend/src/notify/sender.ts`) when WhatsApp refuses the message: a code
+Each method throws a `SendError` (`backend/src/notify/sender.ts`) when WhatsApp refuses the message: a code
 from `ERROR_CODES` plus `retryable` and `outcomeUnknown` (the message may have gone out anyway). When Meta
-refuses free text because the 24-hour window has closed (131047), `sendText` throws `OutsideWindowError`, a
+refuses a free-form message because the 24-hour window has closed (131047), `sendText` or `sendInteractive` throws `OutsideWindowError`, a
 `SendError` with code `outside_window`, and `notify.send` sends the approved template instead. Every other code
 passes through in the `failed` outcome. A plain `Error` is unexpected: it is logged (redacted) and answered as
 `upstream_failed`.
@@ -279,7 +302,7 @@ localWindow(timeZone, { day: 'today' | 'tomorrow' | 'YYYY-MM-DD', part?: 'mornin
 4. `spendCredits` with the kind's cost; 0-cost kinds skip it. `false` returns `skipped / insufficient_credits`.
 5. Send through Dev 1's adapter, store the `messages` row (`credits_charged`), write `audit_logs`.
 6. If the adapter fails after credits were spent, call `refund_credits(tenantId, messageId)`.
-7. If `sendText` throws `OutsideWindowError` (the window closed after step 3), refund, then send the
+7. If `sendText` or `sendInteractive` throws `OutsideWindowError` (the window closed after step 3), refund, then send the
    kind's approved template as in step 3; a kind with no template returns `skipped / outside_window`.
    A refused template send is never retried.
 

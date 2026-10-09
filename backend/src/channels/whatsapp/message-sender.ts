@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { supabaseAdmin } from "../../lib/supabase-admin";
 import { OutsideWindowError, registerSender, SendError, type MessageSender, type SenderFactory } from "../../notify/sender";
-import { sendTemplate, sendText, type AdapterDeps, type AdapterError, type AdapterResult, type SendConnection } from "./adapter";
+import { sendInteractive, sendTemplate, sendText, type AdapterDeps, type AdapterError, type AdapterResult, type SendConnection } from "./adapter";
 
 // How notify.send reaches WhatsApp (module 1). The factory registered at startup loads one business's
 // connection with the service role and returns a MessageSender bound to it. The token stays encrypted
@@ -50,6 +50,7 @@ export function whatsAppSender(connection: SendConnection, deps: AdapterDeps = {
   return {
     sendText: async (to, text) => unwrap(await sendText(connection, to, text, deps)),
     sendTemplate: async (to, name, language, params) => unwrap(await sendTemplate(connection, to, { name, language, params }, deps)),
+    sendInteractive: async (to, message) => unwrap(await sendInteractive(connection, to, message, deps)),
   };
 }
 
