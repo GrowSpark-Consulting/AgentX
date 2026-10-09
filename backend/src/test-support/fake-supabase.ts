@@ -15,7 +15,7 @@ export function fakeSupabase(responses: Record<string, FakeResponse>) {
     from(table: string) {
       const response = responses[table] ?? { data: null, error: { code: "PGRST205", message: "missing" } };
       const builder: Record<string, unknown> = {};
-      for (const method of ["select", "eq", "order", "limit", "returns"]) {
+      for (const method of ["select", "eq", "in", "order", "limit", "returns"]) {
         builder[method] = (...args: unknown[]) => {
           calls.push({ table, method, args });
           return builder;

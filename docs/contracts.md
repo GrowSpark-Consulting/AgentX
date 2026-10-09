@@ -129,6 +129,7 @@ type NotifyPayload = {
   text?: string;             // free text, inside the 24-hour window
   templateParams?: string[]; // in {{1}}… order, outside the window
   interactive?: Interactive; // reply buttons or a list, sent instead of `text` inside the window
+  idempotencyKey?: string;   // names this exact message; a repeat returns the first send instead of sending again
   actorId?: string;          // the staff user (staff_reply, test_message); recorded in audit_logs
 };
 ```
@@ -166,6 +167,13 @@ tabs or runs of spaces (Meta refuses them, 132018); customer and business names 
 
 **For the inbox (Dev 3):** contacts tagged `staff` or `test` are our own numbers; their chats should be hidden
 from the inbox list (or shown under a separate filter).
+
+**Idempotency key (built, 9 Oct):** a job that may retry passes `idempotencyKey` (up to 200 characters, for example
+`reminder_24h:<bookingId>:<start>`). The message id is derived from the business, the kind and the key, so once
+that message has gone out (its `messages` row exists), a repeat returns the first send's `sent` outcome without
+sending, charging or checking toggles again. A message that fell back to the template went out under the key
+`<key>#template`, and a repeat finds that one too. A send whose outcome is unknown wrote no row, so it is still never
+retried automatically (`outcomeUnknown`).
 
 **Reply buttons and lists (built, 9 Oct; `backend/src/notify/interactive.ts`):** any kind can pass
 `interactive` instead of `text`. Inside the 24-hour window it goes as WhatsApp reply buttons or a list and costs
@@ -210,7 +218,7 @@ passes through in the `failed` outcome. A plain `Error` is unexpected: it is log
 |---|---|---|
 | `tenants.business_hours`, `resources.working_hours` | `{ "mon": [{ "start": "10:00", "end": "19:00" }], … }`. Keys `mon`–`sun`; local time in `tenants.timezone`; several intervals allow split shifts; a missing day or `[]` means closed. A resource with no days set uses the business's hours | Fixed: read by `findSlots` (`WeeklyHours` in `backend/src/booking/slots.ts`) |
 | `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits); a resource with no area serves every pincode | Fixed: read by `findSlots` |
-| `tenant_features.settings` | Reminders: `{ "offset_minutes": 1440 }`; other features `{}` | Proposed |
+| `tenant_features.settings` | Reminders: `{ "offset_minutes": 1440 }`, minutes before the booking's start, a whole number from 1 to 10080 (a week); anything else uses the default (`reminder_24h` 1440, `reminder_2h` 120). Other features `{}` | Fixed for reminders: read by `booking-reminders` (`backend/src/booking/reminders.ts`) |
 | `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
 | `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
 | `tenants.agent_settings` | Persona name, tone, languages, handoff default, scoring overrides | **To define: Dev 1 + Dev 3** |
@@ -330,12 +338,29 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | `whatsapp/message.received` | `{ tenantId, conversationId, messageId }`; sent by the webhook (id `message_received:<messageId>`, also for a replay); starts `process-message` |
 | `kb/document.uploaded` | `{ tenantId, documentId }`; sent by `POST /api/kb/documents` (id `kb_document_uploaded:<documentId>`), starts the `kb-ingest` job |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
-| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`) |
-| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`) |
+| `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` |
+| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run |
 | `handoff.opened` | `{ tenantId, handoffId, conversationId }`; sent by Dev 1's reply step when it opens a handoff (id `handoff_opened:<handoffId>`); starts `handoff-alert`, which sends one `staff_alert` to each owner and admin with an alert number (section 2). A handoff already resolved by the time the job runs gets no alert. **The job is the only sender of handoff alerts:** the reply step does not alert staff itself |
 | `handoff.own_number` | `{ tenantId, handoffId }` |
 | `tenant.trial_started` | `{ tenantId }` |
 | `credits.spent` | `{ tenantId, amount, reason, balanceAfter }` |
+
+**Booking reminders (`booking-reminders`, built 9 Oct; `backend/src/inngest/booking-reminders.ts`).** On
+`booking.confirmed` the run plans the 24 h and 2 h reminders from the booking's start and the business's offsets
+(section 3), sleeps until each and sends it through `notify.send` (`reminder_24h`, `reminder_2h`: the toggle, plan,
+opt-out, window and 1 credit are notify.send's). Before each send it reads the booking again and sends only if it is
+still confirmed at the same start. Any `booking.changed` for the booking cancels the run (`cancelOn`, matched on
+`bookingId`); a reschedule confirms a new booking, which gets its own run. A reminder whose time has passed is not
+sent. The message goes to the lead's contact's open chat:
+- Inside the 24-hour window: "Reminder: your {service, or the kind of booking} with {business} is on Sat 10 Oct,
+  5:00 pm." with three reply buttons, `booking:<bookingId>:confirm`, `:reschedule` and `:cancel`.
+- Outside it: the approved `reminder_24h_vN` / `reminder_2h_vN` template, with variables {{1}} what, {{2}} the
+  business, {{3}} the local date and time, and its own quick-reply buttons.
+
+Each send's idempotency key is `<kind>:<bookingId>:<start>`. **For Dev 1:** a tap arrives as an inbound message whose
+`buttonId` is one of those ids; `parseBookingButton(buttonId)` (`backend/src/booking/reminders.ts`) returns
+`{ bookingId, action }` for the pipeline to act on (confirm: thank the customer; reschedule: offer slots; cancel:
+`cancelBooking`).
 
 **The message pipeline (`process-message`, built: steps 2 and 3).** One conversation at a time (concurrency key
 `conversationId`); messages from one conversation within 3 seconds (never longer than 15) start one run. A debounce keeps
