@@ -10,9 +10,10 @@ const ctx = (role: TenantContext["role"] = "staff", tenantId = "t1"): TenantCont
 });
 const CHAT = "40000000-0000-4000-8000-000000000001";
 const OTHER_BUSINESS_CHAT = "40000000-0000-4000-8000-000000000002";
-const world = (mode: "ai" | "human" | "external", hooks?: Parameters<typeof fakeConversationsDb>[1]) =>
+const world = (mode: "ai" | "human" | "external", hooks?: Parameters<typeof fakeConversationsDb>[1], handoffs: Record<string, unknown>[] = []) =>
   fakeConversationsDb(
     {
+      handoffs,
       conversations: [
         { id: CHAT, tenant_id: "t1", mode, assigned_user_id: null },
         { id: OTHER_BUSINESS_CHAT, tenant_id: "t2", mode: "ai", assigned_user_id: null },
@@ -48,6 +49,48 @@ describe("returning to the AI (human → ai)", () => {
     expect(chat(w)).toMatchObject({ mode: "ai", assigned_user_id: null });
     expect(w.tables.messages).toEqual([expect.objectContaining({ sender: "system", body: expect.stringContaining("Returned to the AI"), meta: { event: "return_to_ai" } })]);
     expect(w.tables.audit_logs[0]).toMatchObject({ diff: { from: "human", to: "ai" } });
+  });
+});
+
+describe("open handoffs", () => {
+  const open = (id: string, tenant = "t1", conversation = CHAT) => ({ id, tenant_id: tenant, conversation_id: conversation, resolved_at: null, outcome: null });
+
+  it("Return to AI closes this chat's open handoffs, and only those", async () => {
+    const w = world("human", undefined, [
+      open("h1"),
+      open("h2"),
+      { ...open("done"), resolved_at: "2026-10-01T00:00:00Z", outcome: "answered" },
+      open("other-chat", "t1", OTHER_BUSINESS_CHAT),
+      open("other-business", "t2"),
+    ]);
+    await setConversationMode(ctx(), CHAT, { mode: "ai" }, w.db);
+    const byId = (id: string) => w.tables.handoffs.find((h) => h.id === id)!;
+    expect(byId("h1")).toMatchObject({ outcome: "returned_to_ai", resolved_at: expect.any(String) });
+    expect(byId("h2")).toMatchObject({ outcome: "returned_to_ai" });
+    // An already-closed handoff keeps its time and outcome; other chats and other businesses are untouched.
+    expect(byId("done")).toMatchObject({ resolved_at: "2026-10-01T00:00:00Z", outcome: "answered" });
+    expect(byId("other-chat")).toMatchObject({ resolved_at: null, outcome: null });
+    expect(byId("other-business")).toMatchObject({ resolved_at: null, outcome: null });
+  });
+
+  it("taking over leaves the handoff open", async () => {
+    const w = world("ai", undefined, [open("h1")]);
+    await setConversationMode(ctx(), CHAT, { mode: "human" }, w.db);
+    expect(w.tables.handoffs[0]).toMatchObject({ resolved_at: null });
+  });
+
+  it("a refused or unchanged switch closes nothing", async () => {
+    const w = world("ai", undefined, [open("h1")]);
+    await expect(setConversationMode(ctx(), CHAT, { mode: "ai" }, w.db)).resolves.toEqual({ mode: "ai", changed: false });
+    expect(w.tables.handoffs[0]).toMatchObject({ resolved_at: null });
+  });
+
+  it("still switches back when closing the handoffs fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const w = world("human", undefined, [open("h1")]);
+    w.fail("handoffs");
+    await expect(setConversationMode(ctx(), CHAT, { mode: "ai" }, w.db)).resolves.toEqual({ mode: "ai", changed: true });
+    expect(chat(w)).toMatchObject({ mode: "ai" });
   });
 });
 

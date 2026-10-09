@@ -8,7 +8,7 @@ import { requireRole } from "../lib/tenant";
 // POST /api/conversations/:id/mode: staff take a chat over from the AI ("human") or hand it back ("ai").
 // One responder per chat: the AI answers only in `ai` (pipeline/gate.ts, and again right before it sends), and
 // staff replies are refused in `ai` (staff-reply.ts). docs/handover.md, module 6: takeover sets the mode and
-// assigns the staff member; Return to AI sets it back and adds a system note.
+// assigns the staff member; Return to AI sets it back, adds a system note and closes the chat's open handoffs.
 //
 // The note is a `messages` row with sender 'system' (the inbox shows it as a centred note, keeps it out of the
 // list preview, and the agent's history ignores it). It has no provider_msg_id and is never sent to the customer.
@@ -84,6 +84,18 @@ export async function setConversationMode(
     diff: { from: current, to: target },
   });
   if (audit.error) console.error(`[conversations] the mode change was not audited: ${audit.error.message}`);
+
+  // Handing the chat back closes its open handoffs, so "needs a human" goes off and the handoff-SLA alert does not
+  // fire on a chat that is with the AI again. Best effort like the note: the switch has already happened.
+  if (target === "ai") {
+    const closed = await db
+      .from("handoffs")
+      .update({ resolved_at: new Date().toISOString(), outcome: "returned_to_ai" })
+      .eq("tenant_id", tenantId)
+      .eq("conversation_id", conversationId)
+      .is("resolved_at", null);
+    if (closed.error) console.error(`[conversations] the open handoffs were not closed: ${closed.error.message}`);
+  }
 
   return { mode: target, changed: true };
 }
