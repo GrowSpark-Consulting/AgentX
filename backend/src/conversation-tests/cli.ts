@@ -13,6 +13,10 @@ const args = process.argv.slice(2);
 const live = args.includes("--live");
 const onlyIndex = args.indexOf("--only");
 const only = onlyIndex >= 0 ? args[onlyIndex + 1]?.toLowerCase() : undefined;
+if (onlyIndex >= 0 && !only) {
+  console.error("--only needs a text to look for in the chat file or name.");
+  process.exit(2);
+}
 
 async function main(): Promise<number> {
   let chats = loadChats();

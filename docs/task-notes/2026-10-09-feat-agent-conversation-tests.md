@@ -63,7 +63,7 @@ prompts, packs or agent code. This is the first version: **34 chats for the real
 
 ## 5. For Dev 2 (Shaaz)
 
-- Nothing to deploy: tests only. `pnpm test` now also runs the chats (about a second).
+- Nothing to deploy: tests only (the only dependency change is `yaml`, a backend devDependency, already in the lockfile). `pnpm test` now also runs the chats (about a second).
 - Please keep `tests/conversations` in mind when you change `notify.send`'s outcomes or the handoff event: the runner uses a fake send.
 
 ## 6. For Dev 3 (Dhatri)

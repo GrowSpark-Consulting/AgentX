@@ -20,10 +20,10 @@ const Extracted = z
 
 const ReplyExpect = z
   .object({
-    /** A reply goes out (true) or none does (false). Default: a reply, unless the turn is an opt-out. */
+    /** Exactly one AI reply goes out (true) or none does (false). Not checked when missing (the "at most one" rule is always checked). */
     sent: z.boolean().optional(),
     /** The reply is this fixed line, in this language: "fallback", "clarify", "handoff", "exit_question", ... */
-    fixed: z.object({ key: z.string(), language: z.string() }).strict().optional(),
+    fixed: z.object({ key: z.enum(["fallback", "clarify", "handoff", "stop_hint", "credits_holding", "opt_out_confirmation", "exit_question"]), language: z.enum(["en", "ta", "ta-en", "hi"]) }).strict().optional(),
     contains: z.array(z.string()).optional(),
     notContains: z.array(z.string()).optional(),
     /** The privacy notice is on the reply (true) or not (false). */
@@ -47,7 +47,7 @@ const Expect = z
     mode: z.enum(["ai", "human"]).optional(),
     leadStage: z.string().optional(),
     leadFields: z.record(z.string(), Scalar).optional(),
-    /** How many messages went to the customer this turn through notify.send (the AI reply). Default: checked as 1 when a reply is expected. */
+    /** How many messages went to the customer this turn through notify.send (the AI reply). Not checked when missing. */
     aiReplies: z.number().int().min(0).optional(),
     /** One confirmation through the system notice. */
     confirmations: z.number().int().min(0).optional(),
@@ -72,7 +72,8 @@ const Turn = z
     /** Checked only with the mocked models: what the code does with a given reading. */
     mockOnly: Expect.optional(),
   })
-  .strict();
+  .strict()
+  .refine((t) => Object.keys(t.expect ?? {}).length + Object.keys(t.mockOnly ?? {}).length > 0, { message: "a turn must assert something (expect or mockOnly)" });
 
 export const Chat = z
   .object({

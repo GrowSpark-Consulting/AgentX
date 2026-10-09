@@ -4,7 +4,7 @@ import type { AuditEntry } from "../lib/audit";
 import type { LlmClient, LlmRequest, LlmResult } from "../agent/llm";
 import { NonRetriableError } from "inngest";
 import { amountsIn } from "../agent/pipeline/postcheck";
-import { fixedText, type TextLanguage } from "../agent/pipeline/fixed-texts";
+import { fixedText } from "../agent/pipeline/fixed-texts";
 import type { StepRunner, TurnContext } from "../agent/pipeline/process-message";
 import { replyTurn, type ReplyDeps, type ReplyOutcome } from "../agent/pipeline/reply";
 import { stopCheck } from "../agent/pipeline/stop";
@@ -197,13 +197,14 @@ export async function runChat(chat: Chat, options: RunOptions): Promise<ChatRepo
         const r = expect.reply;
         if (r.sent !== undefined && (turnSends.length === 1) !== r.sent) fail(`reply sent: wanted ${r.sent}, got ${turnSends.length} AI replies`);
         if (r.fixed) {
-          const wanted = fixedText(r.fixed.key as never, r.fixed.language as TextLanguage);
+          const wanted = fixedText(r.fixed.key, r.fixed.language);
           if (!replyText?.includes(wanted)) fail(`reply: wanted the fixed line ${r.fixed.key}/${r.fixed.language}, got ${JSON.stringify(replyText)}`);
         }
         for (const text of r.contains ?? []) if (!replyText?.includes(text)) fail(`reply: should contain ${JSON.stringify(text)}, got ${JSON.stringify(replyText)}`);
         for (const text of r.notContains ?? []) if (replyText?.includes(text)) fail(`reply: must not contain ${JSON.stringify(text)}`);
         if (r.notice !== undefined && (replyText?.includes(PRIVACY_URL) ?? false) !== r.notice) fail(`privacy notice on the reply: wanted ${r.notice}`);
       }
+      if (expect.noInventedPrice && !replyText) fail("noInventedPrice: there is no reply to check");
       if (expect.noInventedPrice && replyText) {
         const known = amountsIn(kb.join(" "));
         for (const amount of amountsIn(replyText)) if (!known.has(amount)) fail(`the reply has an amount that is not in the knowledge base: ${amount}`);

@@ -45,6 +45,10 @@ consent_logs of the turn), `handoff` (trigger and priority, or null), `mode`, `l
 `confirmations`. Every turn also checks, always: at most one AI reply, sent as an `ai_reply` through notify.send, and nothing
 sent to a contact who opted out.
 
+Not covered here: the gate's other outcomes (a chat a person has, the AI switched off, a contact who opted out earlier) are tested
+in `gate.test.ts`; the runner starts every chat with the AI in charge. A turn must assert something (`expect` or `mockOnly`).
+A STOP chat's later turns show the gate's opted-out outcome.
+
 ## The files
 
 - `01`-`08`: the first chats: price questions (English, Tanglish), off-topic, "are you a bot?", prompt injection, STOP, no

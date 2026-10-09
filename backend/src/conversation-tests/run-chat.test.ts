@@ -34,11 +34,11 @@ describe("runChat", () => {
   });
 
   it("does not check mockOnly in live mode, and refuses live mode without a client", async () => {
-    await expect(runChat(chat({}), { mode: "live" })).rejects.toThrow(/live mode needs/);
+    await expect(runChat(chat({ expect: { aiReplies: 1 } }), { mode: "live" })).rejects.toThrow(/live mode needs/);
   });
 
   it("says when the chat scripts a mocked reply that the pipeline never asked for", async () => {
-    const report = await runChat(chat({ customer: "STOP", mock: { reply: ["unused"] } }), { mode: "mock" });
+    const report = await runChat(chat({ customer: "STOP", mock: { reply: ["unused"] }, expect: { stop: true } }), { mode: "mock" });
     expect(report.failures.join("\n")).toMatch(/more mocked reply/);
   });
 });
@@ -52,7 +52,7 @@ describe("loadChats", () => {
   };
 
   it("loads valid chats in file-name order", () => {
-    const dir = dirWith({ "b.yaml": "name: b\nturns:\n  - customer: hi\n", "a.yaml": "name: a\nturns:\n  - customer: hi\n" });
+    const dir = dirWith({ "b.yaml": "name: b\nturns:\n  - customer: hi\n    expect: { aiReplies: 1 }\n", "a.yaml": "name: a\nturns:\n  - customer: hi\n    expect: { aiReplies: 1 }\n" });
     expect(loadChats(dir).map((c) => c.chat.name)).toEqual(["a", "b"]);
   });
 
@@ -61,6 +61,6 @@ describe("loadChats", () => {
   });
 
   it("refuses a chat that says another pack than its folder", () => {
-    expect(() => loadChats(dirWith({ "x.yaml": "name: x\npack: salon\nturns:\n  - customer: hi\n" }))).toThrow(/folder/);
+    expect(() => loadChats(dirWith({ "x.yaml": "name: x\npack: salon\nturns:\n  - customer: hi\n    expect: { aiReplies: 1 }\n" }))).toThrow(/folder/);
   });
 });
