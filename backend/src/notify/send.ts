@@ -5,12 +5,14 @@ import { CREDIT_COST } from "../billing/credit-costs";
 import { refundCredits, spendCredits } from "../billing/credits";
 import { isEnabled } from "../features/is-enabled";
 import { supabaseAdmin } from "../lib/supabase-admin";
+import { Interactive, interactiveSummary } from "./interactive";
 import { KINDS, type MessageCreditReason, type NotificationKind } from "./kinds";
 import { OutsideWindowError, SendError, senderFactory, type MessageSender } from "./sender";
 
 // notify.send (docs/handover.md, module 5; docs/contracts.md, section 4): every outbound message goes
 // through here. Order: feature toggle → recipient and connection → opt-out → test-message limit →
-// 24-hour window (free text) or approved template → credits → send → record (messages + audit_logs).
+// 24-hour window (free text, or reply buttons / a list) or approved template → credits → send → record
+// (messages + audit_logs).
 // If the send fails after credits were spent, they are refunded. If WhatsApp says the window has
 // closed (OutsideWindowError), the approved template is sent instead. Any other refusal keeps the
 // sender's code (rate_limited, whatsapp_not_connected…). When the outcome is unknown (a timeout), the
@@ -26,6 +28,11 @@ export type NotifyPayload = {
   staffUserId?: string;
   /** Free-text body, used inside the 24-hour window. */
   text?: string;
+  /**
+   * Reply buttons or a list (notify/interactive.ts), sent instead of `text` inside the 24-hour window. Outside it the
+   * kind's approved template goes, as for text. Checked against Meta's limits before any credit is spent.
+   */
+  interactive?: Interactive;
   /** Template variables in {{1}}… order, used outside the window. */
   templateParams?: string[];
   /** The staff user who sent it (staff_reply, test_message); recorded in audit_logs. */
@@ -83,6 +90,9 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
     conversation: !payload.conversationId ? "conversationId" : null,
   }[kindConfig.audience];
   if (missing) throw new Error(`notify.send(${kind}): ${missing} required`);
+  if (payload.interactive !== undefined && !Interactive.safeParse(payload.interactive).success) {
+    return failed("validation_failed", "The buttons or list don't fit WhatsApp's limits, so the message was not sent.");
+  }
 
   if (kindConfig.feature && !(await isEnabled(tenantId, kindConfig.feature))) {
     return { status: "skipped", reason: "feature_off" };
@@ -118,11 +128,11 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
     return failed("rate_limited", `Only ${TEST_MESSAGES_PER_HOUR} test messages an hour. Try again later.`, { retryable: true });
   }
 
-  // Free text only inside 24 hours of the customer's last message; otherwise an approved template.
+  // Free-form (text, buttons, a list) only inside 24 hours of the customer's last message; otherwise an approved template.
   const lastCustomerMessage = target.last_customer_msg_at ? Date.parse(target.last_customer_msg_at) : null;
   const insideWindow = lastCustomerMessage !== null && Date.now() - lastCustomerMessage < WINDOW_MS;
   let template: z.infer<typeof Template> | undefined;
-  if (!(insideWindow && payload.text)) {
+  if (!(insideWindow && (payload.interactive ?? payload.text))) {
     if (!kindConfig.template) return { status: "skipped", reason: "outside_window" };
     const templateResult = await db.rpc("notify_template", {
       p_connection_id: target.connection_id,
@@ -155,15 +165,17 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
   try {
     const sent = template
       ? await sender.sendTemplate(target.to_phone, template.name, template.language, payload.templateParams ?? [])
-      : await sender.sendText(target.to_phone, payload.text as string);
+      : payload.interactive
+        ? await sender.sendInteractive(target.to_phone, payload.interactive)
+        : await sender.sendText(target.to_phone, payload.text as string);
     providerMsgId = sent.providerMsgId;
   } catch (err) {
     if (cost > 0) await refundCredits(tenantId, messageId);
-    // The window closed between our check and WhatsApp's. Send again without the free text, which
-    // picks the kind's approved template; a kind with no template is skipped.
+    // The window closed between our check and WhatsApp's. Send again without the free-form message,
+    // which picks the kind's approved template; a kind with no template is skipped.
     if (err instanceof OutsideWindowError && !template) {
       if (!kindConfig.template) return { status: "skipped", reason: "outside_window" };
-      return send(tenantId, kind, { ...payload, text: undefined });
+      return send(tenantId, kind, { ...payload, text: undefined, interactive: undefined });
     }
     return senderFailure(err, "WhatsApp did not accept the message, so it was not sent.");
   }
@@ -174,7 +186,7 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
     p_message_id: messageId,
     p_conversation_id: target.conversation_id,
     p_sender: kindConfig.sender,
-    p_body: template ? null : (payload.text ?? null),
+    p_body: template ? null : payload.interactive ? interactiveSummary(payload.interactive) : (payload.text ?? null),
     p_template_name: template?.name ?? null,
     p_provider_msg_id: providerMsgId,
     p_credits: cost,

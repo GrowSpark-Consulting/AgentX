@@ -2,10 +2,11 @@ import { SendResult, TEMPLATE_BODY_MAX, type ErrorCode } from "@pakka/types";
 import { z } from "zod";
 import { connectionSecretContext, decryptSecret } from "../../lib/crypto";
 import { serverEnv, type ServerEnv } from "../../lib/env";
+import { Interactive } from "../../notify/interactive";
 import { mapMetaError } from "./meta-errors";
 import { normalizeE164 } from "./phone";
 
-// The WhatsApp send side (module 1): sendText, sendTemplate and markRead on Meta's Graph API.
+// The WhatsApp send side (module 1): sendText, sendTemplate, sendInteractive and markRead on Meta's Graph API.
 // notify.send is the only caller (through the MessageSender in message-sender.ts); nothing else sends
 // messages.
 //
@@ -188,7 +189,7 @@ const ReadBody = z.looseObject({ success: z.boolean() });
 async function sendMessage(
   connection: SendConnection,
   number: string,
-  message: { type: "text" | "template" } & Record<string, unknown>,
+  message: { type: "text" | "template" | "interactive" } & Record<string, unknown>,
   deps: AdapterDeps,
 ): Promise<AdapterResult<SendResult>> {
   const prepared = prepare(connection, deps);
@@ -263,6 +264,49 @@ export async function sendTemplate(
       { type: "template", template: { name, language: { code: language }, ...(body && { components: body }) } },
       deps,
     );
+  } catch {
+    return failFor("internal");
+  }
+}
+
+/** Meta's request shape for reply buttons ("button") or a list ("list"). Header and footer are text only. */
+function graphInteractive(message: Interactive) {
+  const frame = {
+    ...(message.header !== undefined && { header: { type: "text", text: message.header } }),
+    body: { text: message.body },
+    ...(message.footer !== undefined && { footer: { text: message.footer } }),
+  };
+  if (message.type === "buttons") {
+    return { type: "button", ...frame, action: { buttons: message.buttons.map(({ id, title }) => ({ type: "reply", reply: { id, title } })) } };
+  }
+  return {
+    type: "list",
+    ...frame,
+    action: {
+      button: message.button,
+      sections: message.sections.map((section) => ({
+        ...(section.title !== undefined && { title: section.title }),
+        rows: section.rows.map(({ id, title, description }) => ({ id, title, ...(description !== undefined && { description }) })),
+      })),
+    },
+  };
+}
+
+/**
+ * Sends reply buttons or a list (notify/interactive.ts). Free-form like text, so WhatsApp refuses it outside the
+ * 24-hour window (131047, outside_window). Anything over Meta's limits is refused before the network.
+ */
+export async function sendInteractive(
+  connection: SendConnection,
+  to: string,
+  message: Interactive,
+  deps: AdapterDeps = {},
+): Promise<AdapterResult<SendResult>> {
+  try {
+    const number = normalizeE164(to);
+    const parsed = Interactive.safeParse(message);
+    if (number === null || !parsed.success) return failFor("validation_failed");
+    return await sendMessage(connection, number, { type: "interactive", interactive: graphInteractive(parsed.data) }, deps);
   } catch {
     return failFor("internal");
   }
