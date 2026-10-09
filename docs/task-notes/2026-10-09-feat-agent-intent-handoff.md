@@ -2,13 +2,13 @@
 
 Audience: Dev 2 (Shaaz) and Dev 3 (Dhatri).
 
-> **STACKED on `feat/agent-consent` (PR D). Do not merge before it.** Base tip when this branch was made: the consent PR's
-> last commit on 9 Oct (record the SHA with `git merge-base feat/agent-consent feat/agent-intent-handoff`). After PR D is
+> **STACKED on `feat/agent-consent` (PR D). Do not merge before it.** Base tip when this branch was made: `0af02ddd557b7653d2aaa988017aee68bb9dec0a`
+> (the consent PR's last commit). After PR D is
 > squash-merged, move this PR onto `main`:
 >
 > ```
 > git fetch origin
-> git rebase --onto origin/main <that SHA> feat/agent-intent-handoff
+> git rebase --onto origin/main 0af02ddd557b7653d2aaa988017aee68bb9dec0a feat/agent-intent-handoff
 > git push --force-with-lease origin feat/agent-intent-handoff
 > ```
 >

@@ -37,7 +37,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0018_agent_merge_functions` | `merge_lead_fields`, `merge_message_agent_meta`: the agent's lead-field and message-meta merges (Dev 1, #65; service_role only) |
 | `0019_notify_staff_target` | `notify_staff_target(tenantId, userId)`: a member's alert number as a contact tagged `staff` with a `human`-mode conversation (service_role only, section 2) |
 
-| `0021_consent_functions` | `record_notice_shown` and `record_opt_out` (service_role only): the contact update and the `consent_logs` row in one transaction, once (Dev 1; after 0019 `notify_staff_target` and 0022 `whatsapp_webhook_tokens`) |
+| `0021_consent_functions` | `record_notice_shown` and `record_opt_out` (service_role only): the contact update and the `consent_logs` row in one transaction, once (Dev 1; after 0019 `notify_staff_target` and 0020 `whatsapp_webhook_tokens`) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
