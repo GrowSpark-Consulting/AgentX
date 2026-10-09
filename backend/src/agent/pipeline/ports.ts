@@ -4,13 +4,13 @@ import type { FixedTextKey } from "./fixed-texts";
 // Two ways of reaching people (Dev 2, docs/contracts.md section 4, "NotificationKind"):
 //   - a SYSTEM NOTICE: a free line to the customer that the opt-out check must not block: the holding message when a
 //     business is out of credits, and the final confirmation after STOP. Built: notify.send's `system_notice` kind (#70).
-//   - a STAFF ALERT: a message to the owner or staff (credits ran out, a chat was handed over). notify.send has no
-//     `staff_alert` kind on main yet (Dev 2's #71), so this port only says so in the log ("awaiting_notify_kind"); when
-//     it lands, ONLY this implementation changes (see docs/task-notes, "For Dev 2").
+//   - a STAFF ALERT: a message to the owner or staff (credits ran out, a chat was handed over). Sent by Dev 2's
+//     `handoff-alert` job (#71) from the `handoff.opened` event the reply step sends, so this port sends nothing itself
+//     ("queued"): sending here as well would alert staff twice.
 // Everything else in the turn (the handoff row, the switch to a person, the event, the audit) does not wait for either.
 // Neither port throws into the turn: a notice that could not go is logged and the turn goes on.
 
-export type PortOutcome = { status: "sent" } | { status: "awaiting_notify_kind" } | { status: "failed"; reason: string };
+export type PortOutcome = { status: "sent" } | { status: "queued" } | { status: "awaiting_notify_kind" } | { status: "failed"; reason: string };
 
 export interface SystemNoticePort {
   send(input: { tenantId: string; conversationId: string; kind: Extract<FixedTextKey, "credits_holding"> | "opt_out_confirmation"; text: string }): Promise<PortOutcome>;
@@ -37,10 +37,13 @@ export function createSystemNoticePort(send: (tenantId: string, kind: "system_no
 }
 
 
-// Kinds only in the log: no ids, no text.
+/**
+ * The staff alert is the `handoff-alert` job's (backend/src/inngest/handoff-alert.ts): it reads the `handoff.opened` event
+ * (id `handoff_opened:<handoffId>`, one per handoff), alerts each owner and admin with an alert number and retries on its
+ * own. The port only reports that the alert is on its way.
+ */
 export const staffAlertPort: StaffAlertPort = {
-  async send({ kind }) {
-    console.log(`[pipeline] awaiting_notify_kind (staff alert: ${kind})`);
-    return { status: "awaiting_notify_kind" };
+  async send() {
+    return { status: "queued" };
   },
 };

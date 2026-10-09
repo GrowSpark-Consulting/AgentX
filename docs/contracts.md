@@ -34,6 +34,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0015_booking_engine` | `services.buffer_min`/`min_notice_min`, booking status `expired`, end after start, slot kinds need a resource, `hold_slot`, `confirm_booking`, `reschedule_booking`, `cancel_booking`, `release_expired_holds` (service_role only, section 4) |
 | `0016_platform_admins_and_link_tokens` | `platform_admins` (server only), `connect_links.token` → `token_hash` (SHA-256 hex; existing links rehashed) |
 | `0017_google_calendar` | `google_calendar_connections`: one per resource, refresh token encrypted, `status connected \| needs_reconnect`; members read everything but the token (section 6) |
+| `0018_agent_merge_functions` | `merge_lead_fields`, `merge_message_agent_meta`: the agent's lead-field and message-meta merges (Dev 1, #65; service_role only) |
 | `0019_notify_staff_target` | `notify_staff_target(tenantId, userId)`: a member's alert number as a contact tagged `staff` with a `human`-mode conversation (service_role only, section 2) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
@@ -380,7 +381,7 @@ contact's opt-out; **in the same step `message.answered` is written for every me
 is logged and never thrown, since a retry would send again), and a send whose outcome is unknown counts as answered.
 `insufficient_credits` sends no AI reply: the chat goes to `human`, a `handoffs` row (`credits_exhausted`, priority
 `high`) opens, `handoff.opened` is sent (id `handoff_opened:<handoffId>`), and the free holding message and the owner alert
-go through two ports (`ports.ts`): the holding message is `notify.send(..., "system_notice", ...)` (built, #70); the owner alert only logs `awaiting_notify_kind` until Dev 2's `staff_alert` kind and its `handoff.opened` job land (#71). The whole turn has one
+go through two ports (`ports.ts`): the holding message is `notify.send(..., "system_notice", ...)` (built, #70); the owner alert is sent by Dev 2's `handoff-alert` job from the `handoff.opened` event (#71), so its port sends nothing and reports `queued`. The whole turn has one
 clock (`turn-deadline.ts`): target 10 s, hard stop 25 s, after which the model calls stop and the safe line is sent.
 `persona` and `tone` are read from `tenants.agent_settings` as the Agent settings screen saves them. The turn's clock also
 runs while a failed step waits for its retry, so a slow second attempt can be answered with the safe line. **Never two

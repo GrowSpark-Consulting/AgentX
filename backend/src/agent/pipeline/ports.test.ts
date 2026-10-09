@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SendOutcome } from "../../notify/send";
-import { createSystemNoticePort } from "./ports";
+import { createSystemNoticePort, staffAlertPort } from "./ports";
 
 // The system notice goes through notify.send's `system_notice` kind; what comes back is small facts only.
 
@@ -42,5 +42,14 @@ describe("the system notice port", () => {
 
   it("lets a thrown error reach the caller, which settles it (reply.ts)", async () => {
     await expect(port(new Error("down")).port.send(INPUT)).rejects.toThrow("down");
+  });
+});
+
+describe("the staff alert port", () => {
+  it("sends nothing itself: the handoff-alert job alerts staff from the handoff.opened event", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await expect(staffAlertPort.send({ tenantId: "t1", conversationId: "c1", kind: "handoff_opened" })).resolves.toEqual({ status: "queued" });
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
   });
 });
