@@ -113,7 +113,7 @@ type NotificationKind =               // decides toggle, template and credit cos
   | 'followup_nudge' | 'noshow_rebooking' | 'feedback_request' | 'review_request'
   | 'handoff_customer_notice' | 'staff_alert' | 'lead_card' | 'daily_agenda'
   | 'trial_message' | 'credit_alert' | 'quote_sent' | 'quote_followup' | 'pretrip_info'
-  | 'staff_reply' | 'test_message';
+  | 'staff_reply' | 'test_message' | 'system_notice';
 
 type SendOutcome =
   | { status: 'sent'; messageId: string; providerMsgId: string; creditsCharged: number; usedTemplate: boolean }
@@ -131,8 +131,14 @@ type NotifyPayload = {
 
 **Built in `backend/src/notify`** (`send.ts`, `kinds.ts`, `sender.ts`): `NotifyPayload` and
 `SendOutcome` as above. The credit ref is the generated message id (not a payload field).
-`NotificationKind` covers `ai_reply`, `staff_reply`, `test_message` and the customer automations;
-staff-facing kinds arrive with their jobs.
+`NotificationKind` covers `ai_reply`, `staff_reply`, `test_message`, the customer automations and
+`system_notice`; staff-facing kinds arrive with their jobs.
+
+**`system_notice` (built, 9 Oct; for Dev 1's pipeline):** a fixed line from the system to the customer.
+`send(tenantId, 'system_notice', { conversationId, text })`: 0 credits (so it goes out when the business is
+out of credits), `sender 'system'`, no feature toggle, free text inside the 24-hour window only (no template,
+so outside it the outcome is `skipped / outside_window`). It is the one kind sent to a contact who opted
+out. Use it only for the STOP confirmation and the out-of-credits holding message.
 
 **Adapter plug-in (built by Dev 2, 8 Oct):** `registerSender(factory)`, where
 `factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params) }`

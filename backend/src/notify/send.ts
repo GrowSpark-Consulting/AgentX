@@ -103,7 +103,7 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
   }
   const [target] = z.array(Target).length(1).parse(targetResult.data);
 
-  if (target.opted_out) return { status: "skipped", reason: "opted_out" };
+  if (target.opted_out && !kindConfig.ignoresOptOut) return { status: "skipped", reason: "opted_out" };
   if (kind === "test_message" && target.recent_test_messages >= TEST_MESSAGES_PER_HOUR) {
     return failed("rate_limited", `Only ${TEST_MESSAGES_PER_HOUR} test messages an hour. Try again later.`, { retryable: true });
   }
