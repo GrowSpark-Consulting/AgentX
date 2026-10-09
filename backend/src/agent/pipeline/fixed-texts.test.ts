@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+import { FIXED_TEXTS, fixedText, SAFE_FALLBACK_EN, textLanguage, type FixedTextKey, type TextLanguage } from "./fixed-texts";
+
+// The fixed lines: no model, fixed words, one per language.
+
+const KEYS = Object.keys(FIXED_TEXTS) as FixedTextKey[];
+const LANGS: TextLanguage[] = ["en", "ta", "ta-en", "hi"];
+
+describe("the safe fallback", () => {
+  it("is exactly the handover's words in English", () => {
+    expect(SAFE_FALLBACK_EN).toBe("Let me confirm that with the team");
+    expect(fixedText("fallback", "en")).toBe("Let me confirm that with the team");
+  });
+});
+
+describe("every fixed line", () => {
+  it.each(KEYS.flatMap((k) => LANGS.map((l) => [k, l] as const)))("%s in %s is there, short and has no price, date or time", (key, language) => {
+    const text = fixedText(key, language);
+    expect(text.length).toBeGreaterThan(10);
+    expect(text.length).toBeLessThanOrEqual(200); // short enough for the 600-character reply cap with room for a notice
+    expect(text).not.toMatch(/₹|\d/);
+    expect(text.trim()).toBe(text);
+  });
+
+  it("is in the script of its language: Tamil lines have Tamil letters, Hindi lines have Devanagari, the rest are Latin", () => {
+    for (const key of KEYS) {
+      expect(fixedText(key, "ta")).toMatch(/[஀-௿]/);
+      expect(fixedText(key, "hi")).toMatch(/[ऀ-ॿ]/);
+      expect(fixedText(key, "en")).not.toMatch(/[^\x00-\x7f]/);
+      expect(fixedText(key, "ta-en")).not.toMatch(/[஀-௿ऀ-ॿ]/);
+    }
+  });
+
+  it("differs between languages, so none is a copy of the English line by mistake", () => {
+    for (const key of KEYS) expect(new Set(LANGS.map((l) => fixedText(key, l))).size).toBe(LANGS.length);
+  });
+
+  it("the stop hint names the word the customer must send", () => {
+    for (const l of LANGS) expect(fixedText("stop_hint", l)).toContain("STOP");
+  });
+});
+
+describe("textLanguage", () => {
+  it("takes the first language it can write", () => {
+    expect(textLanguage("ta-en", "en")).toBe("ta-en");
+    expect(textLanguage("hi")).toBe("hi");
+    expect(textLanguage("ta")).toBe("ta");
+  });
+
+  it("skips a language it has no lines for, and falls to the next, then English", () => {
+    expect(textLanguage("ml", "ta")).toBe("ta");
+    expect(textLanguage("other", null, undefined)).toBe("en");
+    expect(textLanguage()).toBe("en");
+    expect(textLanguage("fr")).toBe("en");
+  });
+});

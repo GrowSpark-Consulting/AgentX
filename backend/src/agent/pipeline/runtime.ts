@@ -1,7 +1,12 @@
 import { retrieveKb } from "../../kb/retrieve";
+import { inngest } from "../../inngest/client";
+import { writeAudit } from "../../lib/audit";
+import { send } from "../../notify/send";
 import { llm } from "../llm";
 import type { PackSource } from "../packs/load";
 import { createDbPackSource } from "../packs/store";
+import { createSystemNoticePort, staffAlertPort } from "./ports";
+import type { ReplyDeps } from "./reply";
 import type { PipelineStore } from "./store";
 import type { UnderstandDeps } from "./understand";
 
@@ -35,6 +40,19 @@ function deepFreeze<T>(value: T): T {
     for (const child of Object.values(value)) deepFreeze(child);
   }
   return value;
+}
+
+/** The real dependencies of the reply step: notify.send (including the system notice), the audit, the queue, and the staff-alert port that waits for Dev 2's kind. */
+export function replyDeps(store: PipelineStore): ReplyDeps {
+  return {
+    store,
+    llm: llm(),
+    send: (tenantId, kind, payload) => send(tenantId, kind, payload),
+    audit: writeAudit,
+    sendEvent: (event) => inngest.send(event),
+    systemNotice: createSystemNoticePort((tenantId, kind, payload) => send(tenantId, kind, payload)),
+    staffAlert: staffAlertPort,
+  };
 }
 
 let packLoader: UnderstandDeps["loadPackDefinition"] | undefined;

@@ -70,6 +70,14 @@ export interface HistoryItem {
   body: string;
 }
 
+/** What the reply step needs to know about the business: its name (shown to the model) and the settings the dashboard saved. */
+export interface TenantReplyInfo {
+  name: string;
+  /** tenants.agent_settings, as stored: not trusted, parsed by persona.ts. */
+  agentSettings: unknown;
+}
+export type HandoffPriority = "high" | "normal";
+
 export interface PipelineStore {
   /** The message, only if it is this business's and this conversation's. */
   getMessage(tenantId: string, conversationId: string, messageId: string): Promise<InboundMessage | null>;
@@ -113,10 +121,26 @@ export interface PipelineStore {
    */
   saveAgentMeta(tenantId: string, conversationId: string, messageId: string, agent: Record<string, unknown>): Promise<boolean>;
   getAgentMeta(tenantId: string, conversationId: string, messageId: string): Promise<Record<string, unknown> | null>;
+
+  /** The business's name and agent settings, or null if it is gone. */
+  getTenantReplyInfo(tenantId: string): Promise<TenantReplyInfo | null>;
+  /**
+   * The count of questions in a row the knowledge base could not answer in this chat, as the chat's latest earlier turn
+   * left it (`messages.meta.agent.kbMisses` on the customer message that turn answered, before `before`); 0 when there is none.
+   */
+  getPreviousMisses(tenantId: string, conversationId: string, before: string): Promise<number>;
+  /** record_kb_gap (0012): one upsert per business and normalised question. The count is business-wide; it only feeds the dashboard's most-asked list. */
+  recordKbGap(tenantId: string, input: { question: string; questionNorm: string; contactId: string }): Promise<{ gapId: string; askedCount: number }>;
+  /** The chat's open handoff (not resolved), or a new one: `created` says which. */
+  openHandoff(tenantId: string, conversationId: string, trigger: string, priority: HandoffPriority): Promise<{ id: string; created: boolean }>;
+  /** Switches a chat the AI has to a person (`human`). Only from `ai`: a chat already with a person, or on the owner's own number, is left alone. True when it changed. */
+  setConversationMode(tenantId: string, conversationId: string, mode: "human"): Promise<boolean>;
 }
 
 export const PIPELINE_DB_TIMEOUT_MS = 10_000;
 const BATCH_LIMIT = 10;
+/** How many earlier customer messages to look through for the last turn's count: a turn writes it on its newest message. */
+const PREVIOUS_TURN_LOOKBACK = 20;
 /**
  * An audit row says a message was answered; its time is our clock, a message's `created_at` is Meta's. A day of
  * slack on the lower bound keeps a Meta clock that runs ahead from hiding the row, and keeps the lookup on the
@@ -140,6 +164,9 @@ const PendingSchema = z.object({ id: z.string(), kind: z.string().nullable() });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const LeadSchema2 = z.object({ id: z.string(), stage: z.string(), fields: z.unknown() });
 const BatchTextSchema = z.object({ id: z.string(), body: z.string().nullable(), created_at: Iso });
+const TenantInfoSchema = z.object({ name: z.string(), agent_settings: z.unknown() });
+const KbGapResult = z.array(z.object({ gap_id: z.string(), asked_count: z.number().int() })).min(1);
+const HandoffSchema = z.object({ id: z.string() });
 const HistorySchema = z.object({ sender: z.enum(["customer", "ai", "staff"]), body: z.string().nullable() });
 
 // Postgres codes that mean the database was unreachable, restarting or overloaded: waiting can fix them.
@@ -344,6 +371,67 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
       );
       if (error) fail("save message meta", error);
       return data === true;
+    },
+
+    async getTenantReplyInfo(tenantId) {
+      const { data, error } = await run("read business settings", (signal) =>
+        db.from("tenants").select("name, agent_settings").eq("id", tenantId).abortSignal(signal).maybeSingle(),
+      );
+      if (error) fail("read business settings", error);
+      if (data === null) return null;
+      const row = parse(TenantInfoSchema, data, "read business settings");
+      return { name: row.name, agentSettings: row.agent_settings };
+    },
+
+    async getPreviousMisses(tenantId, conversationId, before) {
+      const { data, error } = await run("read previous turn", (signal) =>
+        db
+          .from("messages")
+          .select("meta")
+          .eq("tenant_id", tenantId)
+          .eq("conversation_id", conversationId)
+          .eq("sender", "customer")
+          .lt("created_at", before)
+          .order("created_at", { ascending: false })
+          .limit(PREVIOUS_TURN_LOOKBACK)
+          .abortSignal(signal),
+      );
+      if (error) fail("read previous turn", error);
+      for (const row of Array.isArray(data) ? data : []) {
+        const agent = isObject(row) && isObject(row.meta) && isObject(row.meta.agent) ? row.meta.agent : null;
+        if (agent && typeof agent.kbMisses === "number" && Number.isInteger(agent.kbMisses) && agent.kbMisses >= 0) return agent.kbMisses;
+      }
+      return 0;
+    },
+
+    async recordKbGap(tenantId, { question, questionNorm, contactId }) {
+      const { data, error } = await run("record knowledge gap", (signal) =>
+        db.rpc("record_kb_gap", { p_tenant_id: tenantId, p_question: question, p_question_norm: questionNorm, p_summary: null, p_contact_id: contactId }).abortSignal(signal),
+      );
+      if (error) fail("record knowledge gap", error);
+      const row = parse(KbGapResult, data, "record knowledge gap")[0];
+      return { gapId: row.gap_id, askedCount: row.asked_count };
+    },
+
+    async openHandoff(tenantId, conversationId, trigger, priority) {
+      const open = await run("read open handoff", (signal) =>
+        db.from("handoffs").select("id").eq("tenant_id", tenantId).eq("conversation_id", conversationId).is("resolved_at", null).order("id").limit(1).abortSignal(signal),
+      );
+      if (open.error) fail("read open handoff", open.error);
+      if (Array.isArray(open.data) && open.data.length > 0) return { id: parse(HandoffSchema, open.data[0], "read open handoff").id, created: false };
+      const made = await run("open handoff", (signal) =>
+        db.from("handoffs").insert({ tenant_id: tenantId, conversation_id: conversationId, trigger, priority }).select("id").abortSignal(signal).single(),
+      );
+      if (made.error) fail("open handoff", made.error);
+      return { id: parse(HandoffSchema, made.data, "open handoff").id, created: true };
+    },
+
+    async setConversationMode(tenantId, conversationId, mode) {
+      const { data, error } = await run("switch chat to a person", (signal) =>
+        db.from("conversations").update({ mode }).eq("id", conversationId).eq("tenant_id", tenantId).eq("mode", "ai").select("id").abortSignal(signal),
+      );
+      if (error) fail("switch chat to a person", error);
+      return Array.isArray(data) && data.length > 0;
     },
 
     async getAgentMeta(tenantId, conversationId, messageId) {

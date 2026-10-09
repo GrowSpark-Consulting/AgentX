@@ -1,0 +1,227 @@
+import { describe, expect, it } from "vitest";
+import { fixedText } from "./fixed-texts";
+import { parseReplySettings } from "./persona";
+import { KB_MISSES_FOR_HANDOFF, planReply, type PlanInput } from "./plan";
+import type { Retrieval, UnderstandResult } from "./understand";
+
+// The table of outcomes: what the customer gets for every way the understanding step can end. Every row of the
+// table in plan.ts is a test here, and the three rules about consecutive misses are tested as sequences.
+
+const summary = (over: Partial<Extract<UnderstandResult, { status: "understood" }>["summary"]> = {}) => ({
+  intent: "question" as const,
+  language: "en" as const,
+  sentiment: "neutral" as const,
+  asksIfHuman: false,
+  confidence: 0.9,
+  hasQuestion: true,
+  fieldKeys: [] as string[],
+  ...over,
+});
+const understood = (retrieval: Retrieval, over: Parameters<typeof summary>[0] = {}): UnderstandResult => ({ status: "understood", summary: summary(over), retrieval });
+const found: Retrieval = { outcome: "found", chunks: [{ documentId: "d1", title: "Price list", content: "2BHK starts at ₹78 lakh.", similarity: 0.7 }] };
+
+const input = (over: Partial<PlanInput> = {}): PlanInput => ({
+  understood: understood(found),
+  question: "What is the price of a 2BHK?",
+  contactLanguage: null,
+  previousMisses: 0,
+  settings: parseReplySettings({}),
+  deadlineExceeded: false,
+  ...over,
+});
+
+describe("understood, and the knowledge base had the answer", () => {
+  it("is the model's answer from the facts, and the miss count goes back to 0", () => {
+    const plan = planReply(input({ previousMisses: 1 }));
+    expect(plan).toMatchObject({
+      case: "answered_from_kb",
+      kbMisses: 0,
+      reply: { mode: "model", action: { kind: "answer_and_ask", question: "What is the price of a 2BHK?", askFields: [] }, facts: ["Price list: 2BHK starts at ₹78 lakh."], language: "en" },
+    });
+    expect(plan.handoff).toBeUndefined();
+    expect(plan.gap).toBeUndefined();
+  });
+
+  it("gives every snippet as a fact, with its title when it has one", () => {
+    const plan = planReply(input({ understood: understood({ outcome: "found", chunks: [{ documentId: "a", title: null, content: "One.", similarity: 0.6 }, { documentId: "b", title: "T", content: "Two.", similarity: 0.5 }] }) }));
+    expect(plan.reply).toMatchObject({ facts: ["One.", "T: Two."] });
+  });
+});
+
+describe("understood, and the knowledge base had nothing (a miss)", () => {
+  const miss = understood({ outcome: "none" });
+
+  it("is the safe fallback, records the gap and counts the miss", () => {
+    expect(planReply(input({ understood: miss }))).toEqual({
+      case: "kb_miss",
+      reply: { mode: "fixed", text: "fallback", language: "en" },
+      gap: { question: "What is the price of a 2BHK?" },
+      kbMisses: 1,
+    });
+  });
+
+  it("does not record a gap when there is no question to record", () => {
+    expect(planReply(input({ understood: miss, question: null })).gap).toBeUndefined();
+    expect(planReply(input({ understood: miss, question: "   " })).gap).toBeUndefined();
+  });
+
+  it("is the handover on the second miss in a row in this chat, with the handover line and a kb_gap handoff", () => {
+    const plan = planReply(input({ understood: miss, previousMisses: 1 }));
+    expect(plan).toMatchObject({ case: "kb_miss_handoff", reply: { mode: "fixed", text: "handoff" }, handoff: { trigger: "kb_gap", priority: "normal" }, kbMisses: 0 });
+    expect(plan.gap).toEqual({ question: "What is the price of a 2BHK?" }); // the second miss is a gap too
+  });
+
+  it("is no handover when the business has switched the knowledge-gap handover off", () => {
+    const settings = parseReplySettings({ handoffTriggers: [{ key: "kb_gap", enabled: false }] });
+    const plan = planReply(input({ understood: miss, previousMisses: 1, settings }));
+    expect(plan).toMatchObject({ case: "kb_miss", reply: { mode: "fixed", text: "fallback" }, kbMisses: 2 });
+    expect(plan.handoff).toBeUndefined();
+  });
+
+  it("a chat a person hands back starts again from 0: the handover used the misses up, so the next miss is the first", () => {
+    const handedOver = planReply(input({ understood: miss, previousMisses: 1 }));
+    expect(handedOver.kbMisses).toBe(0);
+    const next = planReply(input({ understood: miss, previousMisses: handedOver.kbMisses }));
+    expect(next.handoff).toBeUndefined();
+    expect(next.kbMisses).toBe(1);
+  });
+
+  it("does not bank misses while the trigger is off: turned on later, it still takes two in a row", () => {
+    const off = parseReplySettings({ handoffTriggers: [{ key: "kb_gap", enabled: false }] });
+    let misses = 0;
+    for (let i = 0; i < 5; i++) misses = planReply(input({ understood: miss, previousMisses: misses, settings: off })).kbMisses;
+    expect(misses).toBe(2); // never above the threshold
+    const on = planReply(input({ understood: miss, previousMisses: 0 })); // after an answered turn: back to 0, then one miss
+    expect(on.handoff).toBeUndefined();
+  });
+
+  it("is the handover from the threshold on, however many misses came before", () => {
+    expect(KB_MISSES_FOR_HANDOFF).toBe(2);
+    expect(planReply(input({ understood: miss, previousMisses: 5 })).handoff?.trigger).toBe("kb_gap");
+  });
+});
+
+describe("the three rules about consecutive misses, as a conversation", () => {
+  /** Runs turns through the plan, carrying the miss count like the pipeline does (it keeps it on the chat's messages). */
+  function chat(turns: Retrieval[]) {
+    let misses = 0;
+    return turns.map((retrieval) => {
+      const plan = planReply(input({ understood: understood(retrieval), previousMisses: misses }));
+      misses = plan.kbMisses;
+      return plan;
+    });
+  }
+  const none: Retrieval = { outcome: "none" };
+
+  it("the same question from two different customers is no handover: each chat starts from 0", () => {
+    const first = chat([none]);
+    const second = chat([none]); // another customer, another chat: its own count, whatever the business-wide gap count says
+    expect(first[0].handoff).toBeUndefined();
+    expect(second[0].handoff).toBeUndefined();
+    expect(second[0].reply).toMatchObject({ mode: "fixed", text: "fallback" });
+  });
+
+  it("two misses in a row in one chat is a handover", () => {
+    const [one, two] = chat([none, none]);
+    expect(one.handoff).toBeUndefined();
+    expect(two.handoff).toMatchObject({ trigger: "kb_gap" });
+  });
+
+  it("a miss, an answered turn, then a miss is no handover", () => {
+    const [a, b, c] = chat([none, found, none]);
+    expect(a.kbMisses).toBe(1);
+    expect(b.kbMisses).toBe(0);
+    expect(c.kbMisses).toBe(1);
+    expect(c.handoff).toBeUndefined();
+  });
+
+  it("a greeting between two misses is an answered turn too", () => {
+    const [, greeting, last] = chat([none, { outcome: "skipped" }, none]);
+    expect(greeting.kbMisses).toBe(0);
+    expect(last.handoff).toBeUndefined();
+  });
+
+  it("a search outage between two misses is neither a miss nor an answer: the count carries", () => {
+    const [, outage, last] = chat([none, { outcome: "unavailable" }, none]);
+    expect(outage.kbMisses).toBe(1);
+    expect(last.handoff).toMatchObject({ trigger: "kb_gap" });
+  });
+
+  it("a clarifying question or an outage of the model does not reset it either", () => {
+    let misses = 1;
+    for (const understoodResult of [{ status: "fallback", reason: "invalid_output" }, { status: "model_unavailable" }] as UnderstandResult[]) {
+      misses = planReply(input({ understood: understoodResult, previousMisses: misses })).kbMisses;
+      expect(misses).toBe(1);
+    }
+  });
+});
+
+describe("understood, and the search could not run", () => {
+  it("is the safe fallback with no gap and no handover (an outage is not a gap in the knowledge base)", () => {
+    const plan = planReply(input({ understood: understood({ outcome: "unavailable" }), previousMisses: 1 }));
+    expect(plan).toEqual({ case: "kb_unavailable", reply: { mode: "fixed", text: "fallback", language: "en" }, kbMisses: 1 });
+  });
+});
+
+describe("understood, and there was nothing to look up", () => {
+  it("is the model's reply with no facts (a greeting, details given, a booking word), and the count goes back to 0", () => {
+    const plan = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), question: null, previousMisses: 1 }));
+    expect(plan).toMatchObject({ case: "nothing_to_look_up", kbMisses: 0, reply: { mode: "model", action: { kind: "answer_and_ask", question: "" }, facts: [] } });
+  });
+});
+
+describe("understood, and off topic", () => {
+  it("is the model's polite decline, with no facts", () => {
+    const plan = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "off_topic" }) }));
+    expect(plan).toMatchObject({ case: "off_topic", kbMisses: 0, reply: { mode: "model", action: { kind: "decline_off_topic" }, facts: [] } });
+  });
+});
+
+describe("understood, and the message is about leaving", () => {
+  it("is the STOP hint, a fixed line, in the customer's language, and nothing more", () => {
+    const plan = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "opt_out", language: "ta-en" }) }));
+    expect(plan).toEqual({ case: "opt_out_hint", reply: { mode: "fixed", text: "stop_hint", language: "ta-en" }, kbMisses: 0 });
+    expect(fixedText("stop_hint", "ta-en")).toContain("STOP");
+  });
+});
+
+describe("the step did not understand", () => {
+  it.each(["no_text", "invalid_output", "model_declined"] as const)("%s is a clarifying question", (reason) => {
+    expect(planReply(input({ understood: { status: "fallback", reason }, contactLanguage: "ta" }))).toEqual({
+      case: `clarify_${reason}`,
+      reply: { mode: "fixed", text: "clarify", language: "ta" },
+      kbMisses: 0,
+    });
+  });
+
+  it("the language model could not be reached is the safe fallback", () => {
+    expect(planReply(input({ understood: { status: "model_unavailable" } }))).toEqual({ case: "model_unavailable", reply: { mode: "fixed", text: "fallback", language: "en" }, kbMisses: 0 });
+  });
+
+  it("no usable pack is the safe fallback and a handoff, so a person looks at it", () => {
+    expect(planReply(input({ understood: { status: "no_pack" } }))).toEqual({
+      case: "no_pack",
+      reply: { mode: "fixed", text: "fallback", language: "en" },
+      handoff: { trigger: "stuck", priority: "normal" },
+      kbMisses: 0,
+    });
+  });
+});
+
+describe("the turn's time ran out", () => {
+  it("is the safe fallback, whatever else the step found", () => {
+    for (const result of [understood(found), understood({ outcome: "none" }), understood({ outcome: "skipped" }), { status: "model_unavailable" } as UnderstandResult]) {
+      const plan = planReply(input({ understood: result, deadlineExceeded: true, previousMisses: 1 }));
+      expect(plan).toEqual({ case: "deadline", reply: { mode: "fixed", text: "fallback", language: "en" }, kbMisses: 1 });
+    }
+  });
+});
+
+describe("the language of a fixed line", () => {
+  it("is the message's language, else the contact's, else English", () => {
+    expect(planReply(input({ understood: understood({ outcome: "none" }, { language: "hi" }), contactLanguage: "ta" })).reply).toMatchObject({ language: "hi" });
+    expect(planReply(input({ understood: understood({ outcome: "none" }, { language: "other" }), contactLanguage: "ta" })).reply).toMatchObject({ language: "ta" });
+    expect(planReply(input({ understood: understood({ outcome: "none" }, { language: "ml" }), contactLanguage: null })).reply).toMatchObject({ language: "en" });
+    expect(planReply(input({ understood: { status: "model_unavailable" }, contactLanguage: "ta" })).reply).toMatchObject({ language: "ta" });
+  });
+});
