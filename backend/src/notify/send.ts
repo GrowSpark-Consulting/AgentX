@@ -22,6 +22,8 @@ export type NotifyPayload = {
   conversationId?: string;
   /** test_message only: the E.164 number staff typed. */
   to?: string;
+  /** staff_alert only: the member whose alert number (memberships.whatsapp_phone) receives it. */
+  staffUserId?: string;
   /** Free-text body, used inside the 24-hour window. */
   text?: string;
   /** Template variables in {{1}}… order, used outside the window. */
@@ -75,9 +77,12 @@ function senderFailure(err: unknown, message: string): SendOutcome {
 
 export async function send(tenantId: string, kind: NotificationKind, payload: NotifyPayload): Promise<SendOutcome> {
   const kindConfig = KINDS[kind];
-  if (kindConfig.audience === "number" ? !payload.to || !payload.text : !payload.conversationId) {
-    throw new Error(`notify.send(${kind}): ${kindConfig.audience === "number" ? "to and text" : "conversationId"} required`);
-  }
+  const missing = {
+    number: !payload.to || !payload.text ? "to and text" : null,
+    staff: !payload.staffUserId ? "staffUserId" : null,
+    conversation: !payload.conversationId ? "conversationId" : null,
+  }[kindConfig.audience];
+  if (missing) throw new Error(`notify.send(${kind}): ${missing} required`);
 
   if (kindConfig.feature && !(await isEnabled(tenantId, kindConfig.feature))) {
     return { status: "skipped", reason: "feature_off" };
@@ -89,13 +94,18 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
   }
 
   const db = supabaseAdmin();
-  const targetResult = await db.rpc("notify_target", {
-    p_tenant_id: tenantId,
-    p_conversation_id: payload.conversationId ?? null,
-    p_to: payload.to ?? null,
-  });
+  const targetResult =
+    kindConfig.audience === "staff"
+      ? await db.rpc("notify_staff_target", { p_tenant_id: tenantId, p_user_id: payload.staffUserId })
+      : await db.rpc("notify_target", {
+          p_tenant_id: tenantId,
+          p_conversation_id: payload.conversationId ?? null,
+          p_to: payload.to ?? null,
+        });
   if (targetResult.error) {
-    if (targetResult.error.code === "PA404") return failed("not_found", "That conversation was not found.");
+    if (targetResult.error.code === "PA404") {
+      return failed("not_found", kindConfig.audience === "staff" ? "That person has no WhatsApp number for alerts." : "That conversation was not found.");
+    }
     if (targetResult.error.code === "PA409") {
       return failed("whatsapp_not_connected", "This business has no connected WhatsApp number, so the message was not sent.");
     }
