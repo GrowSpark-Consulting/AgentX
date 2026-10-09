@@ -93,6 +93,36 @@ describe("customer messages", () => {
       status: "skipped",
       reason: "opted_out",
     });
+    for (const kind of ["staff_reply", "booking_confirmation", "reminder_24h"] as const) {
+      await expect(send(TENANT, kind, { conversationId: CONVERSATION, text: "Hi", templateParams: [] })).resolves.toMatchObject({
+        reason: "opted_out",
+      });
+    }
+  });
+
+  it("sends a system notice even after STOP, free and without a toggle", async () => {
+    rpcHandlers.notify_target = () => ok([target({ opted_out: true })]);
+    const outcome = await send(TENANT, "system_notice", { conversationId: CONVERSATION, text: "You won't get more messages from us." });
+    expect(outcome).toMatchObject({ status: "sent", creditsCharged: 0, usedTemplate: false });
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(calls("spend_credits")).toHaveLength(0);
+    expect(calls("notify_record")[0]).toMatchObject({ p_sender: "system", p_actor: "system", p_kind: "system_notice", p_credits: 0 });
+  });
+
+  it("sends the holding message when the business is out of credits (it costs nothing)", async () => {
+    rpcHandlers.spend_credits = () => ok(false);
+    const outcome = await send(TENANT, "system_notice", { conversationId: CONVERSATION, text: "We'll get back to you shortly." });
+    expect(outcome).toMatchObject({ status: "sent", creditsCharged: 0 });
+    expect(calls("spend_credits")).toHaveLength(0);
+  });
+
+  it("skips a system notice outside the 24-hour window (it has no template)", async () => {
+    rpcHandlers.notify_target = () => ok([target({ last_customer_msg_at: null })]);
+    await expect(send(TENANT, "system_notice", { conversationId: CONVERSATION, text: "Hi" })).resolves.toEqual({
+      status: "skipped",
+      reason: "outside_window",
+    });
+    expect(sender.sendText).not.toHaveBeenCalled();
   });
 
   it("charges an AI reply 1 credit, with the message id as ref_id", async () => {
