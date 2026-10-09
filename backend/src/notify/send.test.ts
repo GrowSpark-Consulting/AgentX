@@ -27,13 +27,14 @@ const target = (over: Record<string, unknown> = {}) => ({
 const ok = (data: unknown): RpcResult => ({ data, error: null });
 const calls = (fn: string) => rpc.mock.calls.filter(([name]) => name === fn).map(([, args]) => args);
 
-const sender = { sendText: vi.fn(), sendTemplate: vi.fn() };
+const sender = { sendText: vi.fn(), sendTemplate: vi.fn(), sendInteractive: vi.fn() };
 
 beforeEach(() => {
   rpc.mockClear();
   isEnabled.mockReset().mockResolvedValue(true);
   sender.sendText.mockReset().mockResolvedValue({ providerMsgId: "wamid.text" });
   sender.sendTemplate.mockReset().mockResolvedValue({ providerMsgId: "wamid.tpl" });
+  sender.sendInteractive.mockReset().mockResolvedValue({ providerMsgId: "wamid.buttons" });
   registerSender(async () => sender);
   rpcHandlers.notify_target = () => ok([target()]);
   rpcHandlers.notify_staff_target = () => ok([target({ to_phone: "+919800011111" })]);
@@ -78,6 +79,59 @@ describe("staff_alert", () => {
       status: "failed",
       error: { code: "not_found", message: "That person has no WhatsApp number for alerts." },
     });
+  });
+});
+
+describe("reply buttons and lists", () => {
+  const buttons = {
+    type: "buttons" as const,
+    body: "Your visit is tomorrow at 5 pm.",
+    buttons: [
+      { id: "booking:b1:confirm", title: "Confirm" },
+      { id: "booking:b1:cancel", title: "Cancel" },
+    ],
+  };
+  const reminder = { conversationId: CONVERSATION, interactive: buttons, templateParams: ["5 pm"] };
+
+  it("go out inside the window instead of text, cost what free text costs, and the inbox sees the choices", async () => {
+    const outcome = await send(TENANT, "reminder_24h", { ...reminder, text: "not sent: the buttons replace it" });
+    expect(outcome).toMatchObject({ status: "sent", providerMsgId: "wamid.buttons", creditsCharged: 1, usedTemplate: false });
+    expect(sender.sendInteractive).toHaveBeenCalledWith("+919840012345", buttons);
+    expect(sender.sendText).not.toHaveBeenCalled();
+    expect(calls("spend_credits")[0]).toMatchObject({ p_amount: 1, p_reason: "template_utility" });
+    expect(calls("notify_record")[0]).toMatchObject({ p_body: "Your visit is tomorrow at 5 pm.\n\n[Confirm] [Cancel]", p_template_name: null });
+  });
+
+  it("give way to the approved template outside the window", async () => {
+    rpcHandlers.notify_target = () => ok([target({ last_customer_msg_at: null })]);
+    await expect(send(TENANT, "reminder_24h", reminder)).resolves.toMatchObject({ status: "sent", usedTemplate: true });
+    expect(sender.sendInteractive).not.toHaveBeenCalled();
+    expect(sender.sendTemplate).toHaveBeenCalledWith("+919840012345", "reminder_24h_v2", "en", ["5 pm"]);
+  });
+
+  it("fall back to the template, refunding first, when WhatsApp says the window has closed", async () => {
+    sender.sendInteractive.mockRejectedValueOnce(new OutsideWindowError());
+    await expect(send(TENANT, "reminder_24h", reminder)).resolves.toMatchObject({ status: "sent", usedTemplate: true });
+    expect(calls("refund_credits")).toHaveLength(1);
+    expect(sender.sendInteractive).toHaveBeenCalledTimes(1);
+    expect(sender.sendTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it("are refused over WhatsApp's limits before anything is read or spent", async () => {
+    const fourButtons = { ...buttons, buttons: [1, 2, 3, 4].map((i) => ({ id: `b${i}`, title: `B${i}` })) };
+    await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, interactive: fourButtons })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "validation_failed" },
+    });
+    expect(rpc).not.toHaveBeenCalled();
+    expect(sender.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  it("carry the AI's slot list, recorded with every row", async () => {
+    const list = { type: "list" as const, body: "Which time suits you?", button: "See times", sections: [{ rows: [{ id: "slot:1", title: "Fri 9 Oct, 5:00 pm" }] }] };
+    await expect(send(TENANT, "ai_reply", { conversationId: CONVERSATION, interactive: list })).resolves.toMatchObject({ status: "sent", creditsCharged: 1 });
+    expect(sender.sendInteractive).toHaveBeenCalledWith("+919840012345", list);
+    expect(calls("notify_record")[0]).toMatchObject({ p_sender: "ai", p_body: "Which time suits you?\n\n• Fri 9 Oct, 5:00 pm" });
   });
 });
 

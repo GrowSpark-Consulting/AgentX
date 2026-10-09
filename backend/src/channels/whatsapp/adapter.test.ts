@@ -4,6 +4,7 @@ import { connectionSecretContext, encryptSecret } from "../../lib/crypto";
 import {
   ADAPTER_MESSAGES,
   markRead,
+  sendInteractive,
   sendTemplate,
   sendText,
   type AdapterDeps,
@@ -459,6 +460,103 @@ describe("sendTemplate", () => {
       await expect(sendTemplate(bad as never, bad as never, bad as never, deps(f))).resolves.toMatchObject({ ok: false });
     }
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe("sendInteractive", () => {
+  const buttons = {
+    type: "buttons" as const,
+    header: "Site visit",
+    body: "Your visit is tomorrow at 5:00 pm.",
+    footer: "Skyline Homes",
+    buttons: [
+      { id: "booking:b1:confirm", title: "Confirm" },
+      { id: "booking:b1:cancel", title: "Cancel" },
+    ],
+  };
+  const list = {
+    type: "list" as const,
+    body: "Which time suits you?",
+    button: "See times",
+    sections: [
+      { title: "Friday", rows: [{ id: "slot:1", title: "Fri 9 Oct, 5:00 pm", description: "With Priya" }] },
+      { title: "Saturday", rows: [{ id: "slot:2", title: "Sat 10 Oct, 11:00 am" }] },
+    ],
+  };
+
+  it("sends reply buttons as Meta's interactive button message and returns the wamid", async () => {
+    const f = fakeFetch(async () => okSend());
+    const result = await sendInteractive(connection(), "+910000000101", buttons, deps(f));
+
+    expect(result).toEqual({ ok: true, value: { providerMsgId: "wamid.SYNTHETIC_OUT_0001" } });
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe(URL_EXPECTED);
+    expect(init?.headers).toEqual({ Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" });
+    expect(JSON.parse(init?.body as string)).toEqual({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: "+910000000101",
+      type: "interactive",
+      interactive: {
+        type: "button",
+        header: { type: "text", text: "Site visit" },
+        body: { text: "Your visit is tomorrow at 5:00 pm." },
+        footer: { text: "Skyline Homes" },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "booking:b1:confirm", title: "Confirm" } },
+            { type: "reply", reply: { id: "booking:b1:cancel", title: "Cancel" } },
+          ],
+        },
+      },
+    });
+  });
+
+  it("sends a list with its sections, leaving out what was not given", async () => {
+    const f = fakeFetch(async () => okSend());
+    expect((await sendInteractive(connection(), "910000000101", list, deps(f))).ok).toBe(true);
+    const sent = JSON.parse(f.mock.calls[0][1]?.body as string);
+    expect(sent.to).toBe("+910000000101");
+    expect(sent.interactive).toEqual({
+      type: "list",
+      body: { text: "Which time suits you?" },
+      action: {
+        button: "See times",
+        sections: [
+          { title: "Friday", rows: [{ id: "slot:1", title: "Fri 9 Oct, 5:00 pm", description: "With Priya" }] },
+          { title: "Saturday", rows: [{ id: "slot:2", title: "Sat 10 Oct, 11:00 am" }] },
+        ],
+      },
+    });
+  });
+
+  it.each([
+    ["a number that is not E.164", "abc", buttons],
+    ["four buttons", "+910000000101", { ...buttons, buttons: [1, 2, 3, 4].map((i) => ({ id: `b${i}`, title: `B${i}` })) }],
+    ["a button title over 20 characters", "+910000000101", { ...buttons, buttons: [{ id: "b", title: "t".repeat(21) }] }],
+    ["eleven list rows", "+910000000101", { ...list, sections: [{ rows: Array.from({ length: 11 }, (_, i) => ({ id: `r${i}`, title: `Row ${i}` })) }] }],
+    ["an empty body", "+910000000101", { ...buttons, body: "" }],
+  ])("rejects %s before any network call", async (_why, to, message) => {
+    const f = fakeFetch(async () => okSend());
+    const error = expectFailure(await sendInteractive(connection(), to, message as never, deps(f)));
+    expect(error).toMatchObject({ code: "validation_failed", retryable: false, outcomeUnknown: false });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("maps Meta's 131047 (window closed) to outside_window, like free text", async () => {
+    const f = fakeFetch(async () => reply(400, metaError(131047)));
+    expect(expectFailure(await sendInteractive(connection(), "+910000000101", buttons, deps(f)))).toMatchObject({ code: "outside_window" });
+  });
+
+  it("keeps the token in the Authorization header only, logs nothing and never throws on junk", async () => {
+    const f = fakeFetch(async () => okSend());
+    const result = await sendInteractive(connection(), "+910000000101", list, deps(f));
+    expect(String(f.mock.calls[0][1]?.body)).not.toContain(TOKEN);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    for (const bad of [undefined, null, {}, [], "text", 42]) {
+      await expect(sendInteractive(bad as never, bad as never, bad as never, deps(f))).resolves.toMatchObject({ ok: false });
+    }
+    expect(logs).toEqual([]);
   });
 });
 
