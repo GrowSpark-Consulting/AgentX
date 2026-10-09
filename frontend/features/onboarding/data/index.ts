@@ -377,14 +377,8 @@ export interface CopyItem {
 }
 
 export const PARTNER_COPY: CopyItem[] = [
-  // Spark Agent's real portfolio id isn't configured anywhere yet, so none is shown.
+  // Filled from the API (META_PARTNER_BUSINESS_ID) when it is configured; null shows "not available".
   { label: "Spark Agent Business Portfolio ID", value: null },
-];
-
-export const OWN_APP_COPY: CopyItem[] = [
-  // Given out by our team when a manual connection is set up (handover: manual_byo is admin-only).
-  { label: "Webhook URL", value: null },
-  { label: "Verify token", value: null },
 ];
 
 export interface PopupStep {

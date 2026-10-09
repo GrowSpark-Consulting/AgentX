@@ -5,14 +5,17 @@ import { createTrialTenant } from "../billing/trial";
 import { googleConnectUrl, handleGoogleCallback } from "../booking/google-calendar";
 import { sendTestMessage } from "../channels/whatsapp/test-message";
 import { handleWhatsAppWebhook } from "../channels/whatsapp/inbound";
-import { handleWhatsAppVerification } from "../channels/whatsapp/verify-challenge";
+import { connectManual } from "../channels/whatsapp/connect/manual";
+import { getWebhookConfig } from "../channels/whatsapp/connect/webhook-token";
+import { handleWhatsAppHandshake } from "../channels/whatsapp/verify-challenge";
 import { setConversationMode } from "../conversations/mode";
 import { sendStaffReply } from "../conversations/staff-reply";
 import { deleteDocument, KB_UPLOAD_MAX_BODY_BYTES, uploadDocument } from "../kb/documents";
 import { answerGap, createFaq, deleteFaq, dismissGap, listGaps, updateFaq } from "../kb/faqs";
-import { resolveTenant } from "../lib/tenant";
+import { serverEnv } from "../lib/env";
+import { requireRole, resolveTenant } from "../lib/tenant";
 import { createTemplate } from "../notify/templates";
-import { authenticate, readJson, requireTenant, tenantRoute, type UserClientFactory } from "./auth";
+import { adminRoute, authenticate, readJson, requireTenant, tenantRoute, type UserClientFactory } from "./auth";
 
 // Every HTTP endpoint of the API. A route only parses the request and calls a backend service;
 // business logic stays in the modules it imports.
@@ -122,6 +125,22 @@ const kbDismissGap: RouteHandler = async (request, deps, params) => {
   return new Response(null, { status: 204 });
 };
 
+// → { webhookUrl, verifyToken, partnerBusinessId }: what a client pastes into their own Meta app. Owner or admin. The
+// verify token belongs to this business only; the platform-wide token is never returned.
+const whatsappWebhookConfig = tenantRoute(({ context }) => getWebhookConfig(context, serverEnv()));
+// { wabaId, phoneNumberId, token, tokenType, appSecret, ... } → 201 connection. Owner or admin; the business is the
+// caller's own (a tenantId in the body is overwritten). The secrets are encrypted here and never returned.
+const whatsappManualConnect = tenantRoute(
+  ({ context, body }) => {
+    requireRole(context, ["owner", "admin"], "connect WhatsApp");
+    const input = typeof body === "object" && body !== null ? body : {};
+    return connectManual({ ...input, tenantId: context.tenant.id }, context.user.id);
+  },
+  { status: 201 },
+);
+// { tenantId, ... } → 201 connection. Platform admin only (docs/whatsapp-connection-contract.md).
+const adminManualConnect = adminRoute(({ admin, body }) => connectManual(body, admin.actor), { status: 201 });
+
 export const ROUTES: readonly Route[] = [
   { path: "/api/health", methods: { GET: health } },
   { path: "/api/templates", browser: true, methods: { POST: (request, deps) => templates(request, deps.userClient) } },
@@ -138,6 +157,9 @@ export const ROUTES: readonly Route[] = [
   { path: "/api/kb/gaps", browser: true, methods: { GET: (request, deps) => kbListGaps(request, deps.userClient) } },
   { path: "/api/kb/gaps/:id/answer", browser: true, methods: { POST: kbAnswerGap } },
   { path: "/api/kb/gaps/:id/dismiss", browser: true, methods: { POST: kbDismissGap } },
+  { path: "/api/whatsapp/webhook-config", browser: true, methods: { GET: (request, deps) => whatsappWebhookConfig(request, deps.userClient) } },
+  { path: "/api/whatsapp/manual", browser: true, methods: { POST: (request, deps) => whatsappManualConnect(request, deps.userClient) } },
+  { path: "/api/admin/whatsapp/manual", browser: true, methods: { POST: (request, deps) => adminManualConnect(request, deps.userClient) } },
   { path: "/api/calendar/google/connect", browser: true, methods: { GET: googleConnect } },
   // Google sends the browser here after consent (no login: the signed state says who asked). Every answer
   // is a redirect back to the dashboard. The code and state are in the query string, which is never logged.
@@ -147,7 +169,7 @@ export const ROUTES: readonly Route[] = [
     // signature is verified in the handler). Server to server: not `browser`, so no CORS; default body limit.
     path: "/api/webhooks/whatsapp",
     methods: {
-      GET: (request) => handleWhatsAppVerification(request),
+      GET: (request) => handleWhatsAppHandshake(request),
       POST: (request) => handleWhatsAppWebhook(request),
     },
   },
