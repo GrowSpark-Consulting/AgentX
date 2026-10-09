@@ -162,6 +162,7 @@ otherwise the approved `staff_alert_vN` template: `{{1}}` the one-line headline,
 | `credits_exhausted` | handoff trigger `credits_exhausted` | "{business} is out of credits, so the assistant has stopped replying." | `/dashboard/billing` |
 | `setup_problem` | handoff trigger `stuck` | "The assistant couldn't continue the chat with {name}." | `/dashboard/inbox?conversation=<id>` |
 | `handoff_waiting` | `handoff-sla`: no one picked the chat up within the SLA; **owners only** | "{name} has waited {N} minutes and no one has picked up the chat yet." | `/dashboard/inbox?conversation=<id>` |
+| `opted_out` | handoff trigger `opt_out` (the customer sent STOP; Dev 1's #69) | "{name} sent STOP, so the assistant won't message them again. Call them if you need to." | `/dashboard/inbox?conversation=<id>` |
 | `visit_outcome` | `post-visit`, after the visit: to the booked staff member if they have an alert number, else owners and admins | "How did the {what} with {name} go? Update the lead so follow-ups stay right." | `/dashboard/inbox?conversation=<id>` |
 | `low_rating` | `post-visit`: the customer rated the visit 1–3; **owners only** | "{name} rated their {what} {n} out of 5." | `/dashboard/inbox?conversation=<id>` |
 

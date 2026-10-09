@@ -83,6 +83,11 @@ describe("staffAlertContent", () => {
     expect(one.headline).toContain("waited 1 minute and");
   });
 
+  it("tells staff a customer opted out, so they call instead of messaging", async () => {
+    const outcome = await staffAlertContent(TENANT, { kind: "opted_out", conversationId: CONVERSATION }, deps());
+    expect(outcome.headline).toBe("Asha Raman sent STOP, so the assistant won't message them again. Call them if you need to.");
+  });
+
   it("asks staff how a visit went, and tells the owner about a low rating", async () => {
     const outcome = await staffAlertContent(TENANT, { kind: "visit_outcome", conversationId: CONVERSATION, what: "site visit" }, deps());
     expect(outcome.headline).toBe("How did the site visit with Asha Raman go? Update the lead so follow-ups stay right.");

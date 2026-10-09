@@ -31,6 +31,7 @@ describe("alertKindFor", () => {
   it("maps the handoff trigger to the alert", () => {
     expect(alertKindFor("credits_exhausted")).toBe("credits_exhausted");
     expect(alertKindFor("stuck")).toBe("setup_problem");
+    expect(alertKindFor("opt_out")).toBe("opted_out");
     for (const trigger of ["kb_gap", "asked_human", "complaint"]) expect(alertKindFor(trigger)).toBe("handoff_opened");
   });
 });

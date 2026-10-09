@@ -11,7 +11,14 @@ import { send, type SendOutcome } from "./send";
 // window, and the staff_alert_vN template's {{1}} and {{2}} outside it. The wording is a placeholder until
 // Raja's arrives. Who gets which alert comes with the Team screen; until then owners and admins get every one.
 
-export type StaffAlertKind = "handoff_opened" | "handoff_waiting" | "credits_exhausted" | "setup_problem" | "visit_outcome" | "low_rating";
+export type StaffAlertKind =
+  | "handoff_opened"
+  | "handoff_waiting"
+  | "credits_exhausted"
+  | "setup_problem"
+  | "opted_out"
+  | "visit_outcome"
+  | "low_rating";
 
 export interface StaffAlert {
   kind: StaffAlertKind;
@@ -92,6 +99,9 @@ export async function staffAlertContent(
   const who = await customerLabel(tenantId, alert.conversationId, deps.db);
   const link = alert.conversationId ? `${app}/dashboard/inbox?conversation=${alert.conversationId}` : `${app}/dashboard/inbox`;
   const what = oneLine(alert.what ?? "visit", 40);
+  if (alert.kind === "opted_out") {
+    return { headline: `${who} sent STOP, so the assistant won't message them again. Call them if you need to.`, link };
+  }
   if (alert.kind === "visit_outcome") {
     return { headline: `How did the ${what} with ${who} go? Update the lead so follow-ups stay right.`, link };
   }
