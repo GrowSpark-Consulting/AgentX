@@ -201,6 +201,11 @@ sending, charging or checking toggles again. A message that fell back to the tem
 `<key>#template`, and a repeat finds that one too. A send whose outcome is unknown wrote no row, so it is still never
 retried automatically (`outcomeUnknown`).
 
+**Template catalogue (built, 9 Oct; `backend/src/notify/template-catalogue.ts`, review sheet `docs/templates.md`):**
+every template the jobs send outside the window, English and a Tamil draft, with variables, examples and quick replies;
+`templateComponents()` gives Meta's components for Dev 1's submission. The English waits for Raja's wording and the
+Tamil for a native speaker's review before anything is submitted.
+
 **Reply buttons and lists (built, 9 Oct; `backend/src/notify/interactive.ts`):** any kind can pass
 `interactive` instead of `text`. Inside the 24-hour window it goes as WhatsApp reply buttons or a list and costs
 what the kind's free text costs; outside the window the kind's approved template goes (its own quick-reply buttons
