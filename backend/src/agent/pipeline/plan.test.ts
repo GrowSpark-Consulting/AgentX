@@ -231,6 +231,26 @@ describe("understood, and the customer may be leaving but it is not clear how", 
     expect(result).toEqual({ case: "exit_question_talk", reply: { mode: "fixed", text: "handoff", language: "en" }, handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0 });
   });
 
+  it('"1" wins over what the model made of it: not asked twice, not opted out after choosing the team', () => {
+    for (const over of [{ intent: "unclear_exit" as const }, { intent: "opt_out" as const, confidence: 0.5 }, { intent: "opt_out" as const, confidence: 0.99 }]) {
+      const result = planReply(input({ understood: understood({ outcome: "skipped" }, over), exitQuestionPending: true, customerSaidOne: true }));
+      expect(result.case, JSON.stringify(over)).toBe("exit_question_talk");
+      expect(result.optOut).toBeUndefined();
+    }
+  });
+
+  it("the question is asked once: a second unclear message is answered like any other", () => {
+    for (const over of [{ intent: "unclear_exit" as const }, { intent: "opt_out" as const, confidence: 0.5 }]) {
+      const result = planReply(input({ understood: understood({ outcome: "skipped" }, over), exitQuestionPending: true }));
+      expect(result.case, JSON.stringify(over)).not.toBe("exit_unclear");
+      expect(result.reply.mode).toBe("model");
+    }
+  });
+
+  it("a clear opt-out after the question is still an opt-out", () => {
+    expect(planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "opt_out", confidence: 0.95 }), exitQuestionPending: true })).optOut).toEqual({ notInterested: false });
+  });
+
   it('"1" when nothing was asked, or anything else after the question, is an ordinary message', () => {
     expect(planReply(input({ understood: understood(found), customerSaidOne: true })).case).toBe("answered_from_kb");
     expect(planReply(input({ understood: understood(found), exitQuestionPending: true, customerSaidOne: false })).case).toBe("answered_from_kb");

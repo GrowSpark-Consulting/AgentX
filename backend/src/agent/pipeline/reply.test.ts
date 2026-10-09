@@ -902,6 +902,16 @@ describe("a clear request to stop that the model read (model_intent)", () => {
     expect(w.consentLogs).toHaveLength(1);
   });
 
+  it("a handover that fails still marks the messages answered and fails the step, so the retry opens it without a second confirmation", async () => {
+    const w = world();
+    w.state.failNext.add("openHandoff");
+    await expect(replyTurn(runner().step, w.turn, leaving(), Date.now(), w.deps)).rejects.toThrow(/openHandoff failed/);
+    expect(w.audits.filter((a) => a.action === "message.answered")).toHaveLength(1);
+    await replyTurn(runner().step, w.turn, leaving(), Date.now(), w.deps);
+    expect(w.handoffs).toHaveLength(1);
+    expect(w.systemNotice.send).toHaveBeenCalledOnce();
+  });
+
   it("below the threshold nobody is opted out: the customer is asked once, with the STOP hint and the two choices", async () => {
     const w = world();
     const out = await replyTurn(runner().step, w.turn, leaving({ confidence: 0.79 }), Date.now(), w.deps);

@@ -104,5 +104,11 @@ Mine (check these):
   they are final test data.
 - Real-model accuracy of the intents is not proven by these tests (the model is mocked): the conversation tests' `--live` mode
   (next PR) shows what the real model says for each of Raja's phrases.
+- **From the review, left as they are (tell me if you want them changed):** (a) if a business switches `asked_human` off, the
+  exit question still says "Reply 1", and a "1" is then answered like an ordinary message; (b) "1" counts only right after the
+  question, but a long human-mode stretch in between is not detected (it also needs the customer to send exactly "1");
+  (c) the pack's own `handoffTriggers` list is not consulted, only the business's setting (all three packs list both
+  triggers); (d) a burst like "stop" then "actually book me" is read as one message, and a clear opt-out cannot be undone
+  by message; (e) an angry customer is handed over even when the intent is unrelated, as Raja decided.
 - If a chat already has an open handover (for example `kb_gap`), an opt-out reuses it: the opt-out is on the contact and in
   `consent_logs`, but there is no second alert.

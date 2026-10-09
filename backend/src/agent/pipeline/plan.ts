@@ -96,14 +96,18 @@ export function planReply(input: PlanInput): Plan {
   }
 
   const { summary, retrieval } = understood;
+  // The customer answered our question with "1": a person takes over. Checked first: the model's reading of a bare "1" is not
+  // under our control, and the customer must not be asked twice or opted out after choosing the team.
+  if (input.exitQuestionPending && input.customerSaidOne && settings.askedHumanHandoffEnabled) {
+    return { reply: fixed("handoff", language), handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0, case: "exit_question_talk" };
+  }
   // Leaving, or not sure how (Raja, 9 Oct). Code decides; the model only reported the intent and how sure it was.
   if (summary.intent === "opt_out" && summary.confidence >= OPT_OUT_MIN_CONFIDENCE) {
     return { reply: { mode: "none" }, optOut: { notInterested: summary.notInterested }, kbMisses: 0, case: summary.notInterested ? "opt_out_not_interested" : "opt_out_intent" };
   }
-  if (summary.intent === "opt_out" || summary.intent === "unclear_exit") return { reply: fixed("exit_question", language), kbMisses: carry, case: "exit_unclear" };
-  // The customer answered our question with "1": a person takes over.
-  if (input.exitQuestionPending && input.customerSaidOne && settings.askedHumanHandoffEnabled) {
-    return { reply: fixed("handoff", language), handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0, case: "exit_question_talk" };
+  // Asked once: if the last turn already asked, a second unclear message is answered like any other (never the same question twice).
+  if ((summary.intent === "opt_out" || summary.intent === "unclear_exit") && !input.exitQuestionPending) {
+    return { reply: fixed("exit_question", language), kbMisses: carry, case: "exit_unclear" };
   }
   // Wants a person, is unhappy or angry: the chat goes to staff. A business can switch each of these off, and then the
   // message is answered like any other.

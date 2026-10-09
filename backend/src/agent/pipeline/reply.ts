@@ -118,7 +118,7 @@ async function loadPlanInput(turn: TurnContext, understood: UnderstandResult, de
     settings,
     businessName: info?.name ?? null,
     lastAt,
-    input: { understood, question: typeof asked === "string" ? asked : null, contactLanguage: contact?.language ?? null, previousMisses, settings, deadlineExceeded, exitQuestionPending: previousCase === "exit_unclear", customerSaidOne: isJustOne(texts[texts.length - 1]?.body ?? null) },
+    input: { understood, question: typeof asked === "string" ? asked : null, contactLanguage: contact?.language ?? null, previousMisses, settings, deadlineExceeded, exitQuestionPending: previousCase === "exit_unclear", customerSaidOne: texts.some((t) => isJustOne(t.body)) },
   };
 }
 
