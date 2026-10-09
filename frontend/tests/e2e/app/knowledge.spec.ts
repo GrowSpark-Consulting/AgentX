@@ -455,6 +455,52 @@ test.describe("Knowledge base · FAQs", () => {
     await expect(toast(page, "Deleted")).toHaveCount(0);
     await expectDialogFits(page);
   });
+
+  test("a FAQ the AI can't use yet is retried by saving it again, even unchanged", async ({ page, request, kb }) => {
+    const account = await newAccount(request);
+    const answer = "Yes, from ₹4,500. It takes about 2 hours.";
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "manual", title: "Do you do keratin?", body: answer, status: "failed", error: "We couldn't save this question for search. Save it again in a moment." });
+    await addDoc(request, { tenant_id: account.tenantId, source_type: "manual", title: "Is there parking?", body: "Yes, two-wheeler parking.", status: "ready" });
+    await openKnowledge(page, account);
+    const notInUse = faqs(page).getByText("Not in use: edit to try again");
+    await expect(notInUse).toHaveCount(1);
+
+    // A ready FAQ saved unchanged still sends nothing.
+    await faqs(page).getByRole("button", { name: "Is there parking?", exact: true }).click();
+    await faqs(page).getByRole("button", { name: "Edit FAQ: Is there parking?" }).click();
+    await dialog(page).getByRole("button", { name: "Save changes" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    expect(kb.writes()).toEqual([]);
+
+    // Still failing: the unchanged save is sent, the dialog keeps it, and the list shows it still not in use.
+    kb.failEmbedding(true);
+    await faqs(page).getByRole("button", { name: "Edit FAQ: Do you do keratin?" }).click();
+    await dialog(page).getByRole("button", { name: "Save changes" }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText("Couldn't save the FAQ");
+    await expect(dialog(page).getByRole("alert")).toContainText("We couldn't save this question for search just now");
+    await expect(dialog(page).getByLabel("Answer")).toHaveValue(answer);
+    await expect(dialog(page).getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(notInUse).toHaveCount(1);
+    await expect(toast(page, "Saved the FAQ")).toHaveCount(0);
+
+    // Working again: the same unchanged save goes through, and the list read afterwards shows it in use.
+    kb.failEmbedding(false);
+    const readsBefore = (await kbReads(request, account.email)).length;
+    await dialog(page).getByRole("button", { name: "Save changes" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page, "Saved the FAQ")).toBeVisible();
+    await expect(notInUse).toHaveCount(0);
+    expect((await kbReads(request, account.email)).length).toBeGreaterThan(readsBefore);
+    expect((await storedDocs(request, account.tenantId)).find((d) => d.title === "Do you do keratin?")?.status).toBe("ready");
+
+    const writes = kb.writes();
+    expect(writes.map((c) => c.route)).toEqual(["PATCH /api/kb/faqs/:id", "PATCH /api/kb/faqs/:id"]);
+    for (const call of writes) {
+      expect(JSON.parse(call.body)).toEqual({ a: answer });
+      expectSignedCall(call, account.tenantId);
+    }
+    await expectNoHorizontalOverflow(page);
+  });
 });
 
 test.describe("Knowledge base · documents", () => {
@@ -798,6 +844,48 @@ test.describe("Knowledge base · questions the AI couldn't answer", () => {
     await expect(toast(page, "Added to FAQs")).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
   });
+
+  test("an answer stored but not prepared for the AI leaves the list, shows as a FAQ not in use, and says how to retry it", async ({ page, request, kb }) => {
+    kb.setGaps(GAPS);
+    const account = await newAccount(request, { faqs: true });
+    await openKnowledge(page, account);
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 3");
+    const gapReads = () => kb.calls.filter((c) => c.route === "GET /api/kb/gaps").length;
+    const readsBefore = gapReads();
+
+    // The API stores the FAQ and closes the question, then the embedding fails: 502 upstream_failed.
+    kb.failEmbedding(true);
+    await gapsRegion(page).getByRole("button", { name: "Add answer: Do you do keratin?" }).click();
+    await gapsRegion(page).getByLabel("Answer to “Do you do keratin?”").fill("Yes, from ₹4,500.");
+    await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+
+    const notice = gapsRegion(page).getByRole("alert");
+    await expect(notice).toContainText("Answer saved, but the AI can’t use it yet");
+    await expect(notice).toContainText("It’s under FAQs, marked “Not in use”. Open it there, choose Edit, then Save changes to try again.");
+    await expect(notice).not.toContainText(/answer (it|the question) again|Try again in a moment/);
+    await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 2");
+    await expect(gapsRegion(page).getByRole("button", { name: "Add answer: Do you do keratin?" })).toHaveCount(0);
+    expect(gapReads()).toBeGreaterThan(readsBefore);
+    await expect(page.getByRole("heading", { name: "FAQs · 3" })).toBeVisible();
+    await expect(faqs(page).getByRole("button", { name: "Do you do keratin?", exact: true })).toBeVisible();
+    await expect(faqs(page).getByText("Not in use: edit to try again")).toHaveCount(1);
+    await expect(toast(page, "Added to FAQs")).toHaveCount(0);
+    expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/gaps/:id/answer"]);
+    await expectNoHorizontalOverflow(page);
+
+    // Retried from the FAQ list, as the notice says: in use, and the notice goes.
+    kb.failEmbedding(false);
+    await faqs(page).getByRole("button", { name: "Do you do keratin?", exact: true }).click();
+    await faqs(page).getByRole("button", { name: "Edit FAQ: Do you do keratin?" }).click();
+    await dialog(page).getByRole("button", { name: "Save changes" }).click();
+    await expect(toast(page, "Saved the FAQ")).toBeVisible();
+    await expect(faqs(page).getByText(/^Not in use/)).toHaveCount(0);
+    await expect(notice).toHaveCount(0);
+    expect(kb.writes().map((c) => [c.route, JSON.parse(c.body)])).toEqual([
+      ["POST /api/kb/gaps/:id/answer", { a: "Yes, from ₹4,500." }],
+      ["PATCH /api/kb/faqs/:id", { a: "Yes, from ₹4,500." }],
+    ]);
+  });
 });
 
 // Today's main: the API has none of the knowledge-base routes and answers each with ROUTE_MISSING.
@@ -967,6 +1055,27 @@ test.describe("Knowledge base · who can change it", () => {
       await expect(page.getByRole("heading", { name: "FAQs · 3" })).toBeVisible();
       expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/gaps/:id/answer"]);
       expectSignedCall(kb.writes()[0], account.tenantId);
+    });
+
+    test("staff whose answer couldn't be prepared for the AI are told an owner or admin has to retry it", async ({ page, request, kb }) => {
+      kb.setGaps(GAPS);
+      const account = await newAccount(request, { faqs: true, role: "staff" });
+      await openKnowledge(page, account);
+      kb.failEmbedding(true);
+      await gapsRegion(page).getByRole("button", { name: "Add answer: Do you open on Sundays?" }).click();
+      await gapsRegion(page).getByLabel("Answer to “Do you open on Sundays?”").fill("Yes, 10 am to 6 pm.");
+      await gapsRegion(page).getByRole("button", { name: "Save answer" }).click();
+
+      const notice = gapsRegion(page).getByRole("alert");
+      await expect(notice).toContainText("Answer saved, but the AI can’t use it yet");
+      await expect(notice).toContainText("An owner or admin needs to open it there and save it again.");
+      await expect(notice).not.toContainText(/Edit|answer (it|the question) again/);
+      await expect(gapsRegion(page).getByRole("heading")).toHaveText("Questions the AI couldn’t answer · 2");
+      await expect(page.getByRole("heading", { name: "FAQs · 3" })).toBeVisible();
+      await expect(faqs(page).getByText("Not in use: an owner or admin can save it again")).toHaveCount(1);
+      await expect(faqs(page).getByRole("button", { name: /^(Edit|Delete) FAQ/ })).toHaveCount(0);
+      expect(kb.writes().map((c) => c.route)).toEqual(["POST /api/kb/gaps/:id/answer"]);
+      await expectNoHorizontalOverflow(page);
     });
   });
 });

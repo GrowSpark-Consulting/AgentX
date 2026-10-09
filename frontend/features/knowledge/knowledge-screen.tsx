@@ -8,6 +8,7 @@ import { ConfirmDialog } from "./confirm-dialog";
 import { Documents } from "./documents";
 import { FaqFormDialog } from "./faq-form-dialog";
 import { FaqList } from "./faq-list";
+import { recoverGapAnswer, saveFaqEdit, type KbNotice } from "./faq-recovery";
 import { FlashStatus, useFlash } from "./flash";
 import { GapsList } from "./gaps-list";
 import {
@@ -19,7 +20,6 @@ import {
   describeKbWriteError,
   dismissGap,
   explainNotFound,
-  faqChanges,
   KbUnavailableError,
   listFaqs,
   listGaps,
@@ -39,11 +39,17 @@ import { ServicesEditor } from "./services-editor";
 // GET /api/kb/gaps; every write goes through the API (kb-content.ts) and changes the list only after
 // it answers. Owners and admins write; every member, staff too, can answer a question. While the KB
 // routes aren't deployed, a section says so (kb-content.ts, "Not deployed yet") instead of failing.
+// A FAQ the AI can't use yet (its embedding failed) is retried by saving it again, and an answer that
+// was stored but not embedded is found by reading both lists again (faq-recovery.ts).
 // Website sync (POST /api/onboarding/import-site, Dev 1) is not built and has no button here.
 
 /** A section's state; Try again is attached when rendering. */
 type Loaded<T> = Exclude<SectionSource<T>, { status: "error" }> | { status: "error"; message: string };
 type FaqDialog = { kind: "none" } | { kind: "form"; faq: FaqItem | null } | { kind: "delete"; faq: FaqItem } | { kind: "dismiss"; gap: GapItem };
+
+const faqsFailed = (err: unknown): Loaded<FaqItem> => ({ status: "error", message: formatError(err).message });
+const gapsFailed = (err: unknown): Loaded<GapItem> =>
+  err instanceof KbUnavailableError ? { status: "unavailable" } : { status: "error", message: formatError(err).message };
 
 export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string; timeZone: string; role: Role }) {
   const canWrite = canWriteKnowledge(role);
@@ -52,13 +58,15 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
   const [faqWritesUnavailable, setFaqWritesUnavailable] = useState(false);
   const [gaps, setGaps] = useState<Loaded<GapItem>>({ status: "loading" });
   const [dialog, setDialog] = useState<FaqDialog>({ kind: "none" });
+  /** An answer that was stored but not embedded (or may have been): how to retry it from the FAQs. */
+  const [gapNotice, setGapNotice] = useState<KbNotice | null>(null);
   const [toast, flash] = useFlash();
 
   const loadFaqs = useCallback(
     () =>
       listFaqs(getSupabaseBrowserClient(), tenantId).then(
         (items) => setFaqs({ status: "ready", items }),
-        (err: unknown) => setFaqs({ status: "error", message: formatError(err).message }),
+        (err: unknown) => setFaqs(faqsFailed(err)),
       ),
     [tenantId],
   );
@@ -69,7 +77,7 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
         (items) => setGaps({ status: "ready", items }),
         (err: unknown) => {
           if (signal?.aborted) return;
-          setGaps(err instanceof KbUnavailableError ? { status: "unavailable" } : { status: "error", message: formatError(err).message });
+          setGaps(gapsFailed(err));
         },
       ),
     [tenantId],
@@ -99,10 +107,16 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
 
   async function saveFaq(editing: FaqItem | null, input: FaqInput) {
     if (editing) {
-      const changes = faqChanges(editing, input);
-      if (Object.keys(changes).length === 0) return setDialog({ kind: "none" });
-      addToFaqs(await updateFaq(tenantId, editing.id, changes).catch((err: unknown) => faqWriteFailed(err, editing.id)));
+      // Compared with the FAQ as listed now: a refused save may have re-read it since the dialog opened.
+      const current = faqItems.find((f) => f.id === editing.id) ?? editing;
+      const sent = await saveFaqEdit(current, input, {
+        update: (changes) => updateFaq(tenantId, current.id, changes).catch((err: unknown) => faqWriteFailed(err, current.id)),
+        show: addToFaqs,
+        refresh: loadFaqs,
+      });
       setDialog({ kind: "none" });
+      if (!sent) return;
+      setGapNotice(null);
       flash("Saved the FAQ");
     } else {
       addToFaqs(await createFaq(tenantId, input).catch((err: unknown) => faqWriteFailed(err, null)));
@@ -136,7 +150,21 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
   }
 
   async function answer(gap: GapItem, a: string) {
-    const faq = await answerGap(tenantId, gap.id, a).catch((err: unknown) => gapWriteFailed(err, gap.id));
+    setGapNotice(null);
+    let faq: FaqItem;
+    try {
+      faq = await answerGap(tenantId, gap.id, a);
+    } catch (err) {
+      // upstream_failed: the answer may be stored as a failed FAQ, with the question closed. The lists
+      // are read again; if it was stored, a notice says how to retry it and the answer form closes.
+      const notice = await recoverGapAnswer(err, gap, {
+        canWriteFaqs: canWrite,
+        gaps: { read: () => listGaps(tenantId), ready: (items) => setGaps({ status: "ready", items }), failed: (e) => setGaps(gapsFailed(e)) },
+        faqs: { read: () => listFaqs(getSupabaseBrowserClient(), tenantId), ready: (items) => setFaqs({ status: "ready", items }), failed: (e) => setFaqs(faqsFailed(e)) },
+      });
+      if (notice) return setGapNotice(notice);
+      return gapWriteFailed(err, gap.id);
+    }
     addToFaqs(faq);
     dropGap(gap.id);
     flash("Added to FAQs");
@@ -144,6 +172,7 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
 
   async function dismiss(gap: GapItem) {
     await dismissGap(tenantId, gap.id).catch((err: unknown) => gapWriteFailed(err, gap.id));
+    setGapNotice(null);
     dropGap(gap.id);
     setDialog({ kind: "none" });
     flash("Dismissed the question");
@@ -156,7 +185,7 @@ export function KnowledgeScreen({ tenantId, timeZone, role }: { tenantId: string
         <h1 className="app-h1">Knowledge base</h1>
         <p style={{ margin: "4px 0 0", color: "var(--color-neutral-700)" }}>What customers can book, how long it takes and what it costs.</p>
       </div>
-      <GapsList source={gapSource} canAnswer={canAnswerGaps(role)} canDismiss={canWrite} onAnswer={answer} onDismiss={(gap) => setDialog({ kind: "dismiss", gap })} />
+      <GapsList source={gapSource} canAnswer={canAnswerGaps(role)} canDismiss={canWrite} notice={gapNotice} onAnswer={answer} onDismiss={(gap) => setDialog({ kind: "dismiss", gap })} />
       <ServicesEditor tenantId={tenantId} />
       <FaqList
         source={faqSource}
