@@ -2,8 +2,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { agendaMessage } from "../booking/daily-agenda";
+import { noShowMessage } from "../booking/no-show";
 import { ratingMessage, reviewMessage } from "../booking/post-visit";
 import { reminderMessage, type ReminderBooking } from "../booking/reminders";
+import { nudgeMessage } from "../leads/nudges";
 import { KINDS } from "./kinds";
 import { TEMPLATE_CATALOGUE, templateComponents, variablesIn, type TemplateLanguage } from "./template-catalogue";
 
@@ -66,11 +69,11 @@ describe("the template catalogue", () => {
       reminder_2h: reminderMessage(booking).templateParams.length,
       feedback: ratingMessage(booking).templateParams.length,
       review: reviewMessage("Skyline Homes", "https://g.page/r/x").templateParams.length,
-      // staff-alerts.ts sends [headline, link]; the nudge, no-show and agenda jobs (in review) send 1, 2 and 3.
+      nudge: nudgeMessage(1, "Priya").templateParams.length,
+      noshow_rebook: noShowMessage(booking).templateParams.length,
+      daily_agenda: agendaMessage("Skyline Homes", [{ time: "11:00 am", what: "site visit", who: "Priya", staff: null }], "https://app.example").templateParams.length,
+      // staff-alerts.ts and the own-number outcome job send [headline, link].
       staff_alert: 2,
-      nudge: 1,
-      noshow_rebook: 2,
-      daily_agenda: 3,
       // The pipeline's booking confirmation sends what, business and when, like the reminders.
       booking_confirmed: 3,
     };
