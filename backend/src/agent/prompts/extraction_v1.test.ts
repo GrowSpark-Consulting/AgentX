@@ -31,7 +31,8 @@ describe("buildExtractionSystem", () => {
 
   it("names every language, intent and sentiment the schema accepts, and nothing it does not", () => {
     const rules = buildExtractionSystem(realEstate)[0].text;
-    for (const value of [...Extraction.shape.language.options, ...Extraction.shape.intent.options, ...Extraction.shape.sentiment.options]) {
+    // Version 1 is frozen: what version 2 added to the schema ("unclear_exit") is tested in extraction_v2.test.ts.
+    for (const value of [...Extraction.shape.language.options, ...Extraction.shape.intent.options.filter((i) => i !== "unclear_exit"), ...Extraction.shape.sentiment.options]) {
       expect(rules, value).toContain(`"${value}"`);
     }
   });
@@ -39,7 +40,7 @@ describe("buildExtractionSystem", () => {
   it("asks for JSON only, with every key of the schema", () => {
     const rules = buildExtractionSystem(realEstate)[0].text;
     expect(rules).toMatch(/one JSON object and nothing else/i);
-    for (const key of Object.keys(Extraction.shape)) expect(rules, key).toContain(`"${key}"`);
+    for (const key of Object.keys(Extraction.shape).filter((k) => k !== "notInterested")) expect(rules, key).toContain(`"${key}"`); // notInterested came with version 2
   });
 
   it("explains Tamil, Tanglish, and that the question is rewritten in English for the knowledge-base search", () => {

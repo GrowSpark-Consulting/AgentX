@@ -116,14 +116,14 @@ describe("getConversation", () => {
 
 describe("getContact", () => {
   it("reads the language and whether they opted out, and never the phone number or the name", async () => {
-    const { db, calls } = fakeDb(() => ({ data: { id: CONTACT, language: "ta-en", opted_out_at: null } }));
-    expect(await createPipelineStore(db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: "ta-en", optedOut: false });
+    const { db, calls } = fakeDb(() => ({ data: { id: CONTACT, language: "ta-en", opted_out_at: null, consent_at: null } }));
+    expect(await createPipelineStore(db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: "ta-en", optedOut: false, consentAt: null });
     tenantFilter(calls[0]);
     expect(calls[0].returning).not.toMatch(/phone|name/);
   });
 
   it("reports an opt-out", async () => {
-    const { db } = fakeDb(() => ({ data: { id: CONTACT, language: null, opted_out_at: "2026-10-01T00:00:00Z" } }));
+    const { db } = fakeDb(() => ({ data: { id: CONTACT, language: null, opted_out_at: "2026-10-01T00:00:00Z", consent_at: null } }));
     expect((await createPipelineStore(db).getContact(T, CONTACT))?.optedOut).toBe(true);
   });
 });
@@ -318,11 +318,19 @@ describe("mergeLeadFields", () => {
 });
 
 describe("getBatchTexts", () => {
+  it("tells which button or list row a tap was (the inbound message's meta.buttonId), and nothing else of the meta", async () => {
+    const { db } = fakeDb(() => ({ data: [{ id: "m1", body: "Talk to the team", created_at: "2026-10-08T10:00:00+00:00", meta: { buttonId: "exit:talk", other: "x" } }, { id: "m2", body: "hi", created_at: "2026-10-08T10:00:02+00:00", meta: { buttonId: 5 } }] }));
+    expect(await createPipelineStore(db).getBatchTexts(T, CONV, ["m1", "m2"])).toEqual([
+      { id: "m1", body: "Talk to the team", createdAt: "2026-10-08T10:00:00.000Z", buttonId: "exit:talk" },
+      { id: "m2", body: "hi", createdAt: "2026-10-08T10:00:02.000Z", buttonId: null },
+    ]);
+  });
+
   it("reads the text of these customer messages of this conversation, oldest first", async () => {
     const { db, calls } = fakeDb(() => ({ data: [{ id: "m1", body: "hi", created_at: "2026-10-08T10:00:00+00:00" }, { id: "m2", body: null, created_at: "2026-10-08T10:00:02+00:00" }] }));
     expect(await createPipelineStore(db).getBatchTexts(T, CONV, ["m1", "m2"])).toEqual([
-      { id: "m1", body: "hi", createdAt: "2026-10-08T10:00:00.000Z" },
-      { id: "m2", body: null, createdAt: "2026-10-08T10:00:02.000Z" },
+      { id: "m1", body: "hi", createdAt: "2026-10-08T10:00:00.000Z", buttonId: null },
+      { id: "m2", body: null, createdAt: "2026-10-08T10:00:02.000Z", buttonId: null },
     ]);
     tenantFilter(calls[0]);
     expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
@@ -384,6 +392,40 @@ describe("saveAgentMeta and getAgentMeta", () => {
     expect(await createPipelineStore(fakeDb(read({ agent: { extraction: { intent: "question" } } })).db).getAgentMeta(T, CONV, MSG)).toEqual({ extraction: { intent: "question" } });
     expect(await createPipelineStore(fakeDb(read({})).db).getAgentMeta(T, CONV, MSG)).toBeNull();
     expect(await createPipelineStore(fakeDb(() => ({ data: null })).db).getAgentMeta(T, CONV, MSG)).toBeNull();
+  });
+});
+
+describe("the contact's consent", () => {
+  it("getContact says when the notice was first shown, or null", async () => {
+    const { db, calls } = fakeDb(() => ({ data: { id: CONTACT, language: "ta", opted_out_at: null, consent_at: "2026-10-09T10:00:00+00:00" } }));
+    expect(await createPipelineStore(db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: "ta", optedOut: false, consentAt: "2026-10-09T10:00:00+00:00" });
+    expect(calls[0].returning).toContain("consent_at");
+    expect(await createPipelineStore(fakeDb(() => ({ data: { id: CONTACT, language: null, opted_out_at: "2026-10-09T10:00:00+00:00", consent_at: null } })).db).getContact(T, CONTACT)).toEqual({ id: CONTACT, language: null, optedOut: true, consentAt: null });
+  });
+
+  it("recordNoticeShown calls record_notice_shown for this business and contact, and says whether it recorded", async () => {
+    const { db, calls } = fakeDb(() => ({ data: true }));
+    expect(await createPipelineStore(db).recordNoticeShown(T, CONTACT, MSG)).toBe(true);
+    expect(calls[0]).toMatchObject({ op: "rpc", fn: "record_notice_shown", args: { p_tenant_id: T, p_contact_id: CONTACT, p_message_id: MSG } });
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+    expect(await createPipelineStore(fakeDb(() => ({ data: false })).db).recordNoticeShown(T, CONTACT, null)).toBe(false);
+  });
+
+  it("recordOptOut calls record_opt_out with the source and the message", async () => {
+    const { db, calls } = fakeDb(() => ({ data: true }));
+    expect(await createPipelineStore(db).recordOptOut(T, CONTACT, "stop_keyword", MSG)).toBe(true);
+    expect(calls[0]).toMatchObject({ op: "rpc", fn: "record_opt_out", args: { p_tenant_id: T, p_contact_id: CONTACT, p_source: "stop_keyword", p_message_id: MSG } });
+    expect(await createPipelineStore(fakeDb(() => ({ data: false })).db).recordOptOut(T, CONTACT, "stop_keyword", null)).toBe(false);
+  });
+
+  it("both fail in fixed words: retried for a database that is down, not for a refused input", async () => {
+    for (const call of [
+      (s: ReturnType<typeof createPipelineStore>) => s.recordNoticeShown(T, CONTACT, null),
+      (s: ReturnType<typeof createPipelineStore>) => s.recordOptOut(T, CONTACT, "stop_keyword", null),
+    ]) {
+      await expect(call(createPipelineStore(fakeDb(() => ({ error: { code: "08006", message: "secret" } })).db))).rejects.toBeInstanceOf(AppError);
+      await expect(call(createPipelineStore(fakeDb(() => ({ error: { code: "P0001", message: "secret" } })).db))).rejects.toBeInstanceOf(NonRetriableError);
+    }
   });
 });
 
@@ -466,5 +508,41 @@ describe("setConversationMode", () => {
     expect(filter(calls[0], "id")).toEqual(["id", "eq", CONV]);
     expect(filter(calls[0], "mode")).toEqual(["mode", "eq", "ai"]);
     expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).setConversationMode(T, CONV, "human")).toBe(false);
+  });
+});
+
+describe("getPreviousPlanCase", () => {
+  const rows = (...metas: unknown[]) => ({ data: metas.map((meta) => ({ meta })) });
+
+  it("reads the newest earlier customer messages of this chat, for this business", async () => {
+    const { db, calls } = fakeDb(() => rows({}));
+    await createPipelineStore(db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z");
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
+    expect(filter(calls[0], "sender")).toEqual(["sender", "eq", "customer"]);
+    expect(filter(calls[0], "created_at")).toEqual(["created_at", "lt", "2026-10-08T10:00:00.000Z"]);
+    expect(calls[0].limit).toBe(20);
+  });
+
+  it("is the case the latest turn kept, skipping messages no turn wrote on, and null when there is none", async () => {
+    expect(await createPipelineStore(fakeDb(() => rows({ buttonId: "x" }, { agent: { planCase: "exit_unclear" } }, { agent: { planCase: "answered_from_kb" } })).db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z")).toBe("exit_unclear");
+    expect(await createPipelineStore(fakeDb(() => rows({}, null, { agent: { planCase: 3 } })).db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z")).toBeNull();
+  });
+});
+
+describe("markLeadLost", () => {
+  it("moves only an open lead of this business, by id: a booked, visited, won or lost one is left alone", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: LEAD }] }));
+    expect(await createPipelineStore(db).markLeadLost(T, LEAD)).toBe(true);
+    expect(calls[0].table).toBe("leads");
+    expect(calls[0].op).toBe("update");
+    expect(calls[0].payload).toEqual({ stage: "lost" });
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "id")).toEqual(["id", "eq", LEAD]);
+    expect(filter(calls[0], "stage")).toEqual(["stage", "in", ["new", "engaged", "qualified", "nurture"]]);
+  });
+
+  it("is false when nothing changed", async () => {
+    expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).markLeadLost(T, LEAD)).toBe(false);
   });
 });

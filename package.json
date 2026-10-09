@@ -10,6 +10,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:watch": "pnpm -r --parallel test:watch",
+    "test:conversations": "pnpm --filter @pakka/backend test:conversations",
     "test:e2e": "pnpm --filter @pakka/frontend test:e2e",
     "inngest:dev": "inngest-cli dev -u http://localhost:4000/api/inngest --no-discovery",
     "db:start": "supabase start",

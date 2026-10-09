@@ -41,6 +41,7 @@ describe("Extraction", () => {
 describe("HandoffTrigger", () => {
   it("accepts the core triggers and rejects a pack-specific one", () => {
     expect(HandoffTrigger.parse("credits_exhausted")).toBe("credits_exhausted");
+    expect(HandoffTrigger.parse("opt_out")).toBe("opt_out");
     expect(HandoffTrigger.safeParse("group_above_15").success).toBe(false);
   });
 });

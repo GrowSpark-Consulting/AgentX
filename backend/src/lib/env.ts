@@ -77,6 +77,15 @@ const serverEnvSchema = z
     .optional(),
   // Spark Agent's Business Portfolio ID, shown for partner access. Not a secret. Unset: the screen says it isn't available.
   META_PARTNER_BUSINESS_ID: z.string().regex(/^\d{5,20}$/, "must be digits only").optional(),
+
+  // The link in the privacy notice the first AI reply to a contact carries (docs/handover.md, "Consent (DPDP)").
+  // Optional: the default is the product's own policy page. Must be https (it is sent to customers).
+  PRIVACY_POLICY_URL: z
+    .string()
+    .url()
+    .max(300)
+    .refine((value) => /^https:\/\/\S+$/.test(value), "must be an https URL with no spaces or line breaks")
+    .default("https://pakkaagent.in/privacy"),
   META_SYSTEM_USER_TOKEN: secret.optional(),
   WHATSAPP_DEMO_WABA_ID: secret.optional(),
   WHATSAPP_DEMO_PHONE_NUMBER_ID: secret.optional(),

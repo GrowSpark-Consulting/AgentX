@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { buildExtractionSystem } from "./extraction_v1";
+import { buildExtractionSystem as buildExtractionSystemV2 } from "./extraction_v2";
 import { buildReplySystem } from "./reply_v1";
 
 // A prompt that is in use is never edited: a change is a new version (extraction_v2.ts, reply_v2.ts), so a trace
@@ -14,6 +15,11 @@ describe("prompt fingerprints", () => {
   it("extraction_v1: the rules (and the way a pack's fields are described) are unchanged", () => {
     const withFields = buildExtractionSystem({ fields: [{ key: "k", label: "L", type: "enum", required: true, options: ["a", "b"] }] });
     expect(sha(withFields.map((b) => b.text).join("\n---\n"))).toBe("400106e80f638183");
+  });
+
+  it("extraction_v2: the rules, the exit examples and the way a pack's fields are described are unchanged", () => {
+    const withFields = buildExtractionSystemV2({ fields: [{ key: "k", label: "L", type: "enum", required: true, options: ["a", "b"] }] });
+    expect(sha(withFields.map((b) => b.text).join("\n---\n"))).toBe("226b67567e623565");
   });
 
   it("reply_v1: the rules and both tones are unchanged", () => {

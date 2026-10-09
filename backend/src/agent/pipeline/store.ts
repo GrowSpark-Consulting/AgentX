@@ -36,6 +36,8 @@ export interface ContactRow {
   id: string;
   language: string | null;
   optedOut: boolean;
+  /** When the privacy notice was first shown to this contact (null: not yet, so the next AI reply carries it). */
+  consentAt: string | null;
 }
 export interface TenantRow {
   id: string;
@@ -64,6 +66,8 @@ export interface BatchText {
   id: string;
   body: string | null;
   createdAt: string;
+  /** The id of the reply button or list row the customer tapped (the inbound message's `meta.buttonId`), or null for typed text. */
+  buttonId: string | null;
 }
 export interface HistoryItem {
   sender: "customer" | "ai" | "staff";
@@ -77,6 +81,8 @@ export interface TenantReplyInfo {
   agentSettings: unknown;
 }
 export type HandoffPriority = "high" | "normal";
+/** Where an opt-out came from (consent_logs.source): the customer typed a STOP phrase, or the model read a clear request (0020). */
+export type OptOutSource = "stop_keyword" | "model_intent";
 
 export interface PipelineStore {
   /** The message, only if it is this business's and this conversation's. */
@@ -122,6 +128,14 @@ export interface PipelineStore {
   saveAgentMeta(tenantId: string, conversationId: string, messageId: string, agent: Record<string, unknown>): Promise<boolean>;
   getAgentMeta(tenantId: string, conversationId: string, messageId: string): Promise<Record<string, unknown> | null>;
 
+  /** record_notice_shown (0021): sets consent_at (if still null) and logs `notice_shown` in one transaction. True when this call recorded it. */
+  recordNoticeShown(tenantId: string, contactId: string, messageId: string | null): Promise<boolean>;
+  /** record_opt_out (0021, and 0022 for model_intent): sets opted_out_at (if still null) and logs `opted_out` in one transaction. True when this call opted the contact out. */
+  recordOptOut(tenantId: string, contactId: string, source: OptOutSource, messageId: string | null): Promise<boolean>;
+  /** Moves a lead that is still open (new, engaged, qualified, nurture) to `lost`. A booked, visited, won or already lost lead is left alone. True when it changed. */
+  markLeadLost(tenantId: string, leadId: string): Promise<boolean>;
+  /** The plan case the chat's latest earlier turn kept on its customer message (`meta.agent.planCase`, before `before`), or null. */
+  getPreviousPlanCase(tenantId: string, conversationId: string, before: string): Promise<string | null>;
   /** The business's name and agent settings, or null if it is gone. */
   getTenantReplyInfo(tenantId: string): Promise<TenantReplyInfo | null>;
   /**
@@ -139,6 +153,7 @@ export interface PipelineStore {
 
 export const PIPELINE_DB_TIMEOUT_MS = 10_000;
 const BATCH_LIMIT = 10;
+const OPEN_LEAD_STAGES = ["new", "engaged", "qualified", "nurture"];
 /** How many earlier customer messages to look through for the last turn's count: a turn writes it on its newest message. */
 const PREVIOUS_TURN_LOOKBACK = 20;
 /**
@@ -157,13 +172,13 @@ const MessageRow = z.object({
   created_at: Iso,
 });
 const ConversationSchema = z.object({ id: z.string(), contact_id: z.string(), mode: z.enum(["ai", "human", "external"]) });
-const ContactSchema = z.object({ id: z.string(), language: z.string().nullable(), opted_out_at: z.string().nullable() });
+const ContactSchema = z.object({ id: z.string(), language: z.string().nullable(), opted_out_at: z.string().nullable(), consent_at: z.string().nullable() });
 const TenantSchema = z.object({ id: z.string(), vertical: z.string(), vertical_version: z.number().int() });
 const LeadSchema = z.object({ id: z.string(), stage: z.string() });
 const PendingSchema = z.object({ id: z.string(), kind: z.string().nullable() });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const LeadSchema2 = z.object({ id: z.string(), stage: z.string(), fields: z.unknown() });
-const BatchTextSchema = z.object({ id: z.string(), body: z.string().nullable(), created_at: Iso });
+const BatchTextSchema = z.object({ id: z.string(), body: z.string().nullable(), created_at: Iso, meta: z.unknown().optional() });
 const TenantInfoSchema = z.object({ name: z.string(), agent_settings: z.unknown() });
 const KbGapResult = z.array(z.object({ gap_id: z.string(), asked_count: z.number().int() })).min(1);
 const HandoffSchema = z.object({ id: z.string() });
@@ -225,12 +240,12 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
 
     async getContact(tenantId, contactId) {
       const { data, error } = await run("read contact", (signal) =>
-        db.from("contacts").select("id, language, opted_out_at").eq("id", contactId).eq("tenant_id", tenantId).abortSignal(signal).maybeSingle(),
+        db.from("contacts").select("id, language, opted_out_at, consent_at").eq("id", contactId).eq("tenant_id", tenantId).abortSignal(signal).maybeSingle(),
       );
       if (error) fail("read contact", error);
       if (data === null) return null;
       const row = parse(ContactSchema, data, "read contact");
-      return { id: row.id, language: row.language, optedOut: row.opted_out_at !== null };
+      return { id: row.id, language: row.language, optedOut: row.opted_out_at !== null, consentAt: row.consent_at };
     },
 
     async getTenant(tenantId) {
@@ -333,7 +348,7 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
       const { data, error } = await run("read message texts", (signal) =>
         db
           .from("messages")
-          .select("id, body, created_at")
+          .select("id, body, created_at, meta")
           .eq("tenant_id", tenantId)
           .eq("conversation_id", conversationId)
           .eq("sender", "customer")
@@ -342,7 +357,7 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
           .abortSignal(signal),
       );
       if (error) fail("read message texts", error);
-      return parse(z.array(BatchTextSchema), data ?? [], "read message texts").map((row) => ({ id: row.id, body: row.body, createdAt: row.created_at }));
+      return parse(z.array(BatchTextSchema), data ?? [], "read message texts").map((row) => ({ id: row.id, body: row.body, createdAt: row.created_at, buttonId: isObject(row.meta) && typeof row.meta.buttonId === "string" ? row.meta.buttonId : null }));
     },
 
     async getHistory(tenantId, conversationId, before, limit) {
@@ -371,6 +386,51 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
       );
       if (error) fail("save message meta", error);
       return data === true;
+    },
+
+    async recordNoticeShown(tenantId, contactId, messageId) {
+      const { data, error } = await run("record privacy notice", (signal) =>
+        db.rpc("record_notice_shown", { p_tenant_id: tenantId, p_contact_id: contactId, p_message_id: messageId }).abortSignal(signal),
+      );
+      if (error) fail("record privacy notice", error);
+      return data === true;
+    },
+
+    async recordOptOut(tenantId, contactId, source, messageId) {
+      const { data, error } = await run("record opt-out", (signal) =>
+        db.rpc("record_opt_out", { p_tenant_id: tenantId, p_contact_id: contactId, p_source: source, p_message_id: messageId }).abortSignal(signal),
+      );
+      if (error) fail("record opt-out", error);
+      return data === true;
+    },
+
+    async markLeadLost(tenantId, leadId) {
+      const { data, error } = await run("mark lead lost", (signal) =>
+        db.from("leads").update({ stage: "lost" }).eq("id", leadId).eq("tenant_id", tenantId).in("stage", OPEN_LEAD_STAGES).select("id").abortSignal(signal),
+      );
+      if (error) fail("mark lead lost", error);
+      return Array.isArray(data) && data.length > 0;
+    },
+
+    async getPreviousPlanCase(tenantId, conversationId, before) {
+      const { data, error } = await run("read previous plan case", (signal) =>
+        db
+          .from("messages")
+          .select("meta")
+          .eq("tenant_id", tenantId)
+          .eq("conversation_id", conversationId)
+          .eq("sender", "customer")
+          .lt("created_at", before)
+          .order("created_at", { ascending: false })
+          .limit(PREVIOUS_TURN_LOOKBACK)
+          .abortSignal(signal),
+      );
+      if (error) fail("read previous plan case", error);
+      for (const row of Array.isArray(data) ? data : []) {
+        const agent = isObject(row) && isObject(row.meta) && isObject(row.meta.agent) ? row.meta.agent : null;
+        if (agent && typeof agent.planCase === "string") return agent.planCase;
+      }
+      return null;
     },
 
     async getTenantReplyInfo(tenantId) {

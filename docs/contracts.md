@@ -37,6 +37,8 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0018_agent_merge_functions` | `merge_lead_fields`, `merge_message_agent_meta`: the agent's lead-field and message-meta merges (Dev 1, #65; service_role only) |
 | `0019_notify_staff_target` | `notify_staff_target(tenantId, userId)`: a member's alert number as a contact tagged `staff` with a `human`-mode conversation (service_role only, section 2) |
 
+| `0021_consent_functions` | `record_notice_shown` and `record_opt_out` (service_role only): the contact update and the `consent_logs` row in one transaction, once (Dev 1; after 0019 `notify_staff_target` and 0020 `whatsapp_webhook_tokens`) |
+
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
 - Seed: `supabase/seed/` (plans, 21 features, demo and isolation-test businesses, services, resources, hours).
@@ -452,8 +454,8 @@ The send is `notify.send(tenantId, "ai_reply", { conversationId, text })`, after
 contact's opt-out; **in the same step `message.answered` is written for every message of the turn** (a few tries; a failure
 is logged and never thrown, since a retry would send again), and a send whose outcome is unknown counts as answered.
 `insufficient_credits` sends no AI reply: the chat goes to `human`, a `handoffs` row (`credits_exhausted`, priority
-`high`) opens, `handoff.opened` is sent (id `handoff_opened:<handoffId>`), and the free holding message and the owner alert
-go through two ports (`ports.ts`): the holding message is `notify.send(..., "system_notice", ...)` (built, #70); the owner alert is sent by Dev 2's `handoff-alert` job from the `handoff.opened` event (#71), so its port sends nothing and reports `queued`. The whole turn has one
+`high`) opens, `handoff.opened` is sent (id `handoff_opened:<handoffId>`), and the free holding message goes through the
+system-notice port (`ports.ts`): `notify.send(..., "system_notice", ...)` (built, #70). The owner alert is sent ONLY by Dev 2's `handoff-alert` job from that `handoff.opened` event (#71); the pipeline has no alert call of its own, so owners get exactly one alert. The whole turn has one
 clock (`turn-deadline.ts`): target 10 s, hard stop 25 s, after which the model calls stop and the safe line is sent.
 `persona` and `tone` are read from `tenants.agent_settings` as the Agent settings screen saves them. The turn's clock also
 runs while a failed step waits for its retry, so a slow second attempt can be answered with the safe line. **Never two
@@ -461,7 +463,28 @@ replies:** a step looks at `message.answered` (and at the `reply` marker the sen
 right before the send; the marker is written before the rows, so a failure to write the rows does not allow a second
 reply. The handover's event is sent on every run of the step (its id makes it one event), so a retry after a failure still tells staff.
 
+**Anger, a person, and leaving (Raja, 9 Oct).** `extraction_v2` adds the intent `unclear_exit` and the key `notInterested` and carries Raja's phrases (`docs/reference/opt-out-handoff-phrases.md`) as examples, not keywords. The reply step's table (`plan.ts`) then decides: **`opt_out` with confidence >= 0.8** (`OPT_OUT_MIN_CONFIDENCE`) is opted out like a STOP (`consent_logs` source `model_intent`, migration 0022), one confirmation through `system_notice`, a high-priority `opt_out` handoff and `handoff.opened`, no reply and no credit, and the lead goes to `lost` when `notInterested`; **`opt_out` below 0.8 or `unclear_exit`** gets the exit question once: TWO REPLY BUTTONS [Talk to the team] [Continue] (ids `exit:talk` and `exit:continue`, sent with `notify.send`'s `interactive`, #76) under a short line with the STOP hint (no STOP button). A tap on Talk to the team (the inbound message's `meta.buttonId`) is a handoff at any time; Continue goes on as normal. If WhatsApp refuses the buttons (not a retry, not an unknown outcome) the same question goes once as plain text with "Reply 1 to talk to the team, or just continue", and a "1" right after it is a handoff. A business that switched `asked_human` off gets only the short line with the STOP hint; **`talk_to_human`, `complaint` or `sentiment: angry`** gets the handover line, `mode = 'human'`, and a high-priority handoff (`asked_human` or `complaint`) with `handoff.opened`; each of the last two can be switched off in `agent_settings.handoffTriggers`. `asksIfHuman` alone is answered, not handed over.
+
 **Reply-button ids (agreed 9 Oct, built on Day 3).** A booking confirmation's reply buttons carry the ids `booking:<bookingId>:confirm`, `booking:<bookingId>:reschedule` and `booking:<bookingId>:cancel` (WhatsApp allows 3 buttons, ids up to 256 characters). The pipeline, not the webhook, routes the tap: the webhook stores it as a customer message, and step 5 reads the id and calls `confirmBooking` / `rescheduleBooking` / `cancelBooking`.
+
+**Consent (DPDP): the notice and STOP.** *The notice:* the first AI reply to a contact (`contacts.consent_at` is null)
+carries one extra line after a blank line, **only when the business turned it on (`agent_settings.privacyNotice`, default off, Raja 9 Oct)**: who answers (an AI assistant), how to stop (reply STOP) and the privacy policy link
+last (`PRIVACY_POLICY_URL`, an optional https env var, default https://pakkaagent.in/privacy), in the reply's language
+(English, Tamil, Tanglish, Hindi; `fixed-texts.ts`). Every first reply carries it, a fixed line too; it is added after the
+post-check and is not part of the 600 characters. After a send (or one whose outcome is unknown) `record_notice_shown` sets
+`consent_at` and writes `consent_logs` `notice_shown` (source `first_message`, the outbound message id) in one transaction,
+once; a failure there is logged, never thrown, and the next reply carries the notice again. *STOP:* a step `stop-check` runs
+before the message is read by the model: if a message of the turn IS a STOP (the whole message, ignoring case, punctuation and
+emoji, is one of the fixed phrases in `consent/stop-words.ts`; "bus stop near the project" is not, and neither is a lone ambiguous word such as ruko or நிறுத்து), `record_opt_out` sets
+`contacts.opted_out_at` and writes `consent_logs` `opted_out` (source `stop_keyword`, the message id), AT MOST ONE final confirmation
+goes through `notify.send`'s `system_notice` (the only message sent after opting out; only the call that recorded the opt-out sends it),
+a high-priority `handoffs` row (trigger `opt_out`) opens and `handoff.opened` is sent (id `handoff_opened:<handoffId>`; the alert says: "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer."; the chat's mode is not changed), every message of the turn is marked answered, and the
+turn ends: nothing is read, updated or replied to. The check also runs for a chat a person has and one with the AI switched
+off (an opt-out never depends on a toggle; step `stop-check-gated`), and for the safe line sent after a run gave up. The gate
+(step 3) and `notify.send` (which checks `opted_out_at`) refuse every later message of that contact. The notice is recorded
+as shown only when the send is known to have gone out; an unknown outcome leaves `consent_at` null and the next reply
+carries it again. `consent_logs` rows go with the contact if the contact is deleted. A message the model reads as "wants to leave"
+(`opt_out` intent) without being one of the phrases gets the STOP hint, not an opt-out.
 
 A run that still fails after its 3 retries: `onFailure` logs its id and, if the customer's messages are still unanswered and
 the chat is still the assistant's, sends one safe line and marks them answered (`give-up.ts`). A sweep for customer messages

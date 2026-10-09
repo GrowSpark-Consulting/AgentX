@@ -4,8 +4,9 @@ import type { KbMatch } from "../../kb/retrieve";
 import type { LlmClient, LlmMessage } from "../llm/anthropic";
 import { LlmError } from "../llm/anthropic";
 import { PackError, resolvePack } from "../packs/load";
-import { buildExtractionMessages, buildExtractionSystem, EXTRACTION_PROMPT } from "../prompts/extraction_v1";
+import { buildExtractionMessages, buildExtractionSystem, EXTRACTION_PROMPT } from "../prompts/extraction_v2";
 import { interpretExtraction } from "./extraction";
+import { UNCLEAR_EXIT_MIN_CONFIDENCE } from "./plan";
 import type { StepRunner, TurnContext } from "./process-message";
 import type { PipelineStore } from "./store";
 
@@ -38,6 +39,8 @@ export interface ExtractionSummary {
   language: Extraction["language"];
   sentiment: Extraction["sentiment"];
   asksIfHuman: boolean;
+  /** With intent opt_out: the customer says they are not interested (the lead is then lost). */
+  notInterested: boolean;
   confidence: number;
   /** There is a question to answer (it is on the message's meta). */
   hasQuestion: boolean;
@@ -66,6 +69,9 @@ export type UnderstandResult =
   | { status: "no_pack" }; // the business's pack is missing or invalid
 
 /** Only these messages are looked up in the knowledge base; a greeting, a complaint or a cancellation is not a question for it. */
+/** A customer who may be leaving: what they said is not kept as details, a question to look up, or a sign of being engaged. */
+const LEAVING_INTENTS: ReadonlySet<Extraction["intent"]> = new Set(["opt_out", "unclear_exit"]);
+
 export const RETRIEVAL_INTENTS: ReadonlySet<Extraction["intent"]> = new Set(["question", "give_details", "book"]);
 
 const HISTORY_LIMIT = 4;
@@ -98,11 +104,21 @@ async function loadTurnPack(turn: TurnContext, deps: UnderstandDeps) {
   }
 }
 
+/** What the model reported, with a doubtful unclear_exit replaced by what the message otherwise is, and a leaving customer's words dropped. */
+function leavingReading(extraction: Extraction): Extraction {
+  if (extraction.intent === "unclear_exit" && extraction.confidence < UNCLEAR_EXIT_MIN_CONFIDENCE) {
+    const intent = extraction.question !== null ? "question" : Object.keys(extraction.fields).length > 0 ? "give_details" : "greeting";
+    return { ...extraction, intent };
+  }
+  return LEAVING_INTENTS.has(extraction.intent) ? { ...extraction, fields: {}, question: null } : extraction;
+}
+
 const summarise = (extraction: Extraction): ExtractionSummary => ({
   intent: extraction.intent,
   language: extraction.language,
   sentiment: extraction.sentiment,
   asksIfHuman: extraction.asksIfHuman,
+  notInterested: extraction.intent === "opt_out" && extraction.notInterested === true,
   confidence: extraction.confidence,
   hasQuestion: extraction.question !== null,
   fieldKeys: Object.keys(extraction.fields),
@@ -189,8 +205,10 @@ export async function understandTurn(step: StepRunner, turn: TurnContext, deps: 
       const interpreted = interpretExtraction(text, loaded.fieldSchema);
       if (interpreted.ok) {
         const { dropped } = interpreted;
-        // A customer who is leaving: what they said is not kept as details or as a question to look up.
-        const extraction = interpreted.extraction.intent === "opt_out" ? { ...interpreted.extraction, fields: {}, question: null } : interpreted.extraction;
+        // A customer who is leaving: what they said is not kept as details or as a question to look up. An unclear_exit the
+        // model is not sure of (a stray character, "ok", "?") is read as what the message otherwise is, so a real question or
+        // details typed with it are not lost (plan.ts then answers it like any message).
+        const extraction = leavingReading(interpreted.extraction);
         await persist({ extraction, droppedFields: dropped, extractionFailed: null });
         return { outcome: "ok", summary: summarise(extraction) };
       }
@@ -214,7 +232,7 @@ export async function understandTurn(step: StepRunner, turn: TurnContext, deps: 
   // gap. A customer who is leaving (opt_out) is not engaged and their words are not kept as details.
   const { summary } = extracted;
   await step.run("save-fields", async () => {
-    if (summary.intent === "opt_out") return { saved: false };
+    if (LEAVING_INTENTS.has(summary.intent)) return { saved: false };
     const loaded = await loadTurnPack(turn, deps);
     if (!loaded) return { saved: false };
     const lead = await store.getLead(turn.tenantId, turn.leadId);

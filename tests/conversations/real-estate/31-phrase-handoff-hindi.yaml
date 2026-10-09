@@ -1,0 +1,14 @@
+name: "Hindi: \"किसी इंसान से बात कराओ, ये बॉट नहीं चाहिए।\" asks for a person (Raja's phrase 5)"
+description: "Raja's phrase list (docs/reference/opt-out-handoff-phrases.md). A request for a person: the handover line, the chat goes to staff, a high-priority handover."
+turns:
+  - customer: "किसी इंसान से बात कराओ, ये बॉट नहीं चाहिए।"
+    mock:
+      extraction: { language: hi, intent: talk_to_human, confidence: 0.9 }
+    expect:
+      extracted: { intent: talk_to_human }
+      optedOut: false
+      handoff: { trigger: asked_human, priority: high }
+      mode: human
+      aiReplies: 1
+    mockOnly:
+      reply: { fixed: { key: handoff, language: hi } }

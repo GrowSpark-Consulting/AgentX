@@ -1,0 +1,23 @@
+name: With privacyNotice switched on, the first reply carries the notice once
+kb:
+  - "2BHK of 950 sq ft in Velachery starts at ₹78 lakh."
+settings:
+  privacyNotice: true
+contact:
+  alreadySawNotice: false
+turns:
+  - customer: "2BHK price in Velachery?"
+    mock:
+      extraction: { language: en, intent: question, question: "What is the price of a 2BHK in Velachery?" }
+      reply: "A 2BHK in Velachery starts at ₹78 lakh. Shall we plan a site visit?"
+    expect:
+      reply: { sent: true, notice: true, contains: ["Reply STOP"] }
+      consent: [{ event: notice_shown, source: first_message }]
+      aiReplies: 1
+  - customer: "and the carpet area?"
+    mock:
+      extraction: { language: en, intent: question, question: "What is the carpet area of the 2BHK?" }
+      reply: "The 2BHK is 950 sq ft. Would you like to visit?"
+    mockOnly:
+      reply: { notice: false }
+      consent: []

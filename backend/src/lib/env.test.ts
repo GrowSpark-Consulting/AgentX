@@ -127,6 +127,35 @@ describe("API server settings", () => {
   );
 });
 
+describe("PRIVACY_POLICY_URL", () => {
+  it("never carries a line break or a tab into the notice: the URL parser removes them", () => {
+    for (const messy of ["https://acme.example/privacy\nSTOP", "https://acme.example/\tprivacy"]) {
+      const url = parseServerEnv({ ...base, PRIVACY_POLICY_URL: messy }).PRIVACY_POLICY_URL;
+      expect(url).toMatch(/^https:\/\/\S+$/);
+    }
+  });
+
+  it("defaults to the product's privacy page when unset or empty", () => {
+    expect(parseServerEnv(base).PRIVACY_POLICY_URL).toBe("https://pakkaagent.in/privacy");
+    expect(parseServerEnv({ ...base, PRIVACY_POLICY_URL: "" }).PRIVACY_POLICY_URL).toBe("https://pakkaagent.in/privacy");
+  });
+
+  it("keeps an explicit https URL", () => {
+    expect(parseServerEnv({ ...base, PRIVACY_POLICY_URL: "https://acme.example/privacy" }).PRIVACY_POLICY_URL).toBe("https://acme.example/privacy");
+  });
+
+  it.each([
+    "http://acme.example/privacy",
+    "acme.example/privacy",
+    "javascript:alert(1)",
+    "not a url",
+    "https://acme.example/pri vacy",
+    `https://acme.example/${"a".repeat(300)}`,
+  ])("rejects %j: it goes to customers", (bad) => {
+    expect(() => parseServerEnv({ ...base, PRIVACY_POLICY_URL: bad })).toThrow(/PRIVACY_POLICY_URL/);
+  });
+});
+
 describe("META_GRAPH_API_VERSION default", () => {
   it("defaults to v26.0 when unset or empty", () => {
     expect(parseServerEnv(base).META_GRAPH_API_VERSION).toBe("v26.0");

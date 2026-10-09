@@ -1,0 +1,25 @@
+name: A customer who may be leaving is asked once with two buttons, and a tap on Talk to the team hands over
+description: "Raja's decision 5 (9 Oct): a short line with the STOP hint and two reply buttons, no STOP button. The tap comes back as an inbound button message."
+turns:
+  - customer: "enough now"
+    mock:
+      extraction: { language: en, intent: unclear_exit, confidence: 0.7 }
+    expect:
+      reply: { sent: true, buttons: ["Talk to the team", "Continue"], contains: ["reply STOP"], notContains: ["Reply 1"] }
+      optedOut: false
+      handoff: null
+      aiReplies: 1
+    mockOnly:
+      case: exit_unclear
+  - customer: "Talk to the team"
+    tap: "exit:talk"
+    mock:
+      extraction: { language: en, intent: greeting, confidence: 0.4 }
+    expect:
+      handoff: { trigger: asked_human, priority: high }
+      mode: human
+      aiReplies: 1
+      optedOut: false
+    mockOnly:
+      reply: { fixed: { key: handoff, language: en } }
+      case: exit_question_talk

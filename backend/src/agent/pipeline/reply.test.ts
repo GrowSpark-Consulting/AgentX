@@ -4,8 +4,8 @@ import type { AuditEntry } from "../../lib/audit";
 import type { SendOutcome } from "../../notify/send";
 import { fakePipelineStore, HIDDEN, type FakeMessage } from "../../test-support/fake-pipeline-store";
 import { LlmError, type LlmClient, type LlmRequest, type LlmResult } from "../llm/anthropic";
-import { fixedText } from "./fixed-texts";
-import type { StaffAlertPort, SystemNoticePort } from "./ports";
+import { consentNotice, fixedText } from "./fixed-texts";
+import type { SystemNoticePort } from "./ports";
 import type { StepRunner, TurnContext } from "./process-message";
 import { answerAfterFailure, replyTurn, type ReplyDeps } from "./reply";
 import type { Retrieval, UnderstandResult } from "./understand";
@@ -26,6 +26,7 @@ const at = (secondsAgo: number) => new Date(NOW - secondsAgo * 1000).toISOString
 const QUESTION = "Do you do home visits?";
 const CUSTOMER_WORDS = "home visits pannuveengala";
 
+const PRIVACY_URL = "https://example.test/privacy";
 const SENT: SendOutcome = { status: "sent", messageId: "m-out", providerMsgId: "wamid.OUT", creditsCharged: 1, usedTemplate: false };
 const llmResult = (text: string): LlmResult => ({ text, model: "claude-sonnet-5-5", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }, costUsd: 0.01, latencyMs: 2000, attempts: 1, requestId: null });
 
@@ -49,7 +50,7 @@ function runner() {
 const found: Retrieval = { outcome: "found", chunks: [{ documentId: "d1", title: "Brochure", content: "Site visits are free, Fri 9 Oct 5:00 pm. 2BHK starts at ₹78 lakh.", similarity: 0.7 }] };
 const understood = (retrieval: Retrieval, over: Record<string, unknown> = {}): UnderstandResult => ({
   status: "understood",
-  summary: { intent: "question", language: "en", sentiment: "neutral", asksIfHuman: false, confidence: 0.9, hasQuestion: true, fieldKeys: [], ...over },
+  summary: { intent: "question", language: "en", sentiment: "neutral", asksIfHuman: false, notInterested: false, confidence: 0.9, hasQuestion: true, fieldKeys: [], ...over },
   retrieval,
 });
 
@@ -60,6 +61,8 @@ interface WorldOptions {
   mode?: "ai" | "human" | "external";
   optedOut?: boolean;
   language?: string | null;
+  /** When the notice was first shown to the contact; the default is "long ago", so most tests are about a contact who has seen it. */
+  consentAt?: string | null;
   agentSettings?: unknown;
   businessName?: string;
   question?: string | null;
@@ -79,7 +82,7 @@ function world(over: WorldOptions = {}) {
     tenants: [{ id: A, vertical: "sample-pack", verticalVersion: 1 }],
     messages,
     conversations: [{ id: CONV, tenantId: A, contactId: CONTACT, mode: over.mode ?? "ai" }],
-    contacts: [{ id: CONTACT, tenantId: A, language: over.language === undefined ? null : over.language, optedOut: over.optedOut ?? false }],
+    contacts: [{ id: CONTACT, tenantId: A, language: over.language === undefined ? null : over.language, optedOut: over.optedOut ?? false, consentAt: over.consentAt === undefined ? "2026-10-01T00:00:00Z" : over.consentAt }],
     leads: [{ id: LEAD, tenantId: A, contactId: CONTACT, stage: "engaged", createdAt: 1, fields: {} }],
     tenantInfo: { [A]: { name: over.businessName ?? "Skyline Homes", agentSettings: over.agentSettings ?? {} } },
     answered: over.answered ? [M1] : [],
@@ -106,14 +109,22 @@ function world(over: WorldOptions = {}) {
   });
   const sendEvent = vi.fn<ReplyDeps["sendEvent"]>(async () => undefined);
   const systemNotice = { send: vi.fn(async (): Promise<{ status: "awaiting_notify_kind" }> => ({ status: "awaiting_notify_kind" })) };
-  const staffAlert = { send: vi.fn(async (): Promise<{ status: "awaiting_notify_kind" }> => ({ status: "awaiting_notify_kind" })) };
-  const deps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice: systemNotice as SystemNoticePort, staffAlert: staffAlert as StaffAlertPort, now: () => Date.now() };
+  const deps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice: systemNotice as SystemNoticePort, privacyPolicyUrl: PRIVACY_URL, now: () => Date.now() };
   const turn: TurnContext = {
     tenantId: A, conversationId: CONV, contactId: CONTACT, leadId: LEAD, leadCreated: false,
     messageIds: over.messages ? over.messages.map((m) => m.id).filter((id) => !id.startsWith("a0000000-0000-0000-0000-00000000010")) : [M1],
     language: null, vertical: "sample-pack", verticalVersion: 1,
   };
-  return { ...fake, complete, send, audit, audits, sendEvent, systemNotice, staffAlert, deps, turn };
+  return { ...fake, complete, send, audit, audits, sendEvent, systemNotice, deps, turn };
+}
+
+/** Staff are told once, by Dev 2's handoff-alert job, from ONE handoff.opened event (id handoff_opened:<handoffId>). The pipeline has no alert call of its own. */
+function expectOneAlertEvent(w: ReturnType<typeof world>): void {
+  expect(w.deps).not.toHaveProperty("staffAlert");
+  expect(w.handoffs).toHaveLength(1);
+  const opened = w.sendEvent.mock.calls.filter(([event]) => event.name === "handoff.opened");
+  expect(opened).toHaveLength(1);
+  expect(opened[0][0]).toEqual({ id: `handoff_opened:${w.handoffs[0].id}`, name: "handoff.opened", data: { tenantId: A, conversationId: CONV, handoffId: w.handoffs[0].id } });
 }
 
 const sentText = (w: ReturnType<typeof world>, n = 0) => w.send.mock.calls[n][2].text;
@@ -257,7 +268,8 @@ describe("every way step 4 ends has an answer", () => {
     ["no usable pack", { status: "no_pack" }, "fallback"],
     ["a search that could not run", understood({ outcome: "unavailable" }), "fallback"],
     ["a search with no answer", understood({ outcome: "none" }), "fallback"],
-    ["a message about leaving", understood({ outcome: "skipped" }, { intent: "opt_out" }), "stop_hint"],
+    ["a message that may be about leaving", understood({ outcome: "skipped" }, { intent: "unclear_exit" }), "exit_question"],
+    ["a doubtful opt-out (below 0.8)", understood({ outcome: "skipped" }, { intent: "opt_out", confidence: 0.79 }), "exit_question"],
   ];
 
   it.each(cases)("%s: exactly one reply is sent, in fixed words, and recorded", async (_name, result, key) => {
@@ -265,7 +277,9 @@ describe("every way step 4 ends has an answer", () => {
     const out = await replyTurn(runner().step, w.turn, result, Date.now(), w.deps);
     expect(w.send).toHaveBeenCalledOnce();
     expect(w.complete).not.toHaveBeenCalled(); // no model call: nothing to be steered, nothing that can fail
-    expect(sentText(w)).toBe(fixedText(key as "fallback", "en"));
+    // the exit question goes as reply buttons: its text is the short line with the STOP hint
+    const payload = w.send.mock.calls[0][2];
+    expect(key === "exit_question" ? payload.interactive?.body : payload.text).toBe(fixedText(key === "exit_question" ? "exit_prompt" : (key as "fallback"), "en"));
     expect(out.reply).toMatchObject({ status: "sent", source: "fixed" });
     expect(w.audits.filter((a) => a.action === "message.answered")).toHaveLength(1);
   });
@@ -286,7 +300,7 @@ describe("every way step 4 ends has an answer", () => {
     const out = await replyTurn(runner().step, w.turn, { status: "no_pack" }, Date.now(), w.deps);
     expect(out.handoff).toMatchObject({ trigger: "stuck", opened: true, switched: true });
     expect(w.handoffs[0]).toMatchObject({ trigger: "stuck", priority: "normal" });
-    expect(w.staffAlert.send).toHaveBeenCalledWith(expect.objectContaining({ kind: "setup_problem" }));
+    expectOneAlertEvent(w); // the owner is told by the handoff-alert job from handoff.opened, not by the pipeline
   });
 });
 
@@ -331,7 +345,7 @@ describe("a question the knowledge base cannot answer", () => {
     expect(w.conversations.get(CONV)?.mode).toBe("human");
     expect(w.sendEvent).toHaveBeenCalledWith({ id: `handoff_opened:${w.handoffs[0].id}`, name: "handoff.opened", data: { tenantId: A, conversationId: CONV, handoffId: w.handoffs[0].id } });
     expect(w.audits.map((a) => a.action)).toEqual(["message.answered", "handoff.opened"]);
-    expect(w.staffAlert.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "handoff_opened" });
+    expectOneAlertEvent(w);
   });
 
   it("a miss, an answered turn, then a miss is no handover", async () => {
@@ -375,14 +389,12 @@ describe("when the business is out of credits", () => {
     expect(w.sendEvent).toHaveBeenCalledOnce();
   });
 
-  it("goes through the system-notice and staff-alert ports, and is skipped only there: awaiting_notify_kind", async () => {
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  it("sends the holding line through the system notice, and the owner alert is only the handoff.opened event", async () => {
     const w = broke();
     const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
     expect(w.systemNotice.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "credits_holding", text: fixedText("credits_holding", "ta") });
-    expect(w.staffAlert.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "credits_exhausted" });
-    expect(out.handoff).toMatchObject({ alert: "awaiting_notify_kind", holding: "awaiting_notify_kind" });
-    log.mockRestore();
+    expectOneAlertEvent(w);
+    expect(out.handoff).toMatchObject({ trigger: "credits_exhausted", holding: "awaiting_notify_kind" });
   });
 
   it("opens one handoff however often the turn runs, and sends the event once", async () => {
@@ -394,12 +406,11 @@ describe("when the business is out of credits", () => {
     expect(w.systemNotice.send).toHaveBeenCalledOnce(); // a real message now: one holding line, not one per run
   });
 
-  it("a port that fails does not fail the handover", async () => {
+  it("a holding line that fails does not fail the handover", async () => {
     const w = broke();
-    w.staffAlert.send.mockRejectedValue(new Error("down"));
     w.systemNotice.send.mockRejectedValue(new Error("down"));
     const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
-    expect(out.handoff).toMatchObject({ opened: true, alert: "failed", holding: "failed" });
+    expect(out.handoff).toMatchObject({ opened: true, holding: "failed" });
   });
 });
 
@@ -502,6 +513,165 @@ describe("never two replies", () => {
     const out = await replyTurn(runner().step, down.turn, understood(found), Date.now(), down.deps);
     expect(out.reply.status).toBe("sent");
     expect(down.send).toHaveBeenCalledOnce();
+  });
+});
+
+describe("the privacy notice is a per-business setting, off by default (Raja, 9 Oct)", () => {
+  it("is not added to the first reply, and notice_shown is never logged, when the setting is missing or false", async () => {
+    for (const agentSettings of [undefined, {}, { privacyNotice: false }, { privacyNotice: "yes" }]) {
+      const w = world({ consentAt: null, agentSettings });
+      await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+      expect(sentText(w)).toBe("Yes, we do site visits. Shall we plan one?");
+      expect(w.consentLogs).toEqual([]);
+      expect(w.contacts.get(CONTACT)?.consentAt ?? null).toBeNull();
+    }
+  });
+
+  it("is added once when the business turned it on: the first reply carries it, the second does not", async () => {
+    const w = world({ consentAt: null, agentSettings: { privacyNotice: true }, script: ["First answer.", "Second answer."] });
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(sentText(w, 0)).toContain(consentNotice("en", PRIVACY_URL));
+    expect(w.consentLogs).toHaveLength(1);
+  });
+});
+
+describe("the privacy notice on a contact's first AI reply (setting on)", () => {
+  const first = (over: WorldOptions = {}) => world({ consentAt: null, agentSettings: { privacyNotice: true }, ...over });
+
+  it("is added to the first reply, after a blank line, as one line with the policy link last", async () => {
+    const w = first();
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    const text = sentText(w)!;
+    expect(text).toBe(`Yes, we do site visits. Shall we plan one?\n\n${consentNotice("en", PRIVACY_URL)}`);
+    expect(text.endsWith(PRIVACY_URL)).toBe(true);
+    expect(text.split("\n\n")[1]).not.toContain("\n"); // one line
+    expect(text).toContain("STOP");
+  });
+
+  it("is in the customer's language", async () => {
+    for (const language of ["ta", "ta-en", "hi"] as const) {
+      const w = first({ script: ["₹1", "₹2"] });
+      await replyTurn(runner().step, w.turn, understood(found, { language }), Date.now(), w.deps);
+      expect(sentText(w)).toBe(`${fixedText("fallback", language)}\n\n${consentNotice(language, PRIVACY_URL)}`);
+    }
+  });
+
+  it("goes on a fixed line too (a clarifying question, the safe fallback, the handover line): it is the first AI reply whatever it says", async () => {
+    for (const result of [{ status: "fallback", reason: "no_text" }, { status: "model_unavailable" }, understood({ outcome: "none" })] as UnderstandResult[]) {
+      const w = first();
+      await replyTurn(runner().step, w.turn, result, Date.now(), w.deps);
+      expect(sentText(w)).toContain(consentNotice("en", PRIVACY_URL));
+    }
+  });
+
+  it("is logged as notice_shown once, with the message that carried it, and sets consent_at", async () => {
+    const w = first();
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(w.consentLogs).toEqual([{ tenantId: A, contactId: CONTACT, event: "notice_shown", source: "first_message", messageId: "m-out" }]);
+    expect(w.contacts.get(CONTACT)?.consentAt).toBeTruthy();
+  });
+
+  it("is not on the second reply: the contact has seen it", async () => {
+    const w = first({ script: ["First reply.", "Second reply."] });
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    // the next turn of the same chat
+    const next: FakeMessage = { id: M2, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(1), body: "another question", meta: { agent: { extraction: { question: "Another?" } } } };
+    w.messages.set(M2, next);
+    await replyTurn(runner().step, { ...w.turn, messageIds: [M2] }, understood(found), Date.now(), w.deps);
+    expect(sentText(w, 1)).toBe("Second reply.");
+    expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("is not recorded when nothing was sent: a chat a person has, an opt-out, no credits", async () => {
+    for (const over of [{ mode: "human" as const }, { optedOut: true }, { send: () => ({ status: "skipped", reason: "insufficient_credits" }) as SendOutcome }]) {
+      const w = first(over);
+      await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+      expect(w.consentLogs).toEqual([]);
+      expect(w.contacts.get(CONTACT)?.consentAt ?? null).toBeNull();
+    }
+  });
+
+  it("is NOT recorded as shown when the send's outcome is unknown: the log must not say 'shown' for a message that may not have arrived; the next reply carries it again", async () => {
+    const w = first({ send: () => ({ status: "failed", error: { code: "upstream_failed", message: "x", retryable: true, outcomeUnknown: true } }) });
+    const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(out.reply).toEqual({ status: "sent_unknown" });
+    expect(w.consentLogs).toEqual([]);
+    expect(w.contacts.get(CONTACT)?.consentAt ?? null).toBeNull();
+  });
+
+  it("is not recorded, and not sent, when the customer sends STOP while the reply is being written", async () => {
+    const w = first();
+    w.complete.mockImplementationOnce(async () => {
+      w.contacts.get(CONTACT)!.optedOut = true; // the STOP lands while the model works
+      return llmResult("Yes, site visits are free.");
+    });
+    const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(out.reply).toEqual({ status: "not_sent", reason: "opted_out" });
+    expect(w.send).not.toHaveBeenCalled();
+    expect(w.consentLogs).toEqual([]);
+  });
+
+  it("is never logged twice: a repeated run finds the message answered", async () => {
+    const w = first();
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(w.send).toHaveBeenCalledOnce();
+    expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("is not a reason to fail: if recording it fails the reply stays sent, and the next reply carries the notice again", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const w = first({ script: ["First.", "Second."] });
+    w.state.failNext.add("recordNoticeShown");
+    const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(out.reply.status).toBe("sent");
+    expect(w.send).toHaveBeenCalledOnce();
+    w.messages.set(M2, { id: M2, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(1), body: "more", meta: { agent: { extraction: { question: "More?" } } } });
+    await replyTurn(runner().step, { ...w.turn, messageIds: [M2] }, understood(found), Date.now(), w.deps);
+    expect(sentText(w, 1)).toContain(consentNotice("en", PRIVACY_URL));
+  });
+
+  it("is not part of what the post-check reads or of the 600 characters: a full reply still gets it", async () => {
+    const long = `${"a".repeat(590)} site visits are free`.slice(0, 600);
+    const w = first({ script: [long] });
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(sentText(w)!.startsWith(long)).toBe(true);
+    expect(sentText(w)!.length).toBeGreaterThan(600);
+    expect(w.complete).toHaveBeenCalledOnce(); // not regenerated for being long with the notice
+  });
+
+  it("is on the safe line sent after a run gave up too", async () => {
+    const w = first({ language: "ta" });
+    await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);
+    expect(sentText(w)).toBe(`${fixedText("fallback", "ta")}\n\n${consentNotice("ta", PRIVACY_URL)}`);
+    expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("a STOP there opens the opt_out handoff and sends the event", async () => {
+    const w = world({ messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "STOP", meta: {} }] });
+    await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);
+    expect(w.handoffs).toEqual([expect.objectContaining({ trigger: "opt_out", priority: "high" })]);
+    expect(w.sendEvent).toHaveBeenCalledOnce();
+  });
+
+  it("still sends the safe line, without the notice, when the business's settings cannot be read", async () => {
+    const w = first({ language: "ta" });
+    w.state.failNext.add("getTenantReplyInfo");
+    expect(await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps)).toBe("sent");
+    expect(sentText(w)).toBe(fixedText("fallback", "ta"));
+  });
+
+  it("is not on the safe line when the setting is off (the default)", async () => {
+    const w = world({ consentAt: null, language: "ta" });
+    await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);
+    expect(sentText(w)).toBe(fixedText("fallback", "ta"));
+    expect(w.consentLogs).toEqual([]);
+  });
+
+  it("but not when that send's outcome is unknown", async () => {
+    const w = first({ send: () => ({ status: "failed", error: { code: "upstream_failed", message: "x", retryable: true, outcomeUnknown: true } }) });
+    expect(await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps)).toBe("sent");
+    expect(w.consentLogs).toEqual([]);
   });
 });
 
@@ -614,9 +784,25 @@ describe("answerAfterFailure: when a run gave up", () => {
     const w = world({ language: "ta" });
     expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("sent");
     expect(sentText(w)).toBe(fixedText("fallback", "ta"));
-    expect(w.audits.map((a) => a.entityId)).toEqual([M1]);
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1]);
     expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("nothing_to_do"); // safe to call twice
     expect(w.send).toHaveBeenCalledOnce();
+  });
+
+  it("a run that died before its STOP check: the customer who sent STOP is opted out and gets no reply and no notice", async () => {
+    const w = world({ consentAt: null, messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "STOP", meta: {} }] });
+    expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("opted_out");
+    expect(w.send).not.toHaveBeenCalled();
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
+    expect(w.consentLogs).toEqual([expect.objectContaining({ event: "opted_out", source: "stop_keyword" })]);
+    expect(w.systemNotice.send).toHaveBeenCalledWith(expect.objectContaining({ kind: "opt_out_confirmation" }));
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1]);
+  });
+
+  it("the same, in a chat a person has", async () => {
+    const w = world({ mode: "human", messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "மெசேஜ் அனுப்பாதீர்கள்", meta: {} }] });
+    expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("opted_out");
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
   });
 
   it("does nothing for a message that was answered, a chat a person has, or a customer who opted out", async () => {
@@ -636,5 +822,255 @@ describe("answerAfterFailure: when a run gave up", () => {
     const w = world({ send: () => ({ status: "skipped", reason: "insufficient_credits" }) });
     expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("not_sent");
     expect(w.audits).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Raja's decisions of 9 Oct: a person for an angry or asking customer, an opt-out the model read, and the unclear question.
+
+describe("a customer who wants a person, or is unhappy or angry", () => {
+  it.each([
+    ["wants a person", { intent: "talk_to_human" }, "asked_human"],
+    ["has a complaint", { intent: "complaint" }, "complaint"],
+    ["is angry", { intent: "question", sentiment: "angry" }, "complaint"],
+  ])("%s: the handover line, the chat goes to a person, a high-priority handover and the event", async (_name, over, trigger) => {
+    const w = world();
+    const out = await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, over), Date.now(), w.deps);
+    expect(sentText(w)).toBe(fixedText("handoff", "en"));
+    expect(w.complete).not.toHaveBeenCalled(); // plain code decided; no model wrote anything
+    expect(out.handoff).toMatchObject({ trigger, opened: true, switched: true });
+    expect(w.handoffs).toEqual([expect.objectContaining({ trigger, priority: "high" })]);
+    expect(w.conversations.get(CONV)?.mode).toBe("human");
+    expect(w.sendEvent).toHaveBeenCalledWith(expect.objectContaining({ name: "handoff.opened", id: `handoff_opened:${w.handoffs[0].id}` }));
+  });
+
+  it("asking only whether it is a bot is answered like any question, with no handover", async () => {
+    const w = world();
+    await replyTurn(runner().step, w.turn, understood(found, { asksIfHuman: true }), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
+    expect(w.conversations.get(CONV)?.mode).toBe("ai");
+  });
+
+  it("a business that switched the handover off gets the message answered normally", async () => {
+    const w = world({ agentSettings: { handoffTriggers: [{ key: "complaint", enabled: false }] } });
+    await replyTurn(runner().step, w.turn, understood(found, { intent: "complaint" }), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
+    expect(w.complete).toHaveBeenCalledOnce();
+  });
+});
+
+describe("a clear request to stop that the model read (model_intent)", () => {
+  const leaving = (over: Record<string, unknown> = {}) => understood({ outcome: "skipped" }, { intent: "opt_out", confidence: 0.9, ...over });
+  const lead = (w: ReturnType<typeof world>) => w.leads.get(LEAD)!;
+
+  it("opts the contact out like a STOP: logged as model_intent with the message, one confirmation, an opt_out handover, nothing else sent", async () => {
+    const w = world({ language: "ta" });
+    const out = await replyTurn(runner().step, w.turn, leaving({ language: "ta" }), Date.now(), w.deps);
+    expect(out.reply).toEqual({ status: "opted_out", confirmation: "awaiting_notify_kind" });
+    expect(w.send).not.toHaveBeenCalled(); // no ai_reply: no credit is spent
+    expect(w.complete).not.toHaveBeenCalled();
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
+    expect(w.consentLogs).toEqual([{ tenantId: A, contactId: CONTACT, event: "opted_out", source: "model_intent", messageId: M1 }]);
+    expect(w.systemNotice.send).toHaveBeenCalledOnce();
+    expect(w.systemNotice.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "opt_out_confirmation", text: fixedText("opt_out_confirmation", "ta") });
+    expect(w.handoffs).toEqual([expect.objectContaining({ trigger: "opt_out", priority: "high" })]);
+    expect(w.sendEvent).toHaveBeenCalledOnce();
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1]);
+  });
+
+  it("keeps the lead open when they only asked to stop, and loses it when they said they are not interested", async () => {
+    const stays = world();
+    await replyTurn(runner().step, stays.turn, leaving(), Date.now(), stays.deps);
+    expect(lead(stays).stage).toBe("engaged");
+    const lost = world();
+    await replyTurn(runner().step, lost.turn, leaving({ notInterested: true }), Date.now(), lost.deps);
+    expect(lead(lost).stage).toBe("lost");
+  });
+
+  it("never loses a booked lead", async () => {
+    const w = world();
+    lead(w).stage = "booked";
+    await replyTurn(runner().step, w.turn, leaving({ notInterested: true }), Date.now(), w.deps);
+    expect(lead(w).stage).toBe("booked");
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
+  });
+
+  it("is idempotent: a retried step sends no second confirmation and opens no second handover", async () => {
+    const w = world();
+    await replyTurn(runner().step, w.turn, leaving(), Date.now(), w.deps);
+    await replyTurn(runner().step, w.turn, leaving(), Date.now(), w.deps); // a fresh runner: the step ran again
+    expect(w.systemNotice.send).toHaveBeenCalledOnce();
+    expect(w.handoffs).toHaveLength(1);
+    expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("a handover that fails still marks the messages answered and fails the step, so the retry opens it without a second confirmation", async () => {
+    const w = world();
+    w.state.failNext.add("openHandoff");
+    await expect(replyTurn(runner().step, w.turn, leaving(), Date.now(), w.deps)).rejects.toThrow(/openHandoff failed/);
+    expect(w.audits.filter((a) => a.action === "message.answered")).toHaveLength(1);
+    await replyTurn(runner().step, w.turn, leaving(), Date.now(), w.deps);
+    expect(w.handoffs).toHaveLength(1);
+    expect(w.systemNotice.send).toHaveBeenCalledOnce();
+  });
+
+  it("below the threshold nobody is opted out: the customer is asked once, with the STOP hint and the two choices", async () => {
+    const w = world();
+    const out = await replyTurn(runner().step, w.turn, leaving({ confidence: 0.79 }), Date.now(), w.deps);
+    expect(out.reply).toMatchObject({ status: "sent", source: "fixed" });
+    expect(w.send.mock.calls[0][2].interactive).toMatchObject({ type: "buttons", body: fixedText("exit_prompt", "en") });
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(false);
+    expect(w.handoffs).toEqual([]);
+    expect(w.consentLogs).toEqual([]);
+  });
+
+  it.each(["x", "?", "ok", "👍"])("a stray %j that the model doubtfully reads as unclear_exit (below 0.5) is answered like any message: no question, no opt-out, no handover", async (stray) => {
+    const w = world({ messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: stray, meta: {} }], script: ["How can I help you today?"] });
+    const out = await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "unclear_exit", confidence: 0.3, hasQuestion: false }), Date.now(), w.deps);
+    expect(out.case).toBe("nothing_to_look_up");
+    expect(sentText(w)).toBe("How can I help you today?");
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(false);
+    expect(w.handoffs).toEqual([]);
+    expect(w.consentLogs).toEqual([]);
+  });
+
+  it("never lets the words of the customer into a step result or a log", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const out = vi.spyOn(console, "log").mockImplementation(() => {});
+    const w = world();
+    const r = runner();
+    await replyTurn(r.step, w.turn, leaving(), Date.now(), w.deps);
+    const everything = JSON.stringify([...r.memo.values(), ...log.mock.calls, ...out.mock.calls]);
+    for (const secret of [CUSTOMER_WORDS, QUESTION, HIDDEN.phone]) expect(everything).not.toContain(secret);
+  });
+});
+
+describe("the exit question as two reply buttons", () => {
+  const unclear = (over: Record<string, unknown> = {}) => understood({ outcome: "skipped" }, { intent: "unclear_exit", confidence: 0.7, ...over });
+  const tap = (id: string, secondsAgo: number, buttonId: string, title: string): FakeMessage => ({ id, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "interactive", createdAt: at(secondsAgo), body: title, meta: { buttonId } });
+
+  it("goes out as [Talk to the team] [Continue] with the STOP hint in the text, and no STOP button", async () => {
+    const w = world();
+    await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    expect(w.send).toHaveBeenCalledOnce();
+    const [tenant, kind, payload] = w.send.mock.calls[0];
+    expect([tenant, kind]).toEqual([A, "ai_reply"]);
+    expect(payload.text).toBeUndefined();
+    expect(payload.interactive).toEqual({
+      type: "buttons",
+      body: fixedText("exit_prompt", "en"),
+      buttons: [{ id: "exit:talk", title: "Talk to the team" }, { id: "exit:continue", title: "Continue" }],
+    });
+    expect(JSON.stringify(payload.interactive)).toContain("STOP");
+    expect(JSON.stringify(payload.interactive?.type === "buttons" ? payload.interactive.buttons : null)).not.toMatch(/stop/i);
+  });
+
+  it("is in the customer's language", async () => {
+    const w = world();
+    await replyTurn(runner().step, w.turn, unclear({ language: "hi" }), Date.now(), w.deps);
+    expect(w.send.mock.calls[0][2].interactive).toMatchObject({ body: fixedText("exit_prompt", "hi") });
+  });
+
+  it("falls back to the plain text with 'Reply 1' only if the buttons are refused (not for a retry, not for an unknown outcome)", async () => {
+    const refused: SendOutcome = { status: "failed", error: { code: "validation_failed", message: "x", retryable: false, outcomeUnknown: false } };
+    const w = world({ send: (n) => (n === 1 ? refused : SENT) });
+    const out = await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    expect(w.send).toHaveBeenCalledTimes(2);
+    expect(w.send.mock.calls[1][2]).toEqual({ conversationId: CONV, text: fixedText("exit_question", "en") });
+    expect(out.reply).toMatchObject({ status: "sent" });
+    expect(w.audits.filter((a) => a.action === "message.answered")).toHaveLength(1);
+
+    const unknown = world({ send: () => ({ status: "failed", error: { code: "upstream_failed", message: "x", retryable: true, outcomeUnknown: true } }) });
+    await replyTurn(runner().step, unknown.turn, unclear(), Date.now(), unknown.deps);
+    expect(unknown.send).toHaveBeenCalledOnce(); // it may have gone out: never sent again
+
+    const retry = world({ send: () => ({ status: "failed", error: { code: "rate_limited", message: "x", retryable: true, outcomeUnknown: false } }) });
+    await expect(replyTurn(runner().step, retry.turn, unclear(), Date.now(), retry.deps)).rejects.toThrow(/could not be sent/);
+    expect(retry.send).toHaveBeenCalledOnce();
+  });
+
+  it("is plain text when the business has the team handover off: no button leads nowhere", async () => {
+    const w = world({ agentSettings: { handoffTriggers: [{ key: "asked_human", enabled: false }] } });
+    await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    expect(w.send.mock.calls[0][2]).toEqual({ conversationId: CONV, text: fixedText("exit_prompt", "en") });
+  });
+
+  it("a tap on Talk to the team hands the chat to a person", async () => {
+    const w = world({ messages: [tap(M1, 3, "exit:talk", "Talk to the team")] });
+    const out = await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), Date.now(), w.deps);
+    expect(sentText(w)).toBe(fixedText("handoff", "en"));
+    expect(out.handoff).toMatchObject({ trigger: "asked_human", switched: true });
+    expect(w.handoffs).toEqual([expect.objectContaining({ trigger: "asked_human", priority: "high" })]);
+  });
+
+  it("a tap on Talk to the team reaches a person even if the language model is down", async () => {
+    const w = world({ messages: [tap(M1, 3, "exit:talk", "Talk to the team")] });
+    const out = await replyTurn(runner().step, w.turn, { status: "model_unavailable" }, Date.now(), w.deps);
+    expect(out.case).toBe("exit_question_talk");
+    expect(out.handoff).toMatchObject({ trigger: "asked_human", switched: true });
+    expect(w.complete).not.toHaveBeenCalled();
+  });
+
+  it("carries the privacy notice once on the first question: in the buttons' text, and in the plain text if they were refused", async () => {
+    const on = { agentSettings: { privacyNotice: true }, consentAt: null } as const;
+    const w = world({ ...on });
+    await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    const body = (w.send.mock.calls[0][2].interactive as { body: string }).body;
+    expect(body).toBe(`${fixedText("exit_prompt", "en")}
+
+${consentNotice("en", PRIVACY_URL)}`);
+    expect(w.consentLogs).toHaveLength(1);
+
+    const refused: SendOutcome = { status: "failed", error: { code: "validation_failed", message: "x", retryable: false, outcomeUnknown: false } };
+    const f = world({ ...on, send: (n) => (n === 1 ? refused : SENT) });
+    await replyTurn(runner().step, f.turn, unclear(), Date.now(), f.deps);
+    expect(f.send.mock.calls[1][2].text).toBe(`${fixedText("exit_question", "en")}
+
+${consentNotice("en", PRIVACY_URL)}`);
+    expect(f.consentLogs).toHaveLength(1); // logged once, for the one message that went
+  });
+
+  it("a tap on Continue goes on as normal: no handover, answered like any message", async () => {
+    const w = world({ messages: [tap(M1, 3, "exit:continue", "Continue")] });
+    await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
+    expect(w.complete).toHaveBeenCalledOnce();
+  });
+
+  it("a tap on any other button (a booking button, a list row) is not ours", async () => {
+    const w = world({ messages: [tap(M1, 3, "booking:abc:confirm", "Confirm")] });
+    await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
+  });
+});
+
+describe("the question asked once when it is not clear how the customer is leaving", () => {
+  const message = (id: string, secondsAgo: number, body: string, meta: Record<string, unknown> = {}): FakeMessage => ({ id, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(secondsAgo), body, meta });
+
+  it("keeps its case on the message so the next turn can tell an answer to it", async () => {
+    const w = world();
+    await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "unclear_exit" }), Date.now(), w.deps);
+    expect(w.messages.get(M1)?.meta?.agent).toMatchObject({ planCase: "exit_unclear" });
+  });
+
+  it('"1" in answer to it: the handover line, a person takes over, a high-priority asked_human handover', async () => {
+    const w = world({ messages: [message(M0, 60, "enough", { agent: { planCase: "exit_unclear" } }), message(M1, 3, "1")] });
+    const out = await replyTurn(runner().step, { ...w.turn, messageIds: [M1] }, understood({ outcome: "skipped" }, { intent: "give_details", hasQuestion: false }), Date.now(), w.deps);
+    expect(sentText(w)).toBe(fixedText("handoff", "en"));
+    expect(out.handoff).toMatchObject({ trigger: "asked_human", switched: true });
+    expect(w.handoffs).toEqual([expect.objectContaining({ trigger: "asked_human", priority: "high" })]);
+  });
+
+  it('"1" when no question was asked is an ordinary message', async () => {
+    const w = world({ messages: [message(M0, 60, "hello", { agent: { planCase: "nothing_to_look_up" } }), message(M1, 3, "1")] });
+    await replyTurn(runner().step, { ...w.turn, messageIds: [M1] }, understood({ outcome: "skipped" }, { intent: "give_details", hasQuestion: false }), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
+  });
+
+  it('"continue" (anything but 1) goes on as normal: answered from the knowledge base, no handover', async () => {
+    const w = world({ messages: [message(M0, 60, "enough", { agent: { planCase: "exit_unclear" } }), message(M1, 3, "ok tell me the price")] });
+    await replyTurn(runner().step, { ...w.turn, messageIds: [M1] }, understood(found), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
+    expect(w.complete).toHaveBeenCalledOnce();
   });
 });

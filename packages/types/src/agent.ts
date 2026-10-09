@@ -10,6 +10,7 @@ export const HandoffTrigger = z.enum([
   "kb_gap",
   "stuck",
   "credits_exhausted",
+  "opt_out",
 ]);
 export type HandoffTrigger = z.infer<typeof HandoffTrigger>;
 
@@ -29,11 +30,14 @@ export const Extraction = z.object({
     "price_negotiation",
     "off_topic",
     "opt_out",
+    "unclear_exit",
   ]),
   fields: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
   question: z.string().nullable(),
   preferredTime: z.string().nullable(),
   sentiment: z.enum(["positive", "neutral", "negative", "angry"]),
+  /** Set with intent opt_out when the customer says they are not interested (extraction_v2). */
+  notInterested: z.boolean().optional(),
   asksIfHuman: z.boolean(),
   confidence: z.number().min(0).max(1),
 });
