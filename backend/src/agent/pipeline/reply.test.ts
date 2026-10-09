@@ -414,6 +414,21 @@ describe("right before it sends", () => {
     }
   });
 
+  // The race the AI/Human switch creates: the model takes seconds, and a person may take the chat over meanwhile.
+  // The gate looked at the start (mode was ai); the reply step looks again after the text is written.
+  it("does not send a reply that was being written when a person took over the chat", async () => {
+    const w = world();
+    w.complete.mockImplementationOnce(async () => {
+      w.conversations.get(CONV)!.mode = "human"; // the takeover lands while the model is answering
+      return llmResult("Yes, we do site visits. Shall we plan one?");
+    });
+    const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(w.complete).toHaveBeenCalledOnce(); // it really was mid-answer
+    expect(out.reply).toEqual({ status: "not_sent", reason: "not_ai_mode" });
+    expect(w.send).not.toHaveBeenCalled();
+    expect(w.audits).toEqual([]);
+  });
+
   it("does not send to a customer who has opted out", async () => {
     const w = world({ optedOut: true });
     expect((await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps)).reply).toEqual({ status: "not_sent", reason: "opted_out" });

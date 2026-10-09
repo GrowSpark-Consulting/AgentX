@@ -8,6 +8,8 @@ import { handleWhatsAppWebhook } from "../channels/whatsapp/inbound";
 import { connectManual } from "../channels/whatsapp/connect/manual";
 import { getWebhookConfig } from "../channels/whatsapp/connect/webhook-token";
 import { handleWhatsAppHandshake } from "../channels/whatsapp/verify-challenge";
+import { setConversationMode } from "../conversations/mode";
+import { sendStaffReply } from "../conversations/staff-reply";
 import { deleteDocument, KB_UPLOAD_MAX_BODY_BYTES, uploadDocument } from "../kb/documents";
 import { answerGap, createFaq, deleteFaq, dismissGap, listGaps, updateFaq } from "../kb/faqs";
 import { serverEnv } from "../lib/env";
@@ -82,6 +84,12 @@ async function startTrial(request: Request, deps: RouteDeps): Promise<Response> 
 const templates = tenantRoute(({ context, body }) => createTemplate(context, body));
 // { to, body } → SendTestMessageResult. Owner or admin.
 const testMessage = tenantRoute(({ supabase, context, body }) => sendTestMessage(supabase, context, body));
+// { body } → SendStaffReplyResult. Owner, admin or staff; free text inside the 24-hour window only.
+const staffReply: RouteHandler = (request, deps, params) =>
+  tenantRoute(({ context, body, params: p }) => sendStaffReply(context, p.id, body))(request, deps.userClient, params);
+// { mode: "ai" | "human" } → SetConversationModeResult. Owner, admin or staff; takeover or Return to AI, with a system note.
+const conversationMode: RouteHandler = (request, deps, params) =>
+  tenantRoute(({ context, body, params: p }) => setConversationMode(context, p.id, body))(request, deps.userClient, params);
 // ?resourceId= → { url }: the Google consent link for one staff member. Owner or admin.
 const googleConnect: RouteHandler = (request, deps, params) =>
   tenantRoute(({ context }) => googleConnectUrl(context, new URL(request.url).searchParams.get("resourceId")))(request, deps.userClient, params);
@@ -140,6 +148,8 @@ export const ROUTES: readonly Route[] = [
   { path: "/api/onboarding/trial", browser: true, methods: { POST: startTrial } },
   // 6 MB: room for a 5 MB file plus its multipart wrapping; the service checks the 5 MB itself, so a big file
   // is a validation_failed with fields.file, and only a body over 6 MB is refused by the server (413).
+  { path: "/api/conversations/:id/messages", browser: true, methods: { POST: staffReply } },
+  { path: "/api/conversations/:id/mode", browser: true, methods: { POST: conversationMode } },
   { path: "/api/kb/documents", browser: true, maxBodyBytes: KB_UPLOAD_MAX_BODY_BYTES, methods: { POST: kbUpload } },
   { path: "/api/kb/documents/:id", browser: true, methods: { DELETE: kbDeleteDocument } },
   { path: "/api/kb/faqs", browser: true, methods: { POST: (request, deps) => kbCreateFaq(request, deps.userClient) } },

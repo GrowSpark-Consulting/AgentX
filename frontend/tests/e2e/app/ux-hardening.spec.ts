@@ -72,18 +72,19 @@ test.describe("dashboard preview", () => {
 test.describe("inbox, signed in with chats", () => {
   test.use({ storageState: SIGNED_OUT });
 
-  test("the switched-off AI / Human switch says why, in text everyone can reach", async ({ page }) => {
+  test("the AI / Human switch is described in text everyone can reach", async ({ page }) => {
     await holdRealtime(page);
     await signIn(page, "inbox@test.local", "/dashboard/inbox?chat=40000000-0000-0000-0000-000000000002");
-    const reason = "Switching between AI and Human isn’t available yet.";
+    const reason = "The AI replies until a team member takes over.";
 
     const whoReplies = page.getByRole("group", { name: "Who replies" });
     await expect(whoReplies).toHaveAccessibleDescription(reason);
     for (const name of ["AI", "Human"]) {
-      await expect(whoReplies.getByRole("button", { name })).toBeDisabled();
+      await expect(whoReplies.getByRole("button", { name })).toBeEnabled();
       await expect(whoReplies.getByRole("button", { name })).toHaveAccessibleDescription(reason);
     }
     await expect(page.getByText(reason)).toBeVisible();
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toBeVisible();
     await expectNoHorizontalOverflow(page);
   });
 });
