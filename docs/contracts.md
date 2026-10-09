@@ -36,8 +36,10 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0017_google_calendar` | `google_calendar_connections`: one per resource, refresh token encrypted, `status connected \| needs_reconnect`; members read everything but the token (section 6) |
 | `0018_agent_merge_functions` | `merge_lead_fields`, `merge_message_agent_meta`: the agent's lead-field and message-meta merges (Dev 1, #65; service_role only) |
 | `0019_notify_staff_target` | `notify_staff_target(tenantId, userId)`: a member's alert number as a contact tagged `staff` with a `human`-mode conversation (service_role only, section 2) |
-
+| `0020_whatsapp_webhook_tokens` | One webhook verify token per business for a client's own Meta app: SHA-256 hash plus an encrypted copy, server only (Dev 3, #78) |
 | `0021_consent_functions` | `record_notice_shown` and `record_opt_out` (service_role only): the contact update and the `consent_logs` row in one transaction, once (Dev 1; after 0019 `notify_staff_target` and 0020 `whatsapp_webhook_tokens`) |
+| `0022_consent_model_intent` | `record_opt_out` also accepts the source `model_intent` (a clear request to stop read by the model; Dev 1, #69) |
+| `0023_booking_resource_lock` | `hold_slot` and `reschedule_booking` take a per-resource advisory lock, so racing holds for one person queue and the losers get `slot_taken` (23P01) instead of a deadlock error (40P01) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -307,7 +309,8 @@ localWindow(timeZone, { day: 'today' | 'tomorrow' | 'YYYY-MM-DD', part?: 'mornin
   state is `conflict`; bad times, kinds or resources are `validation_failed`.
 - **Jobs:** `release-holds` (Inngest cron, every minute) marks holds past their expiry `expired`.
 - **Double booking:** blocked by the database: `scripts/db/hold-slot-concurrency.sh` (CI) runs 20 holds for one
-  slot at the same moment; exactly one wins.
+  slot at the same moment; exactly one wins and the other 19 get `slot_taken`. Holds and moves for one person take
+  turns (0023): without that, Postgres could report a racing loser as a deadlock (a server error) instead.
 
 **`notify.send` behaviour (Proposed, test message Agreed):**
 
