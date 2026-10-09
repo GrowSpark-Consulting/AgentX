@@ -1,8 +1,9 @@
 import { matchStop } from "../../consent/stop-words";
 import { recordAnswered } from "./answered";
-import { fixedText } from "./fixed-texts";
+import { fixedText, type TextLanguage } from "./fixed-texts";
 import { recordHandoff } from "./handoff";
 import type { PortOutcome } from "./ports";
+import type { OptOutSource } from "./store";
 import { BATCH_WINDOW_MS, type StepRunner, type TurnContext } from "./process-message";
 import type { ReplyDeps } from "./reply";
 
@@ -38,7 +39,21 @@ export async function applyStop(scope: StopScope, deps: StopDeps): Promise<Opted
   const hit = texts.map((t) => ({ id: t.id, language: t.body ? matchStop(t.body) : null })).find((t) => t.language !== null);
   if (!hit || hit.language === null) return null;
 
-  const optedOut = await store.recordOptOut(scope.tenantId, scope.contactId, "stop_keyword", hit.id);
+  return completeOptOut(scope, { source: "stop_keyword", messageId: hit.id, language: hit.language }, deps);
+}
+
+/**
+ * The opt-out itself, for a STOP phrase and for a clear request the model read (source `model_intent`, Raja 9 Oct): the
+ * opt-out and its log in one transaction, AT MOST ONE confirmation (only by the call that recorded it), a high-priority
+ * `opt_out` handoff, the lead lost when the customer said they are not interested, and every message of the turn marked answered.
+ */
+export async function completeOptOut(
+  scope: StopScope,
+  input: { source: OptOutSource; messageId: string; language: TextLanguage; leadId?: string; notInterested?: boolean },
+  deps: StopDeps,
+): Promise<OptedOut> {
+  const { store } = deps;
+  const optedOut = await store.recordOptOut(scope.tenantId, scope.contactId, input.source, input.messageId);
   let confirmation: OptedOut["confirmation"] = "not_needed";
   if (optedOut) {
     try {
@@ -46,7 +61,7 @@ export async function applyStop(scope: StopScope, deps: StopDeps): Promise<Opted
         tenantId: scope.tenantId,
         conversationId: scope.conversationId,
         kind: "opt_out_confirmation",
-        text: fixedText("opt_out_confirmation", hit.language),
+        text: fixedText("opt_out_confirmation", input.language),
       });
       confirmation = sent.status;
     } catch {
@@ -57,14 +72,16 @@ export async function applyStop(scope: StopScope, deps: StopDeps): Promise<Opted
   // alert should say "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer." (Raja, 9 Oct; the wording is in Dev 2's handoff-alert job, which reads the trigger). Done
   // on every run that finds the STOP (an open handoff is reused, the event id is fixed), so a retry still tells staff. The
   // chat's mode is not touched: nobody can message this contact anyway (the gate and notify.send refuse), and a person only calls.
-  let handoffError: unknown = null;
+  let failure: unknown = null;
   try {
+    // "I'm not interested": the lead is closed. A booked, visited or won lead is never touched (the store only moves open ones).
+    if (input.notInterested && input.leadId) await store.markLeadLost(scope.tenantId, input.leadId);
     await recordHandoff(scope, { trigger: "opt_out", priority: "high" }, deps);
   } catch (error) {
-    handoffError = error; // thrown after the answered rows, so the retry still tells staff
+    failure = error; // thrown after the answered rows, so the retry still tells staff
   }
   await recordAnswered(scope, deps); // every message of the turn: it was handled, and is not looked at again
-  if (handoffError !== null) throw handoffError;
+  if (failure !== null) throw failure;
   return { status: "opted_out", confirmation };
 }
 

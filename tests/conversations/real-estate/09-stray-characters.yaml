@@ -1,0 +1,63 @@
+name: A stray character, "?", "ok" or an emoji alone does not start the exit question
+description: "Found in the local run (9 Oct): a lone \"x\" was read as unclear_exit at 0.3 and the customer was asked to reply 1. Below 0.5 the reading is ignored and the message is answered like any other; a real question typed with a doubtful reading is not lost."
+kb:
+  - "Registration and documentation fees for the 2BHK are ₹1.5 lakh. Site visits are free on weekdays."
+turns:
+  - customer: "x"
+    mock:
+      extraction: { language: en, intent: unclear_exit, confidence: 0.3 }
+      reply: "Hi! How can I help you today?"
+    expect:
+      reply: { sent: true, notContains: ["Reply 1", "STOP"] }
+      optedOut: false
+      handoff: null
+      aiReplies: 1
+    mockOnly:
+      extracted: { intent: greeting }
+      case: nothing_to_look_up
+  - customer: "?"
+    mock:
+      extraction: { language: en, intent: unclear_exit, confidence: 0.2 }
+      reply: "Sure, what would you like to know?"
+    expect:
+      reply: { sent: true, notContains: ["Reply 1", "STOP"] }
+      optedOut: false
+      handoff: null
+      aiReplies: 1
+  - customer: "ok"
+    mock:
+      extraction: { language: en, intent: unclear_exit, confidence: 0.4 }
+      reply: "Great! Would you like to plan a site visit?"
+    expect:
+      reply: { sent: true, notContains: ["Reply 1", "STOP"] }
+      optedOut: false
+      handoff: null
+      aiReplies: 1
+  - customer: "👍"
+    mock:
+      extraction: { language: en, intent: unclear_exit, confidence: 0.3 }
+      reply: "Glad to help! Anything else you would like to know?"
+    expect:
+      reply: { sent: true, notContains: ["Reply 1", "STOP"] }
+      optedOut: false
+      handoff: null
+      aiReplies: 1
+  - customer: "enough, what are the fees? I'm Ravi"
+    # A real question typed with a doubtful exit reading is answered, not lost.
+    mock:
+      extraction:
+        language: en
+        intent: unclear_exit
+        confidence: 0.4
+        question: "What are the registration fees for the 2BHK?"
+        fields: {}
+      reply: "The registration and documentation fees for the 2BHK are ₹1.5 lakh. Anything else I can help with?"
+    expect:
+      reply: { sent: true, contains: ["₹1.5 lakh"], notContains: ["Reply 1"] }
+      noInventedPrice: true
+      optedOut: false
+      handoff: null
+      aiReplies: 1
+    mockOnly:
+      extracted: { intent: question }
+      case: answered_from_kb

@@ -7,7 +7,7 @@ import { nameForPrompt } from "../prompts/shared";
 // is missing or not the expected shape is ignored (the default persona and tone are used), never an error: a broken
 // setting must not stop a customer's reply.
 
-const TRIGGER_KEYS = { kb_gap: ["kb_gap", "gap"] } as const;
+const TRIGGER_KEYS = { kb_gap: ["kb_gap", "gap"], asked_human: ["asked_human", "human"], complaint: ["complaint"] } as const;
 
 const Settings = z.object({
   persona: z.string().optional().catch(undefined),
@@ -25,6 +25,9 @@ export interface ReplySettings {
   tone: "friendly" | "formal";
   /** The business switched the "doesn't know the answer twice" handover off. */
   kbGapHandoffEnabled: boolean;
+  /** The business switched off the handover for "wants a person" or for a complaint / an angry customer. */
+  askedHumanHandoffEnabled: boolean;
+  complaintHandoffEnabled: boolean;
   /** The first AI reply to a contact carries the privacy notice. Off unless the business turns it on (Raja, 9 Oct: switchable if legal review requires it). */
   privacyNotice: boolean;
 }
@@ -33,6 +36,13 @@ export function parseReplySettings(raw: unknown): ReplySettings {
   const parsed = Settings.safeParse(raw);
   const settings = parsed.success ? parsed.data : {};
   const persona = nameForPrompt(settings.persona ?? "", 30);
-  const kbGap = settings.handoffTriggers?.find((t) => (TRIGGER_KEYS.kb_gap as readonly string[]).includes(t.key));
-  return { persona: persona || null, tone: settings.tone ?? "friendly", kbGapHandoffEnabled: kbGap?.enabled !== false, privacyNotice: settings.privacyNotice === true };
+  const enabled = (keys: readonly string[]) => settings.handoffTriggers?.find((t) => keys.includes(t.key))?.enabled !== false;
+  return {
+    persona: persona || null,
+    tone: settings.tone ?? "friendly",
+    kbGapHandoffEnabled: enabled(TRIGGER_KEYS.kb_gap),
+    askedHumanHandoffEnabled: enabled(TRIGGER_KEYS.asked_human),
+    complaintHandoffEnabled: enabled(TRIGGER_KEYS.complaint),
+    privacyNotice: settings.privacyNotice === true,
+  };
 }

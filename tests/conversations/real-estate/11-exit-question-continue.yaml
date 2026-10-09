@@ -1,0 +1,21 @@
+name: Tapping Continue goes on as normal and the question is not asked again
+kb:
+  - "2BHK of 950 sq ft in Velachery starts at ₹78 lakh."
+turns:
+  - customer: "I'm done"
+    mock:
+      extraction: { language: en, intent: unclear_exit, confidence: 0.6 }
+    expect:
+      reply: { sent: true, buttons: ["Talk to the team", "Continue"] }
+      optedOut: false
+      aiReplies: 1
+  - customer: "Continue"
+    tap: "exit:continue"
+    mock:
+      extraction: { language: en, intent: unclear_exit, confidence: 0.6 }
+      reply: "Great, happy to help. What would you like to know about our projects?"
+    expect:
+      reply: { sent: true, buttons: [], notContains: ["Reply 1", "STOP"] }
+      handoff: null
+      optedOut: false
+      aiReplies: 1

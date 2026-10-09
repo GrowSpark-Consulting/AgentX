@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { consentNotice, FIXED_TEXTS, fixedText, SAFE_FALLBACK_EN, textLanguage, type FixedTextKey, type TextLanguage } from "./fixed-texts";
+import { consentNotice, FIXED_TEXTS, fixedText, SAFE_FALLBACK_EN, textLanguage, type FixedTextKey, type TextLanguage, EXIT_BUTTON_IDS, exitQuestionButtons } from "./fixed-texts";
 
 // The fixed lines: no model, fixed words, one per language.
 
@@ -13,12 +13,34 @@ describe("the safe fallback", () => {
   });
 });
 
+describe("the exit question as reply buttons", () => {
+  it("has two buttons in every language, each title within WhatsApp's 20 characters, different from each other, and ids that are unique", () => {
+    for (const language of LANGS) {
+      const { body, buttons } = exitQuestionButtons(language);
+      expect(buttons.map((b) => b.id)).toEqual([EXIT_BUTTON_IDS.talk, EXIT_BUTTON_IDS.continue]);
+      for (const b of buttons) expect([...b.title].length, `${language} ${b.title}`).toBeLessThanOrEqual(20);
+      expect(new Set(buttons.map((b) => b.title)).size).toBe(2);
+      expect(body).toBe(fixedText("exit_prompt", language));
+    }
+  });
+
+  it("keeps the STOP hint in the text and has NO STOP button and no '1' wording", () => {
+    for (const language of LANGS) {
+      const { body, buttons } = exitQuestionButtons(language);
+      expect(body).toContain("STOP");
+      expect(body).not.toMatch(/[0-9]/);
+      expect(buttons.some((b) => /stop/i.test(b.title) || /stop/i.test(b.id))).toBe(false);
+    }
+  });
+});
+
 describe("every fixed line", () => {
   it.each(KEYS.flatMap((k) => LANGS.map((l) => [k, l] as const)))("%s in %s is there, short and has no price, date or time", (key, language) => {
     const text = fixedText(key, language);
     expect(text.length).toBeGreaterThan(10);
     expect(text.length).toBeLessThanOrEqual(200); // short enough for the 600-character reply cap with room for a notice
-    expect(text).not.toMatch(/₹|\d/);
+    // The exit question offers "1" as the way to reach the team (until reply buttons exist): that digit is not a price, date or time.
+    expect(key === "exit_question" ? text.replace("1", "") : text).not.toMatch(/₹|\d/);
     expect(text.trim()).toBe(text);
   });
 

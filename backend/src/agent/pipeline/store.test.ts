@@ -318,11 +318,19 @@ describe("mergeLeadFields", () => {
 });
 
 describe("getBatchTexts", () => {
+  it("tells which button or list row a tap was (the inbound message's meta.buttonId), and nothing else of the meta", async () => {
+    const { db } = fakeDb(() => ({ data: [{ id: "m1", body: "Talk to the team", created_at: "2026-10-08T10:00:00+00:00", meta: { buttonId: "exit:talk", other: "x" } }, { id: "m2", body: "hi", created_at: "2026-10-08T10:00:02+00:00", meta: { buttonId: 5 } }] }));
+    expect(await createPipelineStore(db).getBatchTexts(T, CONV, ["m1", "m2"])).toEqual([
+      { id: "m1", body: "Talk to the team", createdAt: "2026-10-08T10:00:00.000Z", buttonId: "exit:talk" },
+      { id: "m2", body: "hi", createdAt: "2026-10-08T10:00:02.000Z", buttonId: null },
+    ]);
+  });
+
   it("reads the text of these customer messages of this conversation, oldest first", async () => {
     const { db, calls } = fakeDb(() => ({ data: [{ id: "m1", body: "hi", created_at: "2026-10-08T10:00:00+00:00" }, { id: "m2", body: null, created_at: "2026-10-08T10:00:02+00:00" }] }));
     expect(await createPipelineStore(db).getBatchTexts(T, CONV, ["m1", "m2"])).toEqual([
-      { id: "m1", body: "hi", createdAt: "2026-10-08T10:00:00.000Z" },
-      { id: "m2", body: null, createdAt: "2026-10-08T10:00:02.000Z" },
+      { id: "m1", body: "hi", createdAt: "2026-10-08T10:00:00.000Z", buttonId: null },
+      { id: "m2", body: null, createdAt: "2026-10-08T10:00:02.000Z", buttonId: null },
     ]);
     tenantFilter(calls[0]);
     expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
@@ -500,5 +508,41 @@ describe("setConversationMode", () => {
     expect(filter(calls[0], "id")).toEqual(["id", "eq", CONV]);
     expect(filter(calls[0], "mode")).toEqual(["mode", "eq", "ai"]);
     expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).setConversationMode(T, CONV, "human")).toBe(false);
+  });
+});
+
+describe("getPreviousPlanCase", () => {
+  const rows = (...metas: unknown[]) => ({ data: metas.map((meta) => ({ meta })) });
+
+  it("reads the newest earlier customer messages of this chat, for this business", async () => {
+    const { db, calls } = fakeDb(() => rows({}));
+    await createPipelineStore(db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z");
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
+    expect(filter(calls[0], "sender")).toEqual(["sender", "eq", "customer"]);
+    expect(filter(calls[0], "created_at")).toEqual(["created_at", "lt", "2026-10-08T10:00:00.000Z"]);
+    expect(calls[0].limit).toBe(20);
+  });
+
+  it("is the case the latest turn kept, skipping messages no turn wrote on, and null when there is none", async () => {
+    expect(await createPipelineStore(fakeDb(() => rows({ buttonId: "x" }, { agent: { planCase: "exit_unclear" } }, { agent: { planCase: "answered_from_kb" } })).db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z")).toBe("exit_unclear");
+    expect(await createPipelineStore(fakeDb(() => rows({}, null, { agent: { planCase: 3 } })).db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z")).toBeNull();
+  });
+});
+
+describe("markLeadLost", () => {
+  it("moves only an open lead of this business, by id: a booked, visited, won or lost one is left alone", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: LEAD }] }));
+    expect(await createPipelineStore(db).markLeadLost(T, LEAD)).toBe(true);
+    expect(calls[0].table).toBe("leads");
+    expect(calls[0].op).toBe("update");
+    expect(calls[0].payload).toEqual({ stage: "lost" });
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "id")).toEqual(["id", "eq", LEAD]);
+    expect(filter(calls[0], "stage")).toEqual(["stage", "in", ["new", "engaged", "qualified", "nurture"]]);
+  });
+
+  it("is false when nothing changed", async () => {
+    expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).markLeadLost(T, LEAD)).toBe(false);
   });
 });

@@ -158,7 +158,7 @@ export function fakePipelineStore(
         .map((id) => messages.get(id))
         .filter((m): m is FakeMessage => !!m && m.tenantId === tenantId && m.conversationId === conversationId && m.sender === "customer")
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
-        .map((m) => ({ id: m.id, body: m.body ?? null, createdAt: m.createdAt }));
+        .map((m) => ({ id: m.id, body: m.body ?? null, createdAt: m.createdAt, buttonId: typeof m.meta?.buttonId === "string" ? m.meta.buttonId : null }));
     },
     async getHistory(tenantId, conversationId, before, limit): Promise<HistoryItem[]> {
       calls.push("getHistory");
@@ -203,6 +203,27 @@ export function fakePipelineStore(
       c.optedOut = true;
       consentLogs.push({ tenantId, contactId, event: "opted_out", source, messageId });
       return true;
+    },
+    async markLeadLost(tenantId, leadId) {
+      calls.push("markLeadLost");
+      maybeFail("markLeadLost");
+      const l = leads.get(leadId);
+      if (!l || l.tenantId !== tenantId || !["new", "engaged", "qualified", "nurture"].includes(l.stage)) return false;
+      l.stage = "lost";
+      return true;
+    },
+    async getPreviousPlanCase(tenantId, conversationId, before) {
+      calls.push("getPreviousPlanCase");
+      maybeFail("getPreviousPlanCase");
+      const earlier = [...messages.values()]
+        .filter((m) => m.tenantId === tenantId && m.conversationId === conversationId && m.sender === "customer" && Date.parse(m.createdAt) < Date.parse(before))
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .slice(0, 20);
+      for (const m of earlier) {
+        const planCase = (m.meta?.agent as { planCase?: unknown } | undefined)?.planCase;
+        if (typeof planCase === "string") return planCase;
+      }
+      return null;
     },
     async getTenantReplyInfo(tenantId): Promise<TenantReplyInfo | null> {
       calls.push("getTenantReplyInfo");

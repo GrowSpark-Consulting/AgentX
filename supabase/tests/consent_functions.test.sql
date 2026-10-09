@@ -3,7 +3,7 @@
 -- Run: pnpm db:test
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(19);
+select plan(21);
 
 insert into public.tenants (id, name, vertical) values
   ('7a000000-0000-0000-0000-00000000000a', 'Consent A', 'test-pack'),
@@ -42,6 +42,10 @@ select is(public.record_opt_out('7a000000-0000-0000-0000-00000000000b', '7b00000
 select is((select opted_out_at from public.contacts where id = '7b000000-0000-0000-0000-0000000000a2'), null, 'which is untouched');
 
 select throws_ok($$select public.record_opt_out('7a000000-0000-0000-0000-00000000000a', '7b000000-0000-0000-0000-0000000000a2', 'because')$$, 'P0001', null, 'a source the table does not document is refused');
+
+-- 0022: the model read a clear request to stop
+select is(public.record_opt_out('7a000000-0000-0000-0000-00000000000a', '7b000000-0000-0000-0000-0000000000a2', 'model_intent', '7c000000-0000-0000-0000-0000000000a4'), true, 'a clear request read by the model opts the contact out (model_intent)');
+select is((select count(*)::int from public.consent_logs where contact_id = '7b000000-0000-0000-0000-0000000000a2' and event = 'opted_out' and source = 'model_intent'), 1, 'and it is logged with that source');
 
 -- the server only -----------------------------------------------------------------------------------------
 

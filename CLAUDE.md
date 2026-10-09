@@ -43,9 +43,10 @@ pnpm dev (frontend :3000 + API :4000) · pnpm inngest:dev · pnpm test · pnpm t
 pnpm db:start · pnpm db:reset · pnpm db:test · pnpm db:status · pnpm db:stop · pnpm packs:sync [-- --check]
 Local env files: frontend/.env.local (public values, from frontend/.env.example) and backend/.env.local
 (server values, from backend/.env.example). Neither is ever committed.
-Coming later: pnpm test:conversations (M3) · pnpm packs:migrate (M7)
+pnpm test:conversations (scripted chats, mocked models; add -- --live for the real models, never in CI)
+Coming later: pnpm packs:migrate (M7)
 
 ## Before you finish a task
-Run typecheck, lint and tests. Update tests/conversations if agent behaviour changed.
+Run typecheck, lint and tests. Update tests/conversations if agent behaviour changed (see tests/conversations/README.md).
 
 @AGENTS.md

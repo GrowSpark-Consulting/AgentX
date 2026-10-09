@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:conversations": "tsx --env-file-if-exists=.env.local src/conversation-tests/cli.ts",
     "seed:connection": "tsx --env-file-if-exists=.env.local src/scripts/seed-connection.ts",
     "packs:sync": "tsx --env-file-if-exists=.env.local src/scripts/sync-packs.ts"
   },
@@ -35,6 +36,7 @@
     "eslint": "^9",
     "typescript": "^5",
     "typescript-eslint": "8.71.0",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "yaml": "2.9.1"
   }
 }

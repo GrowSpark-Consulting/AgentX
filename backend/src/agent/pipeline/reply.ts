@@ -4,18 +4,19 @@ import { normaliseQuestion } from "../../kb/question";
 import type { AuditEntry } from "../../lib/audit";
 import { recordAnswered } from "./answered";
 import { recordHandoff } from "./handoff";
-import { applyStop } from "./stop";
+import { applyStop, completeOptOut } from "./stop";
 import { stripUnsafeCharacters } from "../../lib/text";
 import type { NotifyPayload, SendOutcome } from "../../notify/send";
 import type { LlmClient, LlmMessage } from "../llm/anthropic";
 import { LlmError } from "../llm/anthropic";
 import { buildReplyMessages, buildReplySystem, REPLY_PROMPT } from "../prompts/reply_v1";
-import { consentNotice, fixedText, textLanguage } from "./fixed-texts";
+import { consentNotice, EXIT_BUTTON_IDS, exitQuestionButtons, fixedText, textLanguage } from "./fixed-texts";
 import { parseReplySettings, type ReplySettings } from "./persona";
 import { planReply, type Plan, type PlanInput, type ReplyPlan } from "./plan";
 import { checkReply } from "./postcheck";
 import type { PortOutcome, SystemNoticePort } from "./ports";
 import type { StepRunner, TurnContext } from "./process-message";
+import type { Interactive } from "../../notify/interactive";
 import type { HandoffPriority, PipelineStore } from "./store";
 import { turnClock } from "./turn-deadline";
 import type { UnderstandResult } from "./understand";
@@ -60,7 +61,9 @@ export type ReplyResult =
   | { status: "sent_unknown" } // the send's outcome is unknown: it may have gone out, so it is never sent again
   | { status: "already_answered" }
   | { status: "not_sent"; reason: NotSentReason }
-  | { status: "no_credits" };
+  | { status: "no_credits" }
+  /** The customer clearly asked to stop and was opted out (model_intent): nothing was sent but the one confirmation. */
+  | { status: "opted_out"; confirmation: PortOutcome["status"] | "not_needed" };
 
 export interface HandoffSummary {
   trigger: HandoffTrigger;
@@ -85,6 +88,7 @@ interface PlanSummary {
   case: string;
   deadlineExceeded: boolean;
   handoff: { trigger: HandoffTrigger; priority: HandoffPriority } | null;
+  optOut: { notInterested: boolean } | null;
 }
 
 interface Loaded {
@@ -101,11 +105,12 @@ async function loadPlanInput(turn: TurnContext, understood: UnderstandResult, de
   const texts = await store.getBatchTexts(turn.tenantId, turn.conversationId, turn.messageIds);
   const firstAt = texts[0]?.createdAt ?? new Date().toISOString();
   const lastAt = texts[texts.length - 1]?.createdAt ?? firstAt;
-  const [agent, contact, info, previousMisses] = await Promise.all([
+  const [agent, contact, info, previousMisses, previousCase] = await Promise.all([
     store.getAgentMeta(turn.tenantId, turn.conversationId, lastMessageId),
     store.getContact(turn.tenantId, turn.contactId),
     store.getTenantReplyInfo(turn.tenantId),
     store.getPreviousMisses(turn.tenantId, turn.conversationId, firstAt),
+    store.getPreviousPlanCase(turn.tenantId, turn.conversationId, firstAt),
   ]);
   const asked = (agent?.extraction as { question?: unknown } | undefined)?.question;
   const settings = parseReplySettings(info?.agentSettings);
@@ -114,8 +119,13 @@ async function loadPlanInput(turn: TurnContext, understood: UnderstandResult, de
     settings,
     businessName: info?.name ?? null,
     lastAt,
-    input: { understood, question: typeof asked === "string" ? asked : null, contactLanguage: contact?.language ?? null, previousMisses, settings, deadlineExceeded },
+    input: { understood, question: typeof asked === "string" ? asked : null, contactLanguage: contact?.language ?? null, previousMisses, settings, deadlineExceeded, exitQuestionPending: previousCase === "exit_unclear", customerSaidOne: texts.some((t) => isJustOne(t.body)), talkButtonTapped: texts.some((t) => t.buttonId === EXIT_BUTTON_IDS.talk) },
   };
+}
+
+/** The customer's answer "1" to the question we asked ("Reply 1 to talk to the team"): the digit alone, in any of the usual forms, with or without a full stop. */
+function isJustOne(body: string | null): boolean {
+  return body !== null && /^[1१１][.)]?$/u.test(body.trim());
 }
 
 /** Keeps something on the newest message's meta; a message that is not found is a bug, not retried. */
@@ -143,8 +153,15 @@ export async function replyTurn(step: StepRunner, turn: TurnContext, understood:
       }
     }
     await keep(deps, turn, { kbMisses: plan.kbMisses, planCase: plan.case });
-    return { case: plan.case, deadlineExceeded: clock.exceeded, handoff: plan.handoff ?? null };
+    return { case: plan.case, deadlineExceeded: clock.exceeded, handoff: plan.handoff ?? null, optOut: plan.optOut ?? null };
   });
+
+  // A clear request to stop that the model read: opted out like a STOP phrase, nothing else is sent (and no credit is spent).
+  if (planned.optOut) {
+    const optOut = planned.optOut;
+    const reply = await step.run<ReplyResult>("opt-out", () => optOutByIntent(turn, understood, optOut, deps));
+    return { case: planned.case, reply, handoff: null };
+  }
 
   const reply = await step.run<ReplyResult>("reply", () => sendReply(turn, understood, startedAt, planned, deps));
 
@@ -202,6 +219,15 @@ async function compose(plan: Plan, loaded: Loaded, turn: TurnContext, exceeded: 
   return fallback;
 }
 
+/** The opt-out the model asked for: the same writes as a STOP phrase (stop.ts), with the language of the message. */
+async function optOutByIntent(turn: TurnContext, understood: UnderstandResult, optOut: { notInterested: boolean }, deps: ReplyDeps): Promise<ReplyResult> {
+  const contact = await deps.store.getContact(turn.tenantId, turn.contactId);
+  const language = textLanguage(understood.status === "understood" ? understood.summary.language : null, contact?.language);
+  const lastMessageId = turn.messageIds[turn.messageIds.length - 1];
+  const result = await completeOptOut(turn, { source: "model_intent", messageId: lastMessageId, language, leadId: turn.leadId, notInterested: optOut.notInterested }, deps);
+  return { status: "opted_out", confirmation: result.confirmation };
+}
+
 async function sendReply(turn: TurnContext, understood: UnderstandResult, startedAt: number, planned: PlanSummary, deps: ReplyDeps): Promise<ReplyResult> {
   const { store } = deps;
   const now = deps.now ?? Date.now;
@@ -220,6 +246,7 @@ async function sendReply(turn: TurnContext, understood: UnderstandResult, starte
 
   const clock = turnClock(startedAt, now());
   const plan = planReply(loaded.input);
+  if (plan.reply.mode === "none") return { status: "not_sent", reason: "opted_out" }; // the opt-out step handles it (replyTurn); nothing to send here
   const { text, source } = await compose(plan, loaded, turn, clock.exceeded, clock.signal, deps);
 
   // Staff may have taken over, or the customer sent STOP, since the gate looked.
@@ -237,7 +264,16 @@ async function sendReply(turn: TurnContext, understood: UnderstandResult, starte
   const carriesNotice = loaded.settings.privacyNotice && contact.consentAt === null;
   const outgoing = carriesNotice ? `${text}\n\n${consentNotice(noticeLanguage, deps.privacyPolicyUrl)}` : text;
 
-  const outcome = await deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, text: outgoing });
+  // The exit question goes as two reply buttons (Raja, 9 Oct); if WhatsApp refuses them (not a retry, not an unknown outcome) the
+  // same question goes once as plain text with "Reply 1". A tap or a "1" is read by plan.ts.
+  const exit = plan.reply.mode === "fixed" && plan.reply.text === "exit_question" ? exitQuestionButtons(plan.reply.language) : null;
+  const send = (payload: { text: string } | { interactive: Interactive }) => deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, ...payload });
+  let outcome = exit
+    ? await send({ interactive: { type: "buttons", body: carriesNotice ? `${exit.body}
+
+${consentNotice(noticeLanguage, deps.privacyPolicyUrl)}` : exit.body, buttons: [...exit.buttons] } })
+    : await send({ text: outgoing });
+  if (exit && outcome.status === "failed" && !outcome.error.retryable && !outcome.error.outcomeUnknown) outcome = await send({ text: outgoing });
   switch (outcome.status) {
     case "sent":
       // The marker first (one cheap write), then the rows: if the rows cannot be written, a retry still sees the marker.

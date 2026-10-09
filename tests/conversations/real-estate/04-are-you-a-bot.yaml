@@ -1,0 +1,18 @@
+name: '"Are you a bot?" is answered honestly and is not a handover'
+turns:
+  - customer: "are you a bot?"
+    mock:
+      extraction:
+        language: en
+        intent: question
+        asksIfHuman: true
+      reply: "Yes, I'm an AI assistant for Skyline Homes. I can share project details or connect you with our team."
+    expect:
+      extracted: { asksIfHuman: true }
+      reply: { sent: true }
+      aiReplies: 1
+      handoff: null
+      mode: ai
+    mockOnly:
+      case: nothing_to_look_up
+      reply: { contains: ["AI assistant"] }

@@ -1,0 +1,14 @@
+name: "Tamil: \"எனக்கு மெசேஜ் அனுப்பாதீங்க.\" is an opt-out (Raja's phrase 1)"
+description: "Raja's phrase list (docs/reference/opt-out-handoff-phrases.md). Mock mode checks what the code does with a clear opt-out; --live shows what the real model makes of the phrase."
+turns:
+  - customer: "எனக்கு மெசேஜ் அனுப்பாதீங்க."
+    mock:
+      extraction: { language: ta, intent: opt_out, confidence: 0.95 }
+    expect:
+      extracted: { intent: opt_out }
+      optedOut: true
+      aiReplies: 0
+    mockOnly:
+      consent: [{ event: opted_out, source: model_intent }]
+      handoff: { trigger: opt_out, priority: high }
+      confirmations: 1
