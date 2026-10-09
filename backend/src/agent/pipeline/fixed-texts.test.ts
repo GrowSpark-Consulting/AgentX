@@ -18,7 +18,8 @@ describe("every fixed line", () => {
     const text = fixedText(key, language);
     expect(text.length).toBeGreaterThan(10);
     expect(text.length).toBeLessThanOrEqual(200); // short enough for the 600-character reply cap with room for a notice
-    expect(text).not.toMatch(/₹|\d/);
+    // The exit question offers "1" as the way to reach the team (until reply buttons exist): that digit is not a price, date or time.
+    expect(key === "exit_question" ? text.replace("1", "") : text).not.toMatch(/₹|\d/);
     expect(text.trim()).toBe(text);
   });
 

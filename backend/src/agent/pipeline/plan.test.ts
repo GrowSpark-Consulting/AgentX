@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fixedText } from "./fixed-texts";
 import { parseReplySettings } from "./persona";
-import { KB_MISSES_FOR_HANDOFF, planReply, type PlanInput } from "./plan";
+import { KB_MISSES_FOR_HANDOFF, OPT_OUT_MIN_CONFIDENCE, planReply, type PlanInput } from "./plan";
 import type { Retrieval, UnderstandResult } from "./understand";
 
 // The table of outcomes: what the customer gets for every way the understanding step can end. Every row of the
@@ -12,6 +12,7 @@ const summary = (over: Partial<Extract<UnderstandResult, { status: "understood" 
   language: "en" as const,
   sentiment: "neutral" as const,
   asksIfHuman: false,
+  notInterested: false,
   confidence: 0.9,
   hasQuestion: true,
   fieldKeys: [] as string[],
@@ -26,6 +27,8 @@ const input = (over: Partial<PlanInput> = {}): PlanInput => ({
   contactLanguage: null,
   previousMisses: 0,
   settings: parseReplySettings({}),
+  exitQuestionPending: false,
+  customerSaidOne: false,
   deadlineExceeded: false,
   ...over,
 });
@@ -177,11 +180,102 @@ describe("understood, and off topic", () => {
   });
 });
 
-describe("understood, and the message is about leaving", () => {
-  it("is the STOP hint, a fixed line, in the customer's language, and nothing more", () => {
-    const plan = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "opt_out", language: "ta-en" }) }));
-    expect(plan).toEqual({ case: "opt_out_hint", reply: { mode: "fixed", text: "stop_hint", language: "ta-en" }, kbMisses: 0 });
-    expect(fixedText("stop_hint", "ta-en")).toContain("STOP");
+describe("understood, and the customer clearly asks to stop (opt_out, confidence at least the threshold)", () => {
+  const leaving = (over: Parameters<typeof summary>[0] = {}) => planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "opt_out", ...over }) }));
+
+  it("the threshold is 0.8 (Raja, 9 Oct)", () => {
+    expect(OPT_OUT_MIN_CONFIDENCE).toBe(0.8);
+  });
+
+  it("is an opt-out: nothing is sent, the lead is not marked lost unless they said they are not interested", () => {
+    expect(leaving({ confidence: 0.8 })).toEqual({ case: "opt_out_intent", reply: { mode: "none" }, optOut: { notInterested: false }, kbMisses: 0 });
+    expect(leaving({ confidence: 0.95 }).optOut).toEqual({ notInterested: false });
+  });
+
+  it("says when they are not interested, so the lead can be lost", () => {
+    expect(leaving({ confidence: 0.9, notInterested: true })).toMatchObject({ case: "opt_out_not_interested", optOut: { notInterested: true } });
+  });
+
+  it("opens no handover from the plan (the opt-out step opens its own) and never replies", () => {
+    const plan = leaving({ confidence: 0.99 });
+    expect(plan.handoff).toBeUndefined();
+    expect(plan.reply).toEqual({ mode: "none" });
+  });
+});
+
+describe("understood, and the customer may be leaving but it is not clear how", () => {
+  const plan = (over: Parameters<typeof summary>[0]) => planReply(input({ understood: understood({ outcome: "skipped" }, over) }));
+
+  it.each([
+    ["opt_out below the threshold", { intent: "opt_out" as const, confidence: 0.79 }],
+    ["opt_out, far below", { intent: "opt_out" as const, confidence: 0.2 }],
+    ["unclear_exit, however sure", { intent: "unclear_exit" as const, confidence: 0.99 }],
+  ])("%s: the customer is asked once, in their language, and not opted out", (_name, over) => {
+    const result = plan({ ...over, language: "ta-en" });
+    expect(result).toEqual({ case: "exit_unclear", reply: { mode: "fixed", text: "exit_question", language: "ta-en" }, kbMisses: 0 });
+    expect(result.optOut).toBeUndefined();
+  });
+
+  it("the line has the STOP hint and the two choices as text until sendButtons exists, and no STOP button", () => {
+    for (const language of ["en", "ta", "ta-en", "hi"] as const) {
+      const text = fixedText("exit_question", language);
+      expect(text).toContain("STOP");
+      expect(text).toContain("1");
+    }
+    expect(fixedText("exit_question", "en")).toContain("Reply 1 to talk to the team, or just continue");
+    expect(fixedText("exit_question", "en")).toContain("If you'd like us to stop messaging you, just reply STOP.");
+  });
+
+  it('"1" after that question is a person taking over: handover asked_human, high priority', () => {
+    const result = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "give_details", hasQuestion: false }), exitQuestionPending: true, customerSaidOne: true }));
+    expect(result).toEqual({ case: "exit_question_talk", reply: { mode: "fixed", text: "handoff", language: "en" }, handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0 });
+  });
+
+  it('"1" when nothing was asked, or anything else after the question, is an ordinary message', () => {
+    expect(planReply(input({ understood: understood(found), customerSaidOne: true })).case).toBe("answered_from_kb");
+    expect(planReply(input({ understood: understood(found), exitQuestionPending: true, customerSaidOne: false })).case).toBe("answered_from_kb");
+  });
+
+  it('"1" is not a handover when the business switched asked_human off', () => {
+    const settings = parseReplySettings({ handoffTriggers: [{ key: "asked_human", enabled: false }] });
+    expect(planReply(input({ understood: understood(found), exitQuestionPending: true, customerSaidOne: true, settings })).case).toBe("answered_from_kb");
+  });
+});
+
+describe("understood, and the customer wants a person, or is unhappy or angry (Raja, 9 Oct)", () => {
+  const plan = (over: Parameters<typeof summary>[0], settings = parseReplySettings({})) => planReply(input({ understood: understood({ outcome: "skipped" }, over), settings }));
+
+  it("wants a person: the handover line and a high-priority asked_human handover", () => {
+    expect(plan({ intent: "talk_to_human", language: "hi" })).toEqual({ case: "asked_human", reply: { mode: "fixed", text: "handoff", language: "hi" }, handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0 });
+  });
+
+  it.each([
+    ["a complaint", { intent: "complaint" as const }],
+    ["an angry customer asking something else", { intent: "question" as const, sentiment: "angry" as const }],
+    ["an angry customer who is negotiating", { intent: "price_negotiation" as const, sentiment: "angry" as const }],
+  ])("%s: the handover line and a high-priority complaint handover", (_name, over) => {
+    expect(plan(over)).toEqual({ case: "complaint", reply: { mode: "fixed", text: "handoff", language: "en" }, handoff: { trigger: "complaint", priority: "high" }, kbMisses: 0 });
+  });
+
+  it("only asking whether it is a bot is answered, not handed over", () => {
+    expect(plan({ intent: "question", asksIfHuman: true }).handoff).toBeUndefined();
+  });
+
+  it("a negative (not angry) customer is answered like anyone else", () => {
+    expect(plan({ intent: "question", sentiment: "negative" }).handoff).toBeUndefined();
+  });
+
+  it("a business can switch each handover off, and the message is then answered normally", () => {
+    const noHuman = parseReplySettings({ handoffTriggers: [{ key: "asked_human", enabled: false }] });
+    const noComplaint = parseReplySettings({ handoffTriggers: [{ key: "complaint", enabled: false }] });
+    expect(plan({ intent: "talk_to_human" }, noHuman).handoff).toBeUndefined();
+    expect(plan({ intent: "complaint" }, noComplaint).handoff).toBeUndefined();
+    expect(plan({ intent: "talk_to_human" }, noComplaint).handoff).toEqual({ trigger: "asked_human", priority: "high" });
+  });
+
+  it("a person is asked for before anything is looked up: the handover wins over a knowledge-base answer", () => {
+    const result = planReply(input({ understood: understood(found, { intent: "talk_to_human" }) }));
+    expect(result.case).toBe("asked_human");
   });
 });
 

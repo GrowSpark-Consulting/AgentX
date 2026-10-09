@@ -37,7 +37,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0018_agent_merge_functions` | `merge_lead_fields`, `merge_message_agent_meta`: the agent's lead-field and message-meta merges (Dev 1, #65; service_role only) |
 | `0019_notify_staff_target` | `notify_staff_target(tenantId, userId)`: a member's alert number as a contact tagged `staff` with a `human`-mode conversation (service_role only, section 2) |
 
-| `0021_consent_functions` | `record_notice_shown` and `record_opt_out` (service_role only): the contact update and the `consent_logs` row in one transaction, once (Dev 1; after 0019 `notify_staff_target` and 0020 `whatsapp_webhook_tokens`) |
+| `0021_consent_functions` | `record_notice_shown` and `record_opt_out` (service_role only): the contact update and the `consent_logs` row in one transaction, once (Dev 1; after 0019 `notify_staff_target` and 0022 `whatsapp_webhook_tokens`) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -438,6 +438,8 @@ runs while a failed step waits for its retry, so a slow second attempt can be an
 replies:** a step looks at `message.answered` (and at the `reply` marker the send leaves on the message's meta) before and
 right before the send; the marker is written before the rows, so a failure to write the rows does not allow a second
 reply. The handover's event is sent on every run of the step (its id makes it one event), so a retry after a failure still tells staff.
+
+**Anger, a person, and leaving (Raja, 9 Oct).** `extraction_v2` adds the intent `unclear_exit` and the key `notInterested` and carries Raja's phrases (`docs/reference/opt-out-handoff-phrases.md`) as examples, not keywords. The reply step's table (`plan.ts`) then decides: **`opt_out` with confidence >= 0.8** (`OPT_OUT_MIN_CONFIDENCE`) is opted out like a STOP (`consent_logs` source `model_intent`, migration 0022), one confirmation through `system_notice`, a high-priority `opt_out` handoff and `handoff.opened`, no reply and no credit, and the lead goes to `lost` when `notInterested`; **`opt_out` below 0.8 or `unclear_exit`** gets the `exit_question` line once (short line, "Reply 1 to talk to the team, or just continue", the STOP hint; reply buttons when `sendButtons` exists), and a "1" right after it is a handoff; **`talk_to_human`, `complaint` or `sentiment: angry`** gets the handover line, `mode = 'human'`, and a high-priority handoff (`asked_human` or `complaint`) with `handoff.opened`; each of the last two can be switched off in `agent_settings.handoffTriggers`. `asksIfHuman` alone is answered, not handed over.
 
 **Reply-button ids (agreed 9 Oct, built on Day 3).** A booking confirmation's reply buttons carry the ids `booking:<bookingId>:confirm`, `booking:<bookingId>:reschedule` and `booking:<bookingId>:cancel` (WhatsApp allows 3 buttons, ids up to 256 characters). The pipeline, not the webhook, routes the tap: the webhook stores it as a customer message, and step 5 reads the id and calls `confirmBooking` / `rescheduleBooking` / `cancelBooking`.
 

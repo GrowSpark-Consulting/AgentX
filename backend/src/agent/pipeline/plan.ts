@@ -11,7 +11,11 @@ import type { UnderstandResult } from "./understand";
 //   the step ended with                                  | the customer gets                      | also
 //   -----------------------------------------------------+----------------------------------------+---------------------------------------------
 //   the turn's time ran out (25 s)                       | the safe fallback                      |
-//   understood, the message is about leaving (opt_out)   | the STOP hint                          |
+//   understood, a clear opt-out (confidence >= 0.8)      | nothing (opted out)                    | confirmation, handoff opt_out, lead lost if "not interested"
+//   understood, may be leaving but unclear / opt_out < 0.8| the "talk to the team or continue" line|
+//   ... the customer then sends "1"                      | the handover line                      | handoff asked_human (high), chat to a person
+//   understood, wants a person                           | the handover line                      | handoff asked_human (high), if the business has it on
+//   understood, a complaint, or an angry customer        | the handover line                      | handoff complaint (high), if the business has it on
 //   understood, off topic                                | the model's polite decline             |
 //   understood, the knowledge base had the answer        | the model's answer from the facts      | the miss count goes back to 0
 //   understood, the knowledge base had nothing (a gap)   | the safe fallback                      | the gap is recorded; the miss count goes up
@@ -28,9 +32,17 @@ import type { UnderstandResult } from "./understand";
 
 export const KB_MISSES_FOR_HANDOFF = 2;
 
+/**
+ * How sure the model must be that a customer clearly asks to stop before the code opts them out (Raja, 9 Oct; approved).
+ * Below it the customer is asked once what they want (the `exit_question` line), never opted out on a guess.
+ */
+export const OPT_OUT_MIN_CONFIDENCE = 0.8;
+
 export type ReplyPlan =
   | { mode: "model"; action: NextAction; facts: string[]; language: Extraction["language"] | null }
-  | { mode: "fixed"; text: FixedTextKey; language: TextLanguage };
+  | { mode: "fixed"; text: FixedTextKey; language: TextLanguage }
+  /** Nothing is sent: the customer is opted out (Plan.optOut). */
+  | { mode: "none" };
 
 export interface PlanInput {
   understood: UnderstandResult;
@@ -41,12 +53,18 @@ export interface PlanInput {
   /** Consecutive misses in this chat before this turn. */
   previousMisses: number;
   settings: ReplySettings;
+  /** The chat's last earlier turn asked the "talk to the team or continue" question (its plan case was exit_unclear), and nobody has answered it yet. */
+  exitQuestionPending: boolean;
+  /** The customer's newest message is just "1". */
+  customerSaidOne: boolean;
   /** The turn's hard stop has passed: no model call, the safe fallback. */
   deadlineExceeded: boolean;
 }
 
 export interface Plan {
   reply: ReplyPlan;
+  /** The customer clearly asked to stop: opt them out (source model_intent), one confirmation, an opt_out handover, and no reply. */
+  optOut?: { notInterested: boolean };
   /** Open a handover after the reply is sent. */
   handoff?: { trigger: HandoffTrigger; priority: "high" | "normal" };
   /** Record this question as a gap in the knowledge base. */
@@ -78,7 +96,23 @@ export function planReply(input: PlanInput): Plan {
   }
 
   const { summary, retrieval } = understood;
-  if (summary.intent === "opt_out") return { reply: fixed("stop_hint", language), kbMisses: carry, case: "opt_out_hint" };
+  // Leaving, or not sure how (Raja, 9 Oct). Code decides; the model only reported the intent and how sure it was.
+  if (summary.intent === "opt_out" && summary.confidence >= OPT_OUT_MIN_CONFIDENCE) {
+    return { reply: { mode: "none" }, optOut: { notInterested: summary.notInterested }, kbMisses: 0, case: summary.notInterested ? "opt_out_not_interested" : "opt_out_intent" };
+  }
+  if (summary.intent === "opt_out" || summary.intent === "unclear_exit") return { reply: fixed("exit_question", language), kbMisses: carry, case: "exit_unclear" };
+  // The customer answered our question with "1": a person takes over.
+  if (input.exitQuestionPending && input.customerSaidOne && settings.askedHumanHandoffEnabled) {
+    return { reply: fixed("handoff", language), handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0, case: "exit_question_talk" };
+  }
+  // Wants a person, is unhappy or angry: the chat goes to staff. A business can switch each of these off, and then the
+  // message is answered like any other.
+  if (summary.intent === "talk_to_human" && settings.askedHumanHandoffEnabled) {
+    return { reply: fixed("handoff", language), handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0, case: "asked_human" };
+  }
+  if ((summary.intent === "complaint" || summary.sentiment === "angry") && settings.complaintHandoffEnabled) {
+    return { reply: fixed("handoff", language), handoff: { trigger: "complaint", priority: "high" }, kbMisses: 0, case: "complaint" };
+  }
 
   const asked = question?.trim() ? question.trim() : "";
   const model = (action: NextAction, facts: string[] = []): ReplyPlan => ({ mode: "model", action, facts, language: summary.language });

@@ -114,7 +114,7 @@ describe("a message that is understood", () => {
     const result = await understandTurn(step, w.turn, w.deps);
     expect(result).toEqual({
       status: "understood",
-      summary: { intent: "question", language: "ta-en", sentiment: "neutral", asksIfHuman: false, confidence: 0.9, hasQuestion: true, fieldKeys: ["area", "size", "budget", "timeline"] },
+      summary: { intent: "question", language: "ta-en", sentiment: "neutral", asksIfHuman: false, notInterested: false, confidence: 0.9, hasQuestion: true, fieldKeys: ["area", "size", "budget", "timeline"] },
       retrieval: { outcome: "found", chunks: [{ documentId: "doc1", title: "Brochure", content: "2BHK of 950 sq ft starts at 78 lakh.", similarity: 0.7 }] },
     });
     expect(ran).toEqual(["extract", "save-fields", "retrieve"]);
@@ -137,7 +137,7 @@ describe("a message that is understood", () => {
     await understandTurn(runner().step, w.turn, w.deps);
     expect(w.complete).toHaveBeenCalledOnce();
     const request = w.complete.mock.calls[0][0];
-    expect(request).toMatchObject({ role: "extraction", tenantId: A, conversationId: CONV, prompt: { name: "extraction", version: 1 } });
+    expect(request).toMatchObject({ role: "extraction", tenantId: A, conversationId: CONV, prompt: { name: "extraction", version: 2 } });
     const system = request.system.map((b) => b.text).join("\n");
     for (const key of ["budget", "area", "size", "timeline", "party", "notes"]) expect(system).toContain(`"${key}"`);
     const user = request.messages[0].content;
@@ -247,6 +247,24 @@ describe("the details kept on the lead", () => {
     expect(w.leads.get(LEAD)).toMatchObject({ stage: "new", fields: {} });
     // and the saved extraction does not keep their details or question either
     expect(w.messages.get(M1)?.meta?.agent).toMatchObject({ extraction: { intent: "opt_out", fields: {}, question: null } });
+  });
+
+  it("a customer who may be leaving (unclear_exit) is treated the same: not engaged, no details or question kept", async () => {
+    const w = world({ script: [good({ intent: "unclear_exit", question: "price?", fields: { area: "OMR" } })] });
+    const merge = vi.spyOn(w.store, "mergeLeadFields");
+    const result = await understandTurn(runner().step, w.turn, w.deps);
+    expect(result).toMatchObject({ status: "understood", summary: { intent: "unclear_exit" }, retrieval: { outcome: "skipped" } });
+    expect(merge).not.toHaveBeenCalled();
+    expect(w.messages.get(M1)?.meta?.agent).toMatchObject({ extraction: { intent: "unclear_exit", fields: {}, question: null } });
+  });
+
+  it("reports notInterested only with an opt-out (a model that sets it on another intent is not believed)", async () => {
+    const optOut = world({ script: [good({ intent: "opt_out", notInterested: true, question: null, fields: {} })] });
+    expect(await understandTurn(runner().step, optOut.turn, optOut.deps)).toMatchObject({ summary: { intent: "opt_out", notInterested: true } });
+    const other = world({ script: [good({ intent: "question", notInterested: true })] });
+    expect(await understandTurn(runner().step, other.turn, other.deps)).toMatchObject({ summary: { intent: "question", notInterested: false } });
+    const missing = world({ script: [good({ intent: "opt_out", question: null, fields: {} })] });
+    expect(await understandTurn(runner().step, missing.turn, missing.deps)).toMatchObject({ summary: { notInterested: false } });
   });
 
   it("checks the details again against the pack as it is when they are saved: a field hidden in between is not written", async () => {

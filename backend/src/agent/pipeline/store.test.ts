@@ -502,3 +502,39 @@ describe("setConversationMode", () => {
     expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).setConversationMode(T, CONV, "human")).toBe(false);
   });
 });
+
+describe("getPreviousPlanCase", () => {
+  const rows = (...metas: unknown[]) => ({ data: metas.map((meta) => ({ meta })) });
+
+  it("reads the newest earlier customer messages of this chat, for this business", async () => {
+    const { db, calls } = fakeDb(() => rows({}));
+    await createPipelineStore(db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z");
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);
+    expect(filter(calls[0], "sender")).toEqual(["sender", "eq", "customer"]);
+    expect(filter(calls[0], "created_at")).toEqual(["created_at", "lt", "2026-10-08T10:00:00.000Z"]);
+    expect(calls[0].limit).toBe(20);
+  });
+
+  it("is the case the latest turn kept, skipping messages no turn wrote on, and null when there is none", async () => {
+    expect(await createPipelineStore(fakeDb(() => rows({ buttonId: "x" }, { agent: { planCase: "exit_unclear" } }, { agent: { planCase: "answered_from_kb" } })).db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z")).toBe("exit_unclear");
+    expect(await createPipelineStore(fakeDb(() => rows({}, null, { agent: { planCase: 3 } })).db).getPreviousPlanCase(T, CONV, "2026-10-08T10:00:00.000Z")).toBeNull();
+  });
+});
+
+describe("markLeadLost", () => {
+  it("moves only an open lead of this business, by id: a booked, visited, won or lost one is left alone", async () => {
+    const { db, calls } = fakeDb(() => ({ data: [{ id: LEAD }] }));
+    expect(await createPipelineStore(db).markLeadLost(T, LEAD)).toBe(true);
+    expect(calls[0].table).toBe("leads");
+    expect(calls[0].op).toBe("update");
+    expect(calls[0].payload).toEqual({ stage: "lost" });
+    tenantFilter(calls[0]);
+    expect(filter(calls[0], "id")).toEqual(["id", "eq", LEAD]);
+    expect(filter(calls[0], "stage")).toEqual(["stage", "in", ["new", "engaged", "qualified", "nurture"]]);
+  });
+
+  it("is false when nothing changed", async () => {
+    expect(await createPipelineStore(fakeDb(() => ({ data: [] })).db).markLeadLost(T, LEAD)).toBe(false);
+  });
+});

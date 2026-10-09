@@ -79,6 +79,8 @@ export interface TenantReplyInfo {
   agentSettings: unknown;
 }
 export type HandoffPriority = "high" | "normal";
+/** Where an opt-out came from (consent_logs.source): the customer typed a STOP phrase, or the model read a clear request (0020). */
+export type OptOutSource = "stop_keyword" | "model_intent";
 
 export interface PipelineStore {
   /** The message, only if it is this business's and this conversation's. */
@@ -126,8 +128,12 @@ export interface PipelineStore {
 
   /** record_notice_shown (0021): sets consent_at (if still null) and logs `notice_shown` in one transaction. True when this call recorded it. */
   recordNoticeShown(tenantId: string, contactId: string, messageId: string | null): Promise<boolean>;
-  /** record_opt_out (0021): sets opted_out_at (if still null) and logs `opted_out` in one transaction. True when this call opted the contact out. */
-  recordOptOut(tenantId: string, contactId: string, source: "stop_keyword", messageId: string | null): Promise<boolean>;
+  /** record_opt_out (0021, and 0022 for model_intent): sets opted_out_at (if still null) and logs `opted_out` in one transaction. True when this call opted the contact out. */
+  recordOptOut(tenantId: string, contactId: string, source: OptOutSource, messageId: string | null): Promise<boolean>;
+  /** Moves a lead that is still open (new, engaged, qualified, nurture) to `lost`. A booked, visited, won or already lost lead is left alone. True when it changed. */
+  markLeadLost(tenantId: string, leadId: string): Promise<boolean>;
+  /** The plan case the chat's latest earlier turn kept on its customer message (`meta.agent.planCase`, before `before`), or null. */
+  getPreviousPlanCase(tenantId: string, conversationId: string, before: string): Promise<string | null>;
   /** The business's name and agent settings, or null if it is gone. */
   getTenantReplyInfo(tenantId: string): Promise<TenantReplyInfo | null>;
   /**
@@ -145,6 +151,7 @@ export interface PipelineStore {
 
 export const PIPELINE_DB_TIMEOUT_MS = 10_000;
 const BATCH_LIMIT = 10;
+const OPEN_LEAD_STAGES = ["new", "engaged", "qualified", "nurture"];
 /** How many earlier customer messages to look through for the last turn's count: a turn writes it on its newest message. */
 const PREVIOUS_TURN_LOOKBACK = 20;
 /**
@@ -393,6 +400,35 @@ export function createPipelineStore(db: SupabaseClient = supabaseAdmin(), { time
       );
       if (error) fail("record opt-out", error);
       return data === true;
+    },
+
+    async markLeadLost(tenantId, leadId) {
+      const { data, error } = await run("mark lead lost", (signal) =>
+        db.from("leads").update({ stage: "lost" }).eq("id", leadId).eq("tenant_id", tenantId).in("stage", OPEN_LEAD_STAGES).select("id").abortSignal(signal),
+      );
+      if (error) fail("mark lead lost", error);
+      return Array.isArray(data) && data.length > 0;
+    },
+
+    async getPreviousPlanCase(tenantId, conversationId, before) {
+      const { data, error } = await run("read previous plan case", (signal) =>
+        db
+          .from("messages")
+          .select("meta")
+          .eq("tenant_id", tenantId)
+          .eq("conversation_id", conversationId)
+          .eq("sender", "customer")
+          .lt("created_at", before)
+          .order("created_at", { ascending: false })
+          .limit(PREVIOUS_TURN_LOOKBACK)
+          .abortSignal(signal),
+      );
+      if (error) fail("read previous plan case", error);
+      for (const row of Array.isArray(data) ? data : []) {
+        const agent = isObject(row) && isObject(row.meta) && isObject(row.meta.agent) ? row.meta.agent : null;
+        if (agent && typeof agent.planCase === "string") return agent.planCase;
+      }
+      return null;
     },
 
     async getTenantReplyInfo(tenantId) {
