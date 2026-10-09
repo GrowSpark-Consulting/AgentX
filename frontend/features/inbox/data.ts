@@ -66,6 +66,7 @@ const OpenHandoffRow = z.object({ id: z.guid(), trigger: z.string() });
 export const ConversationListRow = z.object({
   id: z.guid(),
   tenant_id: z.guid(),
+  contact_id: z.guid(),
   mode: ConversationMode,
   status: z.string(),
   last_customer_msg_at: Timestamp.nullable(),
@@ -110,7 +111,7 @@ export const HandoffChangeRow = z.object({
 });
 
 const CONVERSATION_COLUMNS =
-  "id, tenant_id, mode, status, last_customer_msg_at, created_at, " +
+  "id, tenant_id, contact_id, mode, status, last_customer_msg_at, created_at, " +
   "contacts (name, phone, language), handoffs (id, trigger), " +
   "messages (id, sender, kind, body, media, meta, template_name, created_at)";
 const MESSAGE_COLUMNS =
@@ -135,6 +136,8 @@ export interface LastMessage {
 
 export interface ConversationSummary {
   id: string;
+  /** conversations.contact_id: the customer, and through leads.contact_id their lead. */
+  contactId: string;
   /** Contact name, or the masked number when the contact has no name. */
   name: string;
   firstName: string;
@@ -406,6 +409,7 @@ export function toConversationSummary(row: z.output<typeof ConversationListRow>)
   const latest = row.messages[0];
   return {
     id: row.id,
+    contactId: row.contact_id,
     name: contactName ?? masked,
     firstName: contactName ? contactName.split(/\s+/)[0] : "This customer",
     initials: initialsOf(contactName),

@@ -19,11 +19,15 @@ import {
   type ConversationSummary,
   type InboxFilter,
 } from "./data";
+import { fetchLeadCard } from "./lead-card-data";
+import { LeadCardPanel, LeadCardSheet, type LeadCardState } from "./lead-card-panel";
 import { useInboxRealtime } from "./use-inbox-realtime";
 
 // The real inbox: the /dashboard/preview Inbox layout backed by the member's own data. Reads go
 // through the browser client as the signed-in member (RLS), scoped to the session's tenant; live
-// changes come from one Realtime channel for the business.
+// changes come from one Realtime channel for the business. The open chat's lead card is read the
+// same way, kept per conversation so one chat's lead never shows on another, and its failure stays
+// inside the card.
 
 const CLOCK_TICK_MS = 60_000;
 
@@ -49,6 +53,11 @@ export function InboxScreen({
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => new Date());
+  /** Lead cards by conversation id; a missing entry is still loading. */
+  const [leadCards, setLeadCards] = useState<Record<string, LeadCardState>>({});
+  const [leadSheetOpen, setLeadSheetOpen] = useState(false);
+  /** The newest lead read per conversation: an older one finishing late is ignored. */
+  const leadReads = useRef(new Map<string, number>());
 
   // Times ("9:42 am", "Yesterday") and the 24-hour window move with the clock.
   useEffect(() => {
@@ -112,6 +121,28 @@ export function InboxScreen({
     if (activeId) void loadChat(activeId);
   }, [activeId, loadChat]);
 
+  const loadLead = useCallback(
+    async (conversationId: string, contactId: string) => {
+      const seq = (leadReads.current.get(conversationId) ?? 0) + 1;
+      leadReads.current.set(conversationId, seq);
+      const settle = (state: LeadCardState) => {
+        if (leadReads.current.get(conversationId) === seq) setLeadCards((prev) => ({ ...prev, [conversationId]: state }));
+      };
+      try {
+        settle({ status: "ready", card: await fetchLeadCard(getSupabaseBrowserClient(), tenantId, contactId, new Date(), timeZone) });
+      } catch (err) {
+        settle({ status: "error", error: formatError(err) });
+      }
+    },
+    [tenantId, timeZone],
+  );
+
+  // Read again whenever a chat is opened, so the card is never older than the chat on screen.
+  const activeContactId = selected?.contactId ?? null;
+  useEffect(() => {
+    if (activeId && activeContactId) void loadLead(activeId, activeContactId);
+  }, [activeId, activeContactId, loadLead]);
+
   const realtime = useInboxRealtime(tenantId, {
     onMessage: (message: ChatMessage) => {
       if (list.status === "ready" && !list.items.some((c) => c.id === message.conversationId)) {
@@ -157,15 +188,25 @@ export function InboxScreen({
     setSelectedId(id);
     setView("chat");
     setChatParam(id);
+    setLeadSheetOpen(false);
   }
 
   function backToList() {
     setView("list");
     setChatParam(null);
+    setLeadSheetOpen(false);
   }
 
+  const leadState: LeadCardState = activeId ? (leadCards[activeId] ?? { status: "loading" }) : { status: "loading" };
+  const retryLead = () => {
+    if (!selected) return;
+    setLeadCards((prev) => ({ ...prev, [selected.id]: { status: "loading" } }));
+    void loadLead(selected.id, selected.contactId);
+  };
+  const closeLeadSheet = useCallback(() => setLeadSheetOpen(false), []);
+
   return (
-    <div className="app-inbox pk-light" data-view={showingChat ? "chat" : "list"} data-testid="inbox">
+    <div className="app-inbox pk-light" data-view={showingChat ? "chat" : "list"} data-lead={selected ? "true" : undefined} data-testid="inbox">
       <h1 className="app-inbox-title">Inbox</h1>
       <ConversationList
         list={list}
@@ -190,6 +231,7 @@ export function InboxScreen({
             timeZone={timeZone}
             onBack={backToList}
             onRetry={() => void loadChat(selected.id)}
+            onShowLead={() => setLeadSheetOpen(true)}
           />
         ) : (
           <div style={{ flex: "1", background: "var(--wa-bg)", display: "flex", alignItems: "center", padding: "40px" }}>
@@ -203,6 +245,8 @@ export function InboxScreen({
           </div>
         )}
       </div>
+      {selected ? <LeadCardPanel state={leadState} conversation={selected} onRetry={retryLead} /> : null}
+      {selected && leadSheetOpen ? <LeadCardSheet state={leadState} conversation={selected} onRetry={retryLead} onClose={closeLeadSheet} /> : null}
     </div>
   );
 }

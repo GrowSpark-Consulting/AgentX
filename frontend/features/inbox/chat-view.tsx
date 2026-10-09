@@ -18,7 +18,8 @@ import { MessageBubble } from "./message-bubble";
 //
 // Read-only for now. Sending, switching AI/Human and templates are separate work (POST
 // /api/conversations/:id/messages and /mode), so those controls are shown switched off and say so.
-// Left out on purpose until their data exists: the suggested reply and the lead card.
+// Left out on purpose until its data exists: the suggested reply. The lead card is lead-card-panel.tsx,
+// pinned beside the chat on wide screens and opened from the header's Lead button below that.
 
 /** Why the AI / Human switch is off. Shown in the status strip under the header, which the switch's
  *  buttons point to, so keyboard and screen-reader users get it as well as the mouse tooltip. */
@@ -58,6 +59,7 @@ export function ChatView({
   timeZone,
   onBack,
   onRetry,
+  onShowLead,
 }: {
   conversation: ConversationSummary;
   chat: ChatState;
@@ -65,6 +67,8 @@ export function ChatView({
   timeZone: string;
   onBack: () => void;
   onRetry: () => void;
+  /** Opens the lead card as a sheet; the button only shows where the card isn't pinned (below 1180px). */
+  onShowLead?: () => void;
 }) {
   const messagesRef = useRef<HTMLDivElement>(null);
   const switchNoteId = useId();
@@ -98,6 +102,11 @@ export function ChatView({
             {conversation.language ? ` · ${conversation.language}` : ""}
           </div>
         </div>
+        {onShowLead ? (
+          <button type="button" className="btn btn-secondary app-inbox-lead-btn" aria-haspopup="dialog" onClick={onShowLead} style={{ flex: "none", padding: "6px 10px", fontSize: "13px" }}>
+            Lead
+          </button>
+        ) : null}
         <div role="group" aria-label="Who replies" aria-describedby={switchNoteId} title={SWITCH_NOTE} style={{ display: "flex", border: "2px solid var(--color-text)", flex: "none" }}>
           <button type="button" disabled aria-pressed={conversation.mode === "ai"} aria-describedby={switchNoteId} style={segment(conversation.mode === "ai", "var(--color-text)", "var(--color-bg)")}>
             AI

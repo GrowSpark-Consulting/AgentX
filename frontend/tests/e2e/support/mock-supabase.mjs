@@ -84,22 +84,24 @@ const STARTED = Date.now();
 const ago = (minutes) => new Date(STARTED - minutes * 60_000).toISOString();
 const cid = (n) => `40000000-0000-0000-0000-00000000000${n}`;
 const mid = (n) => `41000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+/** conversations.contact_id (not null): this business's contacts have no leads, so their lead card is empty. */
+const inboxContact = (n) => `43000000-0000-0000-0000-00000000000${n}`;
 const INBOX = {
   conversations: [
     // Needs human: open handoff, window open.
     { id: cid(1), tenant_id: T.inbox.id, mode: "ai", status: "open", last_customer_msg_at: ago(20), created_at: ago(30),
-      contacts: { name: "Karthik R", phone: "+919812345621", language: "ta" },
+      contact_id: inboxContact(1), contacts: { name: "Karthik R", phone: "+919812345621", language: "ta" },
       handoffs: [{ id: "42000000-0000-0000-0000-000000000001", trigger: "asked_human", resolved_at: null }] },
     // AI handling, window open.
     { id: cid(2), tenant_id: T.inbox.id, mode: "ai", status: "open", last_customer_msg_at: ago(121), created_at: ago(125),
-      contacts: { name: "Priya S", phone: "+919900000037", language: "en" }, handoffs: [] },
+      contact_id: inboxContact(2), contacts: { name: "Priya S", phone: "+919900000037", language: "en" }, handoffs: [] },
     // A team member replying, window closed (customer wrote 3 days ago); its handoff is resolved.
     { id: cid(3), tenant_id: T.inbox.id, mode: "human", status: "open", last_customer_msg_at: ago(3 * 24 * 60), created_at: ago(3 * 24 * 60 + 10),
-      contacts: { name: "Lakshmi V", phone: "+919400000008", language: "ta" },
+      contact_id: inboxContact(3), contacts: { name: "Lakshmi V", phone: "+919400000008", language: "ta" },
       handoffs: [{ id: "42000000-0000-0000-0000-000000000003", trigger: "complaint", resolved_at: ago(3 * 24 * 60) }] },
     // Own-number takeover, no name, no messages yet.
     { id: cid(4), tenant_id: T.inbox.id, mode: "external", status: "open", last_customer_msg_at: null, created_at: ago(4 * 24 * 60),
-      contacts: { name: null, phone: "+919000000052", language: null }, handoffs: [] },
+      contact_id: inboxContact(4), contacts: { name: null, phone: "+919000000052", language: null }, handoffs: [] },
   ],
   messages: [
     [1, cid(1), "in", "customer", "Velachery la 3BHK irukka? Ready to move venum", ago(25)],
@@ -243,10 +245,11 @@ const CALENDAR_READABLE = ["id", "tenant_id", "resource_id", "google_email", "ca
 const ist = (date, hhmm) => new Date(`${date}T${hhmm}:00+05:30`).toISOString();
 
 /**
- * { seed?, role?, error? } → { email, tenantId, ids }. seed adds the sample business below; error names
- * a table ("leads", "bookings", "resources", "tenants") whose reads return rows the app can't parse.
+ * { seed?, role?, error?, inbox? } → { email, tenantId, ids }. seed adds the sample business below; error names
+ * a table ("leads", "bookings", "resources", "tenants") whose reads return rows the app can't parse (switched
+ * later with POST /__mock/day3-error); inbox (with seed) adds two more chats for the Inbox lead card.
  */
-function createDay3Account({ seed = false, role = "owner", error = null } = {}) {
+function createDay3Account({ seed = false, role = "owner", error = null, inbox = false } = {}) {
   const email = `d3-${randomUUID()}@test.local`;
   const t = tenant(randomUUID(), "Sample Business", "sample-pack");
   USERS[email] = { memberships: [[t, role]], view: { status: 200, body: [] }, day3Error: error };
@@ -322,6 +325,31 @@ function createDay3Account({ seed = false, role = "owner", error = null } = {}) 
       id: randomUUID(), tenant_id: t.id, conversation_id: conversationId, direction, sender, kind: sender === "customer" ? "text" : null,
       body, media: null, meta: null, template_name: null, delivery_status: null, created_at: ist("2026-10-11", at),
     });
+  }
+  if (inbox) {
+    // The Inbox lead card: the unnamed customer's chat (an unscored lead with a callback), and a chat
+    // from someone who isn't a lead (no leads row for the contact).
+    const unnamedChat = randomUUID();
+    INBOX.conversations.push({
+      id: unnamedChat, tenant_id: t.id, contact_id: unnamed.contact_id, mode: "ai", status: "open",
+      last_customer_msg_at: ist("2026-10-11", "07:10"), created_at: ist("2026-10-11", "07:00"),
+      contacts: { name: null, phone: "+919000000052", language: null }, handoffs: [],
+    });
+    const meena = { id: randomUUID(), tenant_id: t.id, name: "Meena K", phone: "+919800000071" };
+    CONTACTS.push(meena);
+    const meenaChat = randomUUID();
+    INBOX.conversations.push({
+      id: meenaChat, tenant_id: t.id, contact_id: meena.id, mode: "ai", status: "open",
+      last_customer_msg_at: ist("2026-10-11", "06:10"), created_at: ist("2026-10-11", "06:00"),
+      contacts: { name: "Meena K", phone: "+919800000071", language: "ta" }, handoffs: [],
+    });
+    for (const [conversation_id, body, at] of [[unnamedChat, "Callback venum, evening", "07:10"], [meenaChat, "Hello, just looking", "06:10"]]) {
+      INBOX.messages.push({
+        id: randomUUID(), tenant_id: t.id, conversation_id, direction: "in", sender: "customer", kind: "text",
+        body, media: null, meta: null, template_name: null, delivery_status: null, created_at: ist("2026-10-11", at),
+      });
+    }
+    Object.assign(ids, { unnamedChat, meenaChat });
   }
   return { email, tenantId: t.id, ids };
 }
@@ -645,6 +673,13 @@ ${choose("Cancel", "cancel=1")}
     const email = String(url.searchParams.get("email") ?? "").toLowerCase();
     const rows = (USERS[email]?.memberships ?? []).map(([t, role]) => ({ tenant_id: t.id, user_id: idOf(email), role, ...prefsOf(email, t.id) }));
     return send(res, 200, rows);
+  }
+  if (path === "/__mock/day3-error" && req.method === "POST") {
+    // { email, table } → that account's reads of `table` return bad rows from now on; table null clears it.
+    const { email, table = null } = await readBody(req);
+    if (!USERS[email]) return send(res, 404, { msg: "no such user" });
+    USERS[email].day3Error = table;
+    return send(res, 200, { ok: true });
   }
   if (path === "/__mock/day3-account" && req.method === "POST") {
     return send(res, 200, createDay3Account(await readBody(req)));

@@ -77,7 +77,7 @@ export const LeadRow = z.object({
 });
 export type LeadRow = z.input<typeof LeadRow>;
 
-const LEAD_COLUMNS = "id, tenant_id, contact_id, stage, score, temperature, fields, owner_user_id, created_at, updated_at, contacts (name, phone)";
+export const LEAD_COLUMNS = "id, tenant_id, contact_id, stage, score, temperature, fields, owner_user_id, created_at, updated_at, contacts (name, phone)";
 
 /** Newest-updated leads loaded on the board; older ones need paging (not built). */
 export const LEAD_LIMIT = 500;
@@ -124,7 +124,7 @@ export class LeadDataError extends Error {
   }
 }
 
-function parseLeads(data: unknown, tenantId: string): Lead[] {
+export function parseLeads(data: unknown, tenantId: string): Lead[] {
   const parsed = z.array(LeadRow).safeParse(data ?? []);
   if (!parsed.success) throw new LeadDataError("lead");
   return parsed.data.filter((r) => r.tenant_id === tenantId).map(toLead);

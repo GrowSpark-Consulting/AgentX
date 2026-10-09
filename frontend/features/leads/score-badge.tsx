@@ -1,11 +1,22 @@
 import { TEMPERATURE_LABEL, TEMPERATURE_STYLE, type Temperature } from "./data";
 
 /** "Hot 82", "Warm 55", "Not scored": the stored temperature and score, never worked out here. */
-export function ScoreBadge({ temperature, score, large }: { temperature: Temperature | null; score: number | null; large?: boolean }) {
+export function ScoreBadge({
+  temperature,
+  score,
+  large,
+  unscoredLabel = TEMPERATURE_LABEL.unscored,
+}: {
+  temperature: Temperature | null;
+  score: number | null;
+  large?: boolean;
+  /** The words for a lead with neither score nor temperature. */
+  unscoredLabel?: string;
+}) {
   const key = temperature ?? "unscored";
   const s = TEMPERATURE_STYLE[key];
   // A score without a temperature is shown as a plain score, never given a band here.
-  const label = temperature ? TEMPERATURE_LABEL[temperature] : score !== null ? "Score" : TEMPERATURE_LABEL.unscored;
+  const label = temperature ? TEMPERATURE_LABEL[temperature] : score !== null ? "Score" : unscoredLabel;
   if (large) {
     return (
       <span
