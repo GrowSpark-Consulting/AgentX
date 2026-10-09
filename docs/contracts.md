@@ -241,6 +241,7 @@ passes through in the `failed` outcome. A plain `Error` is unexpected: it is log
 | `tenant_features.settings` of `handoff_triggers` | `{ "sla_minutes": 15 }`: minutes a handoff may wait before the owner is alerted again, 1 to 1440; anything else uses 15 | Proposed (decision 17): read by `handoff-sla` |
 | `tenant_features.settings` of `feedback_request` | `{ "offset_minutes": 120 }`: minutes after the booking's end before the rating question, 0 to 10080; anything else uses 120 | Built: read by `post-visit` |
 | `tenant_features.settings` of `review_request` | `{ "review_url": "https://…" }`: the business's review page (https only). Without it no review link is sent | Proposed: read by `post-visit`; Dev 3's settings screen to edit it |
+| `tenant_features.settings` of `followup_nudges` | `{ "offset_minutes": [120, 1380], "nurture_after_minutes": 2880 }`: minutes after the customer's message for the two nudges and the move to nurture, each 1 to 10080 and in that order; anything else uses the defaults shown | Proposed (decision 18): read by `lead-nudges` |
 | `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
 | `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
 | `tenants.agent_settings` | Persona name, tone, languages, handoff default, scoring overrides | **To define: Dev 1 + Dev 3** |
@@ -358,7 +359,7 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 
 | Event | Payload |
 |---|---|
-| `whatsapp/message.received` | `{ tenantId, conversationId, messageId }`; sent by the webhook (id `message_received:<messageId>`, also for a replay); starts `process-message` |
+| `whatsapp/message.received` | `{ tenantId, conversationId, messageId }`; sent by the webhook (id `message_received:<messageId>`, also for a replay); starts `process-message`, and `lead-nudges` (the chat's next message cancels its earlier run) |
 | `kb/document.uploaded` | `{ tenantId, documentId }`; sent by `POST /api/kb/documents` (id `kb_document_uploaded:<documentId>`), starts the `kb-ingest` job |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
 | `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` and `post-visit` |
@@ -401,6 +402,15 @@ rating tap's `buttonId` is `rating:<bookingId>:<n>`; `parseRatingButton(buttonId
 `recordVisitRating(tenantId, bookingId, rating)` (`backend/src/booking/post-visit.ts`) saves it on the lead
 (`leads.feedback_rating`) and sends `booking.rated`. For a 4 or 5 the job's review message is the thank-you, so the
 pipeline should not answer the tap; for a 1–3 it may send a short thank-you (staff are alerted by the job).
+
+**Lead nudges (`lead-nudges`, built 9 Oct; `backend/src/inngest/lead-nudges.ts`).** Every customer message starts a run
+and the chat's next message cancels it, so only the latest message's run is alive. At each offset (section 3; 2 h and
+23 h by default, decision 18) the run reads the chat again and sends `followup_nudge` (1 credit; the `nudge_vN`
+template has {{1}} the customer's name) only if: the assistant answered that message (its `message.answered`
+marker), the customer has not written since, the chat is still with the assistant (`mode = 'ai'`), and the lead is
+still `new`, `engaged` or `qualified`. Anything else ends the follow-up. Still quiet at `nurture_after_minutes` (48 h),
+the lead moves to `nurture` (only from those stages; audited as `lead.stage_changed`). Keys
+`followup_nudge:<messageId>:<1|2>`.
 
 **The message pipeline (`process-message`, built: steps 2 and 3).** One conversation at a time (concurrency key
 `conversationId`); messages from one conversation within 3 seconds (never longer than 15) start one run. A debounce keeps
@@ -625,6 +635,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed; `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. **Built:** `platform_admins`, `adminRoute`, hashed tokens (0016), `secretParams` log masking (section 6). Roles on recheck and disconnect: Raja | Dev 1 |
 | 16 | A send whose outcome is unknown (a timeout, a network failure or an unreadable answer from Meta) | **Proposed by Dev 2 (8 Oct):** hold the credit until Meta's status says sent or failed, instead of refunding. Needs Raja, because it changes billing, and a way to match Meta's status webhook to the send. Until then `notify.send` refunds (decision 2) and reports `outcomeUnknown: true`, so no caller sends the message again | Raja |
 | 17 | Handoff SLA (`handoff-sla`) | **Proposed by Dev 2 (9 Oct):** 15 minutes by default, each business can change it (`sla_minutes`, section 3); counted from the handoff at any time of day (business hours not yet considered); the escalation goes to owners only. The handover gives no number | Raja |
+| 18 | Lead nudges timing (`lead-nudges`) | **Proposed by Dev 2 (9 Oct):** the handover says "after 2 h and 24 h, then nurture". The second nudge goes at **23 h**, so it is still free text inside the customer's 24-hour window (at 24 h only an approved marketing template could go, and none is approved yet); a lead still quiet at **48 h** moves to nurture. Each business can change all three (section 3) | Raja |
 
 ## 9. Knowledge base (PROPOSED, not agreed)
 
