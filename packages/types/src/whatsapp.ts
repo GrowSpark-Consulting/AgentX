@@ -72,6 +72,29 @@ export interface SendTestMessageResult extends SendResult {
   status: "accepted";
 }
 
+/**
+ * Body of POST /api/conversations/:id/messages: a free-text reply from staff, inside the 24-hour window.
+ * Strict on purpose: a `template` (or any other field) is refused, not silently dropped, because
+ * notify.send picks templates by a kind's base name and cannot send one staff chose.
+ */
+export const SendStaffReplyInput = z
+  .object({
+    body: z
+      .string()
+      .trim()
+      .min(1, "Write a message")
+      .max(WHATSAPP_TEXT_MAX, `Keep it under ${WHATSAPP_TEXT_MAX} characters`),
+  })
+  .strict();
+export type SendStaffReplyInput = z.infer<typeof SendStaffReplyInput>;
+
+/** Result of POST /api/conversations/:id/messages. "accepted" means Meta took it; delivery arrives later as a status. */
+export interface SendStaffReplyResult extends SendResult {
+  /** The stored messages row; the inbox receives it through realtime. */
+  messageId: string;
+  status: "accepted";
+}
+
 // Templates. Names are versioned (`reminder_24h_v1`); a change is a new version, never an edit in
 // place. English and Tamil versions; utility or marketing category (docs/handover.md, module 5 and 7).
 export const TEMPLATE_CATEGORIES = ["utility", "marketing"] as const;

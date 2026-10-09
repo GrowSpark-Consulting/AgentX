@@ -225,6 +225,7 @@ export function InboxScreen({
       <div className="app-inbox-chat">
         {selected ? (
           <ChatView
+            tenantId={tenantId}
             conversation={selected}
             chat={chatState}
             now={now}
@@ -232,6 +233,7 @@ export function InboxScreen({
             onBack={backToList}
             onRetry={() => void loadChat(selected.id)}
             onShowLead={() => setLeadSheetOpen(true)}
+            onModeChanged={(id, mode) => changeList((items) => items.map((c) => (c.id === id ? { ...c, mode } : c)))}
           />
         ) : (
           <div style={{ flex: "1", background: "var(--wa-bg)", display: "flex", alignItems: "center", padding: "40px" }}>

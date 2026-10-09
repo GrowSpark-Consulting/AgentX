@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useId, useRef, type CSSProperties } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { ErrorState, LoadingState } from "@/components/shared/states";
-import type { FormattedError } from "@/lib/errors";
+import { formatError, type FormattedError } from "@/lib/errors";
 import {
   conversationTag,
   groupByDay,
@@ -10,20 +10,23 @@ import {
   type ChatMessage,
   type ConversationSummary,
 } from "./data";
+import { switchMode, switchNote, type StaffMode } from "./conversation-mode";
 import { MessageBubble } from "./message-bubble";
+import { ReplyComposer } from "./reply-composer";
 
 // The open chat, ported from the /dashboard/preview Inbox (components/dashboard/pakka-app.tsx):
 // header with the AI / Human control, the status strip, the WhatsApp-style message area with day
 // chips, and the composer or the 24-hour-window strip.
 //
-// Read-only for now. Sending, switching AI/Human and templates are separate work (POST
-// /api/conversations/:id/messages and /mode), so those controls are shown switched off and say so.
+// One responder per chat. The AI / Human switch takes a chat over and hands it back (POST
+// /api/conversations/:id/mode); while the AI has the chat staff can't reply, and in a person's chat they reply
+// in free text while the 24-hour window is open (reply-composer.tsx). Sending a template after the window
+// closes needs a notify change, so the closed-window strip stays.
 // Left out on purpose until its data exists: the suggested reply. The lead card is lead-card-panel.tsx,
 // pinned beside the chat on wide screens and opened from the header's Lead button below that.
 
-/** Why the AI / Human switch is off. Shown in the status strip under the header, which the switch's
- *  buttons point to, so keyboard and screen-reader users get it as well as the mouse tooltip. */
-const SWITCH_NOTE = "Switching between AI and Human isn’t available yet.";
+/** Shown instead of the reply box while the AI has the chat; the API refuses a staff reply then too. */
+const AI_REPLYING = "AI is replying. Switch to Human to reply.";
 
 export type ChatState =
   | { status: "loading" }
@@ -49,10 +52,11 @@ const segment = (active: boolean, activeBg: string, activeFg: string): CSSProper
   font: "inherit",
   fontSize: "13px",
   fontWeight: "800",
-  cursor: "not-allowed",
+  cursor: "pointer",
 });
 
 export function ChatView({
+  tenantId,
   conversation,
   chat,
   now,
@@ -60,7 +64,9 @@ export function ChatView({
   onBack,
   onRetry,
   onShowLead,
+  onModeChanged,
 }: {
+  tenantId: string;
   conversation: ConversationSummary;
   chat: ChatState;
   now: Date;
@@ -69,9 +75,31 @@ export function ChatView({
   onRetry: () => void;
   /** Opens the lead card as a sheet; the button only shows where the card isn't pinned (below 1180px). */
   onShowLead?: () => void;
+  /** The API switched this chat: show it now (realtime says the same a moment later). */
+  onModeChanged: (conversationId: string, mode: StaffMode) => void;
 }) {
   const messagesRef = useRef<HTMLDivElement>(null);
   const switchNoteId = useId();
+  const note = switchNote(conversation.mode);
+  const [switching, setSwitching] = useState<StaffMode | null>(null);
+  // The error belongs to one chat in one mode: another chat opening, or realtime moving the mode, retires it.
+  const [failedSwitch, setFailedSwitch] = useState<{ conversationId: string; mode: string; error: FormattedError } | null>(null);
+  const switchError = failedSwitch && failedSwitch.conversationId === conversation.id && failedSwitch.mode === conversation.mode ? failedSwitch.error : null;
+
+  async function choose(mode: StaffMode) {
+    if (switching || conversation.mode === "external" || conversation.mode === mode) return;
+    const conversationId = conversation.id;
+    setSwitching(mode);
+    setFailedSwitch(null);
+    try {
+      const result = await switchMode(tenantId, conversationId, mode);
+      onModeChanged(conversationId, result.mode);
+    } catch (err) {
+      setFailedSwitch({ conversationId, mode: conversation.mode, error: formatError(err) });
+    } finally {
+      setSwitching(null);
+    }
+  }
   const messages = chat.status === "ready" ? chat.messages : null;
   const tag = conversationTag(conversation);
   const humanReplying = conversation.mode === "human" || conversation.mode === "external";
@@ -107,11 +135,25 @@ export function ChatView({
             Lead
           </button>
         ) : null}
-        <div role="group" aria-label="Who replies" aria-describedby={switchNoteId} title={SWITCH_NOTE} style={{ display: "flex", border: "2px solid var(--color-text)", flex: "none" }}>
-          <button type="button" disabled aria-pressed={conversation.mode === "ai"} aria-describedby={switchNoteId} style={segment(conversation.mode === "ai", "var(--color-text)", "var(--color-bg)")}>
+        <div role="group" aria-label="Who replies" aria-describedby={switchNoteId} aria-busy={switching ? true : undefined} title={note} style={{ display: "flex", border: "2px solid var(--color-text)", flex: "none" }}>
+          <button
+            type="button"
+            disabled={conversation.mode === "external" || switching !== null}
+            aria-pressed={conversation.mode === "ai"}
+            aria-describedby={switchNoteId}
+            onClick={() => void choose("ai")}
+            style={segment(conversation.mode === "ai", "var(--color-text)", "var(--color-bg)")}
+          >
             AI
           </button>
-          <button type="button" disabled aria-pressed={humanReplying} aria-describedby={switchNoteId} style={segment(humanReplying, "var(--color-accent)", "#fff")}>
+          <button
+            type="button"
+            disabled={conversation.mode === "external" || switching !== null}
+            aria-pressed={humanReplying}
+            aria-describedby={switchNoteId}
+            onClick={() => void choose("human")}
+            style={segment(humanReplying, "var(--color-accent)", "#fff")}
+          >
             Human
           </button>
         </div>
@@ -121,7 +163,7 @@ export function ChatView({
         <div style={{ ...strip, background: "var(--color-accent-100)", color: "var(--color-accent-800)" }}>
           <span style={{ flex: "1", minWidth: "180px" }}>
             <strong>Needs you:</strong> {handoffReason(conversation.openHandoffs[0]?.trigger)}.{" "}
-            <span id={switchNoteId}>{SWITCH_NOTE}</span>
+            <span id={switchNoteId}>{note}</span>
           </span>
         </div>
       ) : null}
@@ -129,7 +171,7 @@ export function ChatView({
         <div style={{ ...strip, background: "var(--color-surface)" }}>
           <span style={{ flex: "1", minWidth: "180px" }}>
             <strong>A team member is replying.</strong> The AI won’t message on this chat.{" "}
-            <span id={switchNoteId}>{SWITCH_NOTE}</span>
+            <span id={switchNoteId}>{note}</span>
           </span>
         </div>
       ) : null}
@@ -137,13 +179,21 @@ export function ChatView({
         <div style={{ ...strip, background: "var(--color-surface)" }}>
           <span style={{ flex: "1", minWidth: "180px" }}>
             <strong>A team member is replying from their own number.</strong> The AI won’t message on this chat.{" "}
-            <span id={switchNoteId}>{SWITCH_NOTE}</span>
+            <span id={switchNoteId}>{note}</span>
           </span>
         </div>
       ) : null}
       {tag === "ai" ? (
         <div style={{ padding: "8px 14px", fontSize: "13px", color: "var(--color-neutral-700)", borderBottom: "1px solid var(--color-divider)", flex: "none" }}>
-          The AI is handling this chat. <span id={switchNoteId}>{SWITCH_NOTE}</span>
+          The AI is handling this chat. <span id={switchNoteId}>{note}</span>
+        </div>
+      ) : null}
+
+      {switchError ? (
+        <div role="alert" style={{ ...strip, background: "var(--color-surface)" }}>
+          <span style={{ flex: "1", minWidth: "180px" }}>
+            <strong>Couldn’t switch.</strong> {switchError.message} Nothing was changed.
+          </span>
         </div>
       ) : null}
 
@@ -173,22 +223,14 @@ export function ChatView({
       </div>
 
       <div style={{ borderTop: "2px solid var(--color-divider)", padding: "10px 12px", display: "flex", flexDirection: "column", gap: "8px", flex: "none" }}>
-        {windowOpen ? (
-          <div style={{ display: "flex", gap: "8px" }}>
-            <input
-              className="input"
-              aria-label="Message"
-              placeholder="Replying here isn’t switched on yet"
-              disabled
-              style={{ flex: "1", minWidth: "0", minHeight: "44px", fontSize: "15px" }}
-            />
-            <button type="button" disabled aria-label="Send" style={{ width: "44px", height: "44px", flex: "none", background: "var(--wa-dark)", color: "#fff", border: "0", display: "grid", placeItems: "center", cursor: "not-allowed", opacity: 0.4 }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true" style={{ strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }}>
-                <path d="m22 2-7 20-4-9-9-4Z" />
-                <path d="M22 2 11 13" />
-              </svg>
-            </button>
+        {conversation.mode === "ai" ? (
+          <div role="status" style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", padding: "10px 12px", background: "var(--color-surface)", fontSize: "13px" }}>
+            <span style={{ flex: "1", minWidth: "200px" }}>
+              {AI_REPLYING}
+            </span>
           </div>
+        ) : windowOpen ? (
+          <ReplyComposer key={conversation.id} tenantId={tenantId} conversationId={conversation.id} />
         ) : (
           <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", padding: "10px 12px", background: "var(--color-surface)", fontSize: "13px" }}>
             <span style={{ flex: "1", minWidth: "200px" }}>

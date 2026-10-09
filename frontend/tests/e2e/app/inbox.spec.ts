@@ -97,12 +97,15 @@ test.describe("Inbox", () => {
     await expect(page.getByText("Needs you:")).toBeVisible();
     await expect(page.getByText("asked to talk to a person.")).toBeVisible();
 
-    // Sending and switching aren't built yet: shown, switched off, never faked.
-    const whoReplies = page.getByRole("group", { name: "Who replies" });
-    await expect(whoReplies.getByRole("button", { name: "AI" })).toBeDisabled();
-    await expect(whoReplies.getByRole("button", { name: "Human" })).toBeDisabled();
-    await expect(page.getByRole("textbox", { name: "Message" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
+    // The AI has this chat: the switch is live (AI is the pressed one), and there is no reply box until a
+    // person takes over.
+    const switchGroup = page.getByRole("group", { name: "Who replies" });
+    await expect(switchGroup.getByRole("button", { name: "AI" })).toBeEnabled();
+    await expect(switchGroup.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
+    await expect(switchGroup.getByRole("button", { name: "Human" })).toBeEnabled();
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Send" })).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
 
     // A chat whose 24-hour window has closed, answered by staff.
@@ -336,3 +339,259 @@ test.describe("Inbox", () => {
     await expect(appAlert(page).getByRole("button", { name: "Try again" })).toBeVisible();
   });
 });
+
+const REPLY_PATH = new RegExp(`/api/conversations/${cid(1)}/messages$`);
+const MODE_PATH = new RegExp(`/api/conversations/${cid(1)}/mode$`);
+
+type ModeCall = { method: string; tenant: string | null; authorization: string | null; body: string };
+type ModeAnswer = { status: number; body: unknown };
+
+/** Stands in for POST /api/conversations/:id/mode (backend/src/conversations/mode.ts). Answers call n with `answer(n)`. */
+async function mockMode(page: Page, answer: (n: number) => ModeAnswer | Promise<ModeAnswer> = () => ({ status: 200, body: { mode: "human", changed: true } })) {
+  const calls: ModeCall[] = [];
+  await page.route(MODE_PATH, async (route) => {
+    const req = route.request();
+    if (req.method() === "OPTIONS") return route.fallback();
+    calls.push({ method: req.method(), tenant: req.headers()["x-pakka-tenant"] ?? null, authorization: req.headers()["authorization"] ?? null, body: req.postData() ?? "" });
+    const result = await answer(calls.length);
+    return route.fulfill({ status: result.status, contentType: "application/json", body: JSON.stringify(result.body) });
+  });
+  return calls;
+}
+const modeBody = (call: ModeCall) => JSON.parse(call.body);
+const whoReplies = (page: Page) => page.getByRole("group", { name: "Who replies" });
+const noteRow = (id: string, body: string, event: string) => ({
+  id, tenant_id: INBOX_TENANT, conversation_id: cid(1), direction: "out", sender: "system", body, media: null, template_name: null,
+  delivery_status: null, meta: { event }, created_at: new Date().toISOString().replace("T", " ").replace("Z", "+00"),
+});
+
+test.describe("Inbox · staff reply", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  type Reply = { status: number; body: unknown } | "abort";
+  type Sent = { method: string; tenant: string | null; authorization: string | null; body: string };
+
+  /** Stands in for POST /api/conversations/:id/messages (backend/src/conversations/staff-reply.ts). */
+  async function mockReply(page: Page, answer: (n: number) => Reply | Promise<Reply>) {
+    const sent: Sent[] = [];
+    await page.route(REPLY_PATH, async (route) => {
+      const req = route.request();
+      if (req.method() === "OPTIONS") return route.fallback();
+      sent.push({ method: req.method(), tenant: req.headers()["x-pakka-tenant"] ?? null, authorization: req.headers()["authorization"] ?? null, body: req.postData() ?? "" });
+      const result = await answer(sent.length);
+      if (result === "abort") return route.abort("failed");
+      return route.fulfill({ status: result.status, contentType: "application/json", body: JSON.stringify(result.body) });
+    });
+    return sent;
+  }
+  const accepted = { status: 200, body: { messageId: "41000000-0000-0000-0000-000000000801", providerMsgId: "wamid.OUT", status: "accepted" } };
+  const refusal = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
+
+  /** The composer's own notice; Next's route announcer is also a role=alert. */
+  const notice = (page: Page) => page.locator('form [role="alert"]');
+
+  /** Karthik's chat starts with the AI; a person takes it over (the mode route is stood in for), which opens the reply box. */
+  async function openKarthik(page: Page) {
+    const realtime = await mockRealtime(page);
+    await mockMode(page);
+    await openInbox(page);
+    await row(page, /Karthik R/).click();
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toBeVisible();
+    await whoReplies(page).getByRole("button", { name: "Human" }).click();
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    return realtime;
+  }
+
+  test("sends the trimmed text as the member, clears the box, and leaves the chat to realtime", async ({ page }) => {
+    const sent = await mockReply(page, () => accepted);
+    const realtime = await openKarthik(page);
+    const box = page.getByRole("textbox", { name: "Message" });
+    await box.fill("  Namaste Karthik, the 3BHK is ready.  ");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    await expect(box).toHaveValue("");
+    await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].method).toBe("POST");
+    expect(sent[0].tenant).toBe(INBOX_TENANT);
+    expect(sent[0].authorization).toMatch(/^Bearer /);
+    expect(JSON.parse(sent[0].body)).toEqual({ body: "Namaste Karthik, the 3BHK is ready." });
+    // Nothing is drawn until the stored row arrives, and then it appears once.
+    await expect(chatLog(page).getByText("Namaste Karthik, the 3BHK is ready.")).toHaveCount(0);
+    const message = {
+      id: "41000000-0000-0000-0000-000000000801", tenant_id: INBOX_TENANT, conversation_id: cid(1), direction: "out",
+      sender: "staff", body: "Namaste Karthik, the 3BHK is ready.", media: null, template_name: null, delivery_status: "accepted",
+      created_at: new Date().toISOString().replace("T", " ").replace("Z", "+00"),
+    };
+    await expect.poll(() => realtime.joins.length).toBe(1);
+    realtime.push("messages", "INSERT", message);
+    realtime.push("messages", "INSERT", message);
+    await expect(chatLog(page).getByText("Namaste Karthik, the 3BHK is ready.")).toHaveCount(1);
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("Enter sends, Shift+Enter adds a line, and a double Enter sends once", async ({ page }) => {
+    const sent = await mockReply(page, async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      return accepted;
+    });
+    await openKarthik(page);
+    const box = page.getByRole("textbox", { name: "Message" });
+    await box.fill("Line one");
+    await box.press("Shift+Enter");
+    await box.pressSequentially("Line two");
+    expect(sent).toHaveLength(0);
+    await box.press("Enter");
+    await box.press("Enter");
+    await expect(box).toHaveValue("");
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(sent[0].body)).toEqual({ body: "Line one\nLine two" });
+  });
+
+  test("keeps the draft and says nothing was sent when the API refuses", async ({ page }) => {
+    const sent = await mockReply(page, () => refusal(409, "outside_window", "This customer hasn't written in the last 24 hours, so WhatsApp only allows an approved template."));
+    await openKarthik(page);
+    const box = page.getByRole("textbox", { name: "Message" });
+    await box.fill("Are you still interested?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(notice(page)).toContainText("Not sent.");
+    await expect(notice(page)).toContainText("only allows an approved template");
+    await expect(notice(page)).toContainText("Your message is still here.");
+    await expect(box).toHaveValue("Are you still interested?");
+    expect(sent).toHaveLength(1);
+    await expect(chatLog(page).getByText("Are you still interested?")).toHaveCount(0);
+  });
+
+  test("when there's no answer it says the message may have gone out and does not resend", async ({ page }) => {
+    const sent = await mockReply(page, () => "abort");
+    await openKarthik(page);
+    const box = page.getByRole("textbox", { name: "Message" });
+    await box.fill("Shall I book the visit?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(notice(page)).toContainText("Couldn’t confirm it was sent.");
+    await expect(notice(page)).toContainText("Check the chat before sending it again.");
+    await expect(box).toHaveValue("Shall I book the visit?");
+    await page.waitForTimeout(500);
+    expect(sent).toHaveLength(1);
+  });
+
+  test("a draft never moves to another chat, and a closed window offers no box", async ({ page }) => {
+    await mockReply(page, () => accepted);
+    await openKarthik(page);
+    await page.getByRole("textbox", { name: "Message" }).fill("Half written");
+    if (isMobile(page)) await page.getByRole("button", { name: "Back" }).click();
+    await row(page, /Lakshmi V/).click();
+    await expect(page.getByText("24-hour window closed.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveCount(0);
+    if (isMobile(page)) await page.getByRole("button", { name: "Back" }).click();
+    await row(page, /Priya S/).click();
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toBeVisible();
+    if (isMobile(page)) await page.getByRole("button", { name: "Back" }).click();
+    await row(page, /Karthik R/).click();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
+  });
+});
+
+test.describe("Inbox · who replies", () => {
+  test.use({ storageState: SIGNED_OUT });
+
+  async function openKarthik(page: Page) {
+    const realtime = await mockRealtime(page);
+    await openInbox(page);
+    await row(page, /Karthik R/).click();
+    await expect(whoReplies(page).getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => realtime.joins.length).toBe(1);
+    return realtime;
+  }
+
+  test("taking over sends the mode as the member, opens the reply box, and the note appears once", async ({ page }) => {
+    const calls = await mockMode(page);
+    const realtime = await openKarthik(page);
+    await whoReplies(page).getByRole("button", { name: "Human" }).click();
+
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toHaveCount(0);
+    await expect(whoReplies(page).getByRole("button", { name: "Human" })).toHaveAttribute("aria-pressed", "true");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "POST", tenant: INBOX_TENANT });
+    expect(calls[0].authorization).toMatch(/^Bearer /);
+    expect(modeBody(calls[0])).toEqual({ mode: "human" });
+
+    // The API writes the note; realtime brings it (and the conversation update), possibly twice.
+    const note = noteRow("41000000-0000-0000-0000-000000000a01", "A team member took over this chat. The AI won’t reply.", "takeover");
+    realtime.push("messages", "INSERT", note);
+    realtime.push("messages", "INSERT", note);
+    realtime.push("conversations", "UPDATE", { id: cid(1), tenant_id: INBOX_TENANT, mode: "human", status: "open", last_customer_msg_at: new Date().toISOString() });
+    await expect(chatLog(page).getByText("A team member took over this chat.")).toHaveCount(1);
+    // A system note never becomes the chat's preview line in the list.
+    if (isMobile(page)) await page.getByRole("button", { name: "Back" }).click();
+    await expect(row(page, /Karthik R/)).not.toContainText("A team member took over");
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("Return to AI hands the chat back: the reply box goes, the note appears once", async ({ page }) => {
+    const calls = await mockMode(page, (n) => ({ status: 200, body: { mode: n === 1 ? "human" : "ai", changed: true } }));
+    const realtime = await openKarthik(page);
+    await whoReplies(page).getByRole("button", { name: "Human" }).click();
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+
+    await whoReplies(page).getByRole("button", { name: "AI" }).click();
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveCount(0);
+    expect(calls.map(modeBody)).toEqual([{ mode: "human" }, { mode: "ai" }]);
+
+    const note = noteRow("41000000-0000-0000-0000-000000000a02", "Returned to the AI. It will reply to new messages.", "return_to_ai");
+    realtime.push("messages", "INSERT", note);
+    realtime.push("messages", "INSERT", note);
+    await expect(chatLog(page).getByText("Returned to the AI.")).toHaveCount(1);
+  });
+
+  test("a second click while a switch is in flight sends one request", async ({ page }) => {
+    const calls = await mockMode(page, async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      return { status: 200, body: { mode: "human", changed: true } };
+    });
+    await openKarthik(page);
+    const human = whoReplies(page).getByRole("button", { name: "Human" });
+    await human.click();
+    await human.click({ force: true, timeout: 1000 }).catch(() => undefined);
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    expect(calls).toHaveLength(1);
+  });
+
+  test("when the API refuses, it says so, changes nothing and keeps the reply gate", async ({ page }) => {
+    await mockMode(page, () => ({ status: 409, body: { error: { code: "conflict", message: "This chat was just changed by someone else. Check who is replying, then try again." } } }));
+    await openKarthik(page);
+    await whoReplies(page).getByRole("button", { name: "Human" }).click();
+    const failure = page.getByRole("alert").filter({ hasText: "Couldn’t switch." });
+    await expect(failure).toContainText("was just changed by someone else");
+    await expect(failure).toContainText("Nothing was changed.");
+    await expect(whoReplies(page).getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveCount(0);
+    // It can be tried again.
+    await expect(whoReplies(page).getByRole("button", { name: "Human" })).toBeEnabled();
+  });
+
+  test("a change made elsewhere reaches this screen through realtime, both ways", async ({ page }) => {
+    const realtime = await openKarthik(page);
+    const change = (mode: string) => realtime.push("conversations", "UPDATE", { id: cid(1), tenant_id: INBOX_TENANT, mode, status: "open", last_customer_msg_at: new Date().toISOString() });
+    change("human");
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    await expect(whoReplies(page).getByRole("button", { name: "Human" })).toHaveAttribute("aria-pressed", "true");
+    change("ai");
+    await expect(page.getByText("AI is replying. Switch to Human to reply.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveCount(0);
+  });
+
+  test("a chat handled from the owner's own number can't be switched here", async ({ page }) => {
+    await mockRealtime(page);
+    await openInbox(page);
+    await row(page, /xxx xxx52/).click();
+    const reason = "This chat is handled from the business’s own WhatsApp number, so it can’t be switched here.";
+    await expect(whoReplies(page)).toHaveAccessibleDescription(reason);
+    for (const name of ["AI", "Human"]) await expect(whoReplies(page).getByRole("button", { name })).toBeDisabled();
+    await expect(page.getByText(reason)).toBeVisible();
+  });
+});
+
