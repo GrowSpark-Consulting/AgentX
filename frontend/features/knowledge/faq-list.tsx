@@ -7,10 +7,12 @@ import { KB_UNAVAILABLE_TITLE, type FaqItem, type SectionSource } from "./kb-con
 // "FAQs · n", ported from the /dashboard/preview Knowledge base (features/knowledge/pakka-knowledge.tsx):
 // title over a 2px ink rule with a ghost Add, then an accordion (question row with +/−, the answer
 // below; the first one starts open). An open FAQ has Edit and Delete for owners and admins; staff
-// read only. A FAQ that isn't ready (its save failed to reach the AI) says so. Once a write finds the
-// FAQ routes aren't deployed yet, the section says so and its write buttons are switched off.
+// read only. A FAQ that isn't ready (its save failed to reach the AI) says so, and who can retry it
+// (saving it again, even unchanged). Once a write finds the FAQ routes aren't deployed yet, the section
+// says so and its write buttons are switched off.
 
-const NOT_READY: Record<Exclude<FaqItem["status"], "ready">, string> = { processing: "Processing", failed: "Not in use: edit to try again" };
+const notReadyText = (status: Exclude<FaqItem["status"], "ready">, canWrite: boolean) =>
+  status === "processing" ? "Processing" : canWrite ? "Not in use: edit to try again" : "Not in use: an owner or admin can save it again";
 
 export function FaqList({
   source,
@@ -94,7 +96,7 @@ export function FaqList({
             </button>
             {f.status !== "ready" ? (
               <p style={{ margin: "-6px 0 10px" }}>
-                <span style={{ fontSize: "11px", fontWeight: "600", padding: "3px 8px", border: "1px solid var(--color-accent)", color: "var(--color-accent-700)" }}>{NOT_READY[f.status]}</span>
+                <span style={{ fontSize: "11px", fontWeight: "600", padding: "3px 8px", border: "1px solid var(--color-accent)", color: "var(--color-accent-700)" }}>{notReadyText(f.status, canWrite)}</span>
               </p>
             ) : null}
             {expanded ? (

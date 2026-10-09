@@ -16,12 +16,15 @@ export function GapsList({
   source,
   canAnswer,
   canDismiss,
+  notice = null,
   onAnswer,
   onDismiss,
 }: {
   source: SectionSource<GapItem>;
   canAnswer: boolean;
   canDismiss: boolean;
+  /** An answer stored as an FAQ the AI can't use yet (its question has left the list): how to retry it. */
+  notice?: { title: string; message: string } | null;
   onAnswer: (gap: GapItem, answer: string) => Promise<void>;
   onDismiss: (gap: GapItem) => void;
 }) {
@@ -73,6 +76,12 @@ export function GapsList({
           </span>
         ) : null}
       </div>
+
+      {notice ? (
+        <div style={{ paddingTop: "12px" }}>
+          <ErrorState compact title={notice.title} description={notice.message} />
+        </div>
+      ) : null}
 
       {source.status === "loading" ? (
         <div style={{ paddingTop: "12px" }}>

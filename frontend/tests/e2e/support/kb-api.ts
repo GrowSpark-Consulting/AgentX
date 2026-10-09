@@ -25,7 +25,7 @@ export type KbCall = {
 export type KbFailure = { status: number; code: string; message: string; fields?: Record<string, string> };
 /** What the API answers for a route it doesn't have (backend/src/server/app.ts), byte for byte. */
 export const ROUTE_MISSING: KbFailure = { status: 404, code: "not_found", message: "Not found." };
-type StoredDoc = { id: string; tenant_id: string; source_type: string; title: string | null; body: string | null; status: string; created_at: string };
+type StoredDoc = { id: string; tenant_id: string; source_type: string; title: string | null; body: string | null; status: string; error?: string | null; created_at: string };
 
 const UUID_SEGMENT = /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
@@ -44,13 +44,24 @@ export interface KbApi {
   fail(route: string, failure: KbFailure | null): void;
   /** Holds `route` until the returned function is called, to see the in-flight state. */
   hold(route: string): () => void;
+  /**
+   * While on, embedding a FAQ fails as the built API's does (backend/src/kb/faqs.ts): a PATCH stores the
+   * edit and an answer stores its FAQ and closes the question, then the FAQ is left `failed` and the
+   * reply is 502 upstream_failed. Unlike fail(), the write before the embedding still happens.
+   */
+  failEmbedding(on: boolean): void;
 }
+
+/** backend/src/kb/faqs.ts: the reply and the row's error when a FAQ can't be embedded. */
+export const EMBED_FAILED: KbFailure = { status: 502, code: "upstream_failed", message: "We couldn't save this question for search just now. Try again in a moment." };
+const FAQ_FAILED = "We couldn't save this question for search. Save it again in a moment.";
 
 export async function mockKbApi(page: Page, request: APIRequestContext, { role = "owner" }: { role?: "owner" | "admin" | "staff" } = {}): Promise<KbApi> {
   const calls: KbCall[] = [];
   let gaps: Gap[] = [];
   const failures = new Map<string, KbFailure>();
   const holds = new Map<string, Promise<void>>();
+  let embeddingFails = false;
 
   const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   const error = (route: Route, f: KbFailure) => json(route, f.status, { error: { code: f.code, message: f.message, ...(f.fields && { fields: f.fields }) } });
@@ -97,7 +108,10 @@ export async function mockKbApi(page: Page, request: APIRequestContext, { role =
         if (q !== undefined && docs.some((d) => d.id !== id && d.source_type === "manual" && sameQuestion(d.title, q))) {
           return error(route, { status: 409, code: "conflict", message: "There's already an FAQ with this question." });
         }
-        const patched = await (await request.patch(`${MOCK_SUPABASE_URL}/__mock/kb-documents?id=${id}`, { data: { title: q, body: a, status: "ready" } })).json();
+        // Any PATCH, even one that changes nothing, embeds the FAQ again: that's how a failed one is retried.
+        const outcome = embeddingFails ? { status: "failed", error: FAQ_FAILED } : { status: "ready", error: null };
+        const patched = await (await request.patch(`${MOCK_SUPABASE_URL}/__mock/kb-documents?id=${id}`, { data: { title: q, body: a, ...outcome } })).json();
+        if (embeddingFails) return error(route, EMBED_FAILED);
         return json(route, 200, { id, q: patched.title, a: patched.body });
       }
       case "DELETE /api/kb/faqs/:id":
@@ -140,8 +154,10 @@ export async function mockKbApi(page: Page, request: APIRequestContext, { role =
         if (docs.some((d) => d.source_type === "manual" && sameQuestion(d.title, gap.question))) {
           return error(route, { status: 409, code: "conflict", message: "There's already an FAQ with this question." });
         }
-        const row = await insert({ tenant_id: tenant, source_type: "manual", title: gap.question, body: a, status: "ready" });
+        // answer_kb_gap writes the FAQ and closes the question together; the embedding comes after.
+        const row = await insert({ tenant_id: tenant, source_type: "manual", title: gap.question, body: a, ...(embeddingFails ? { status: "failed", error: FAQ_FAILED } : { status: "ready" }) });
         gaps = gaps.filter((g) => g.id !== id);
+        if (embeddingFails) return error(route, EMBED_FAILED);
         return json(route, 200, { faq: { id: row.id, q: row.title, a: row.body } });
       }
       case "POST /api/kb/gaps/:id/dismiss": {
@@ -171,6 +187,9 @@ export async function mockKbApi(page: Page, request: APIRequestContext, { role =
         holds.delete(name);
         release();
       };
+    },
+    failEmbedding: (on) => {
+      embeddingFails = on;
     },
   };
 }
