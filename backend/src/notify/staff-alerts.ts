@@ -11,13 +11,17 @@ import { send, type SendOutcome } from "./send";
 // window, and the staff_alert_vN template's {{1}} and {{2}} outside it. The wording is a placeholder until
 // Raja's arrives. Who gets which alert comes with the Team screen; until then owners and admins get every one.
 
-export type StaffAlertKind = "handoff_opened" | "credits_exhausted" | "setup_problem";
+export type StaffAlertKind = "handoff_opened" | "handoff_waiting" | "credits_exhausted" | "setup_problem";
 
 export interface StaffAlert {
   kind: StaffAlertKind;
   /** The customer chat the alert is about (not needed for credits_exhausted). */
   conversationId?: string;
+  /** handoff_waiting: how long the customer has waited for a person. */
+  waitedMinutes?: number;
 }
+
+export type AlertRole = "owner" | "admin";
 
 export interface StaffAlertDeps {
   db: SupabaseClient;
@@ -33,13 +37,17 @@ const oneLine = (text: string, max = 60) => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
-/** Members who get staff alerts: owners and admins with an alert number. */
-export async function staffAlertRecipients(tenantId: string, deps: StaffAlertDeps = defaults()): Promise<string[]> {
+/** Members who get staff alerts: owners and admins with an alert number (`roles` narrows it, e.g. owners only). */
+export async function staffAlertRecipients(
+  tenantId: string,
+  deps: StaffAlertDeps = defaults(),
+  roles: readonly AlertRole[] = ["owner", "admin"],
+): Promise<string[]> {
   const { data, error } = await deps.db
     .from("memberships")
     .select("user_id")
     .eq("tenant_id", tenantId)
-    .in("role", ["owner", "admin"])
+    .in("role", [...roles])
     .not("whatsapp_phone", "is", null);
   if (error) throw new Error(`staff alert recipients: ${error.message}`);
   return z
@@ -79,6 +87,10 @@ export async function staffAlertContent(
   }
   const who = await customerLabel(tenantId, alert.conversationId, deps.db);
   const link = alert.conversationId ? `${app}/dashboard/inbox?conversation=${alert.conversationId}` : `${app}/dashboard/inbox`;
+  if (alert.kind === "handoff_waiting") {
+    const waited = alert.waitedMinutes ? `${alert.waitedMinutes} minute${alert.waitedMinutes === 1 ? "" : "s"}` : "a while";
+    return { headline: `${who} has waited ${waited} and no one has picked up the chat yet.`, link };
+  }
   return alert.kind === "handoff_opened"
     ? { headline: `${who} is waiting for a person on WhatsApp.`, link }
     : { headline: `The assistant couldn't continue the chat with ${who}.`, link };

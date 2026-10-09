@@ -161,6 +161,7 @@ otherwise the approved `staff_alert_vN` template: `{{1}}` the one-line headline,
 | `handoff_opened` | a handoff that is not one of the two below | "{name} is waiting for a person on WhatsApp." | `/dashboard/inbox?conversation=<id>` |
 | `credits_exhausted` | handoff trigger `credits_exhausted` | "{business} is out of credits, so the assistant has stopped replying." | `/dashboard/billing` |
 | `setup_problem` | handoff trigger `stuck` | "The assistant couldn't continue the chat with {name}." | `/dashboard/inbox?conversation=<id>` |
+| `handoff_waiting` | `handoff-sla`: no one picked the chat up within the SLA; **owners only** | "{name} has waited {N} minutes and no one has picked up the chat yet." | `/dashboard/inbox?conversation=<id>` |
 
 `{name}` is the contact's name, else the masked number (`+9198xxxxxx45`). Every parameter is one line with no
 tabs or runs of spaces (Meta refuses them, 132018); customer and business names are cut to 40 characters.
@@ -219,6 +220,7 @@ passes through in the `failed` outcome. A plain `Error` is unexpected: it is log
 | `tenants.business_hours`, `resources.working_hours` | `{ "mon": [{ "start": "10:00", "end": "19:00" }], … }`. Keys `mon`–`sun`; local time in `tenants.timezone`; several intervals allow split shifts; a missing day or `[]` means closed. A resource with no days set uses the business's hours | Fixed: read by `findSlots` (`WeeklyHours` in `backend/src/booking/slots.ts`) |
 | `resources.service_area` | `{ "pincodes": ["600041", …] }` (field visits); a resource with no area serves every pincode | Fixed: read by `findSlots` |
 | `tenant_features.settings` | Reminders: `{ "offset_minutes": 1440 }`, minutes before the booking's start, a whole number from 1 to 10080 (a week); anything else uses the default (`reminder_24h` 1440, `reminder_2h` 120). Other features `{}` | Fixed for reminders: read by `booking-reminders` (`backend/src/booking/reminders.ts`) |
+| `tenant_features.settings` of `handoff_triggers` | `{ "sla_minutes": 15 }`: minutes a handoff may wait before the owner is alerted again, 1 to 1440; anything else uses 15 | Proposed (decision 17): read by `handoff-sla` |
 | `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
 | `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
 | `tenants.agent_settings` | Persona name, tone, languages, handoff default, scoring overrides | **To define: Dev 1 + Dev 3** |
@@ -340,7 +342,7 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
 | `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` |
 | `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run |
-| `handoff.opened` | `{ tenantId, handoffId, conversationId }`; sent by Dev 1's reply step when it opens a handoff (id `handoff_opened:<handoffId>`); starts `handoff-alert`, which sends one `staff_alert` to each owner and admin with an alert number (section 2). A handoff already resolved by the time the job runs gets no alert. **The job is the only sender of handoff alerts:** the reply step does not alert staff itself |
+| `handoff.opened` | `{ tenantId, handoffId, conversationId }`; sent by Dev 1's reply step when it opens a handoff (id `handoff_opened:<handoffId>`); starts `handoff-alert`, which sends one `staff_alert` to each owner and admin with an alert number (section 2). A handoff already resolved by the time the job runs gets no alert. **The job is the only sender of handoff alerts:** the reply step does not alert staff itself. Also starts `handoff-sla`: after the SLA (section 3) it alerts the owners again (`handoff_waiting`) unless someone has the chat: the handoff was picked up, assigned or resolved, a staff member took the chat over, or it is no longer in `human` mode (back with the AI, or on the business's own number) |
 | `handoff.own_number` | `{ tenantId, handoffId }` |
 | `tenant.trial_started` | `{ tenantId }` |
 | `credits.spent` | `{ tenantId, amount, reason, balanceAfter }` |
@@ -563,6 +565,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 14 | Knowledge base: storage, routes, statuses, gaps (section 9) | **Proposed**; schema, router and gap functions built (Shaaz); any team member can answer gaps (Raja); pending Dhatri, and Raja on the rest | Dev 1 |
 | 15 | WhatsApp connection routes ([whatsapp-connection-contract.md](whatsapp-connection-contract.md), #44) | **Proposed.** Shaaz's answers (7 Oct): platform admins in a `platform_admins` table; the public connect-link route needs no router change (the token is masked in the request log); link tokens stored hashed; `EMBEDDED_SIGNUP_ENABLED` server flag, off by default; connection status by polling, not Realtime. **Built:** `platform_admins`, `adminRoute`, hashed tokens (0016), `secretParams` log masking (section 6). Roles on recheck and disconnect: Raja | Dev 1 |
 | 16 | A send whose outcome is unknown (a timeout, a network failure or an unreadable answer from Meta) | **Proposed by Dev 2 (8 Oct):** hold the credit until Meta's status says sent or failed, instead of refunding. Needs Raja, because it changes billing, and a way to match Meta's status webhook to the send. Until then `notify.send` refunds (decision 2) and reports `outcomeUnknown: true`, so no caller sends the message again | Raja |
+| 17 | Handoff SLA (`handoff-sla`) | **Proposed by Dev 2 (9 Oct):** 15 minutes by default, each business can change it (`sla_minutes`, section 3); counted from the handoff at any time of day (business hours not yet considered); the escalation goes to owners only. The handover gives no number | Raja |
 
 ## 9. Knowledge base (PROPOSED, not agreed)
 
