@@ -277,7 +277,9 @@ describe("every way step 4 ends has an answer", () => {
     const out = await replyTurn(runner().step, w.turn, result, Date.now(), w.deps);
     expect(w.send).toHaveBeenCalledOnce();
     expect(w.complete).not.toHaveBeenCalled(); // no model call: nothing to be steered, nothing that can fail
-    expect(sentText(w)).toBe(fixedText(key as "fallback", "en"));
+    // the exit question goes as reply buttons: its text is the short line with the STOP hint
+    const payload = w.send.mock.calls[0][2];
+    expect(key === "exit_question" ? payload.interactive?.body : payload.text).toBe(fixedText(key === "exit_question" ? "exit_prompt" : (key as "fallback"), "en"));
     expect(out.reply).toMatchObject({ status: "sent", source: "fixed" });
     expect(w.audits.filter((a) => a.action === "message.answered")).toHaveLength(1);
   });
@@ -916,7 +918,7 @@ describe("a clear request to stop that the model read (model_intent)", () => {
     const w = world();
     const out = await replyTurn(runner().step, w.turn, leaving({ confidence: 0.79 }), Date.now(), w.deps);
     expect(out.reply).toMatchObject({ status: "sent", source: "fixed" });
-    expect(sentText(w)).toBe(fixedText("exit_question", "en"));
+    expect(w.send.mock.calls[0][2].interactive).toMatchObject({ type: "buttons", body: fixedText("exit_prompt", "en") });
     expect(w.contacts.get(CONTACT)?.optedOut).toBe(false);
     expect(w.handoffs).toEqual([]);
     expect(w.consentLogs).toEqual([]);
@@ -940,6 +942,78 @@ describe("a clear request to stop that the model read (model_intent)", () => {
     await replyTurn(r.step, w.turn, leaving(), Date.now(), w.deps);
     const everything = JSON.stringify([...r.memo.values(), ...log.mock.calls, ...out.mock.calls]);
     for (const secret of [CUSTOMER_WORDS, QUESTION, HIDDEN.phone]) expect(everything).not.toContain(secret);
+  });
+});
+
+describe("the exit question as two reply buttons", () => {
+  const unclear = (over: Record<string, unknown> = {}) => understood({ outcome: "skipped" }, { intent: "unclear_exit", confidence: 0.7, ...over });
+  const tap = (id: string, secondsAgo: number, buttonId: string, title: string): FakeMessage => ({ id, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "interactive", createdAt: at(secondsAgo), body: title, meta: { buttonId } });
+
+  it("goes out as [Talk to the team] [Continue] with the STOP hint in the text, and no STOP button", async () => {
+    const w = world();
+    await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    expect(w.send).toHaveBeenCalledOnce();
+    const [tenant, kind, payload] = w.send.mock.calls[0];
+    expect([tenant, kind]).toEqual([A, "ai_reply"]);
+    expect(payload.text).toBeUndefined();
+    expect(payload.interactive).toEqual({
+      type: "buttons",
+      body: fixedText("exit_prompt", "en"),
+      buttons: [{ id: "exit:talk", title: "Talk to the team" }, { id: "exit:continue", title: "Continue" }],
+    });
+    expect(JSON.stringify(payload.interactive)).toContain("STOP");
+    expect(JSON.stringify(payload.interactive?.type === "buttons" ? payload.interactive.buttons : null)).not.toMatch(/stop/i);
+  });
+
+  it("is in the customer's language", async () => {
+    const w = world();
+    await replyTurn(runner().step, w.turn, unclear({ language: "hi" }), Date.now(), w.deps);
+    expect(w.send.mock.calls[0][2].interactive).toMatchObject({ body: fixedText("exit_prompt", "hi") });
+  });
+
+  it("falls back to the plain text with 'Reply 1' only if the buttons are refused (not for a retry, not for an unknown outcome)", async () => {
+    const refused: SendOutcome = { status: "failed", error: { code: "validation_failed", message: "x", retryable: false, outcomeUnknown: false } };
+    const w = world({ send: (n) => (n === 1 ? refused : SENT) });
+    const out = await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    expect(w.send).toHaveBeenCalledTimes(2);
+    expect(w.send.mock.calls[1][2]).toEqual({ conversationId: CONV, text: fixedText("exit_question", "en") });
+    expect(out.reply).toMatchObject({ status: "sent" });
+    expect(w.audits.filter((a) => a.action === "message.answered")).toHaveLength(1);
+
+    const unknown = world({ send: () => ({ status: "failed", error: { code: "upstream_failed", message: "x", retryable: true, outcomeUnknown: true } }) });
+    await replyTurn(runner().step, unknown.turn, unclear(), Date.now(), unknown.deps);
+    expect(unknown.send).toHaveBeenCalledOnce(); // it may have gone out: never sent again
+
+    const retry = world({ send: () => ({ status: "failed", error: { code: "rate_limited", message: "x", retryable: true, outcomeUnknown: false } }) });
+    await expect(replyTurn(runner().step, retry.turn, unclear(), Date.now(), retry.deps)).rejects.toThrow(/could not be sent/);
+    expect(retry.send).toHaveBeenCalledOnce();
+  });
+
+  it("is plain text when the business has the team handover off: no button leads nowhere", async () => {
+    const w = world({ agentSettings: { handoffTriggers: [{ key: "asked_human", enabled: false }] } });
+    await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    expect(w.send.mock.calls[0][2]).toEqual({ conversationId: CONV, text: fixedText("exit_prompt", "en") });
+  });
+
+  it("a tap on Talk to the team hands the chat to a person", async () => {
+    const w = world({ messages: [tap(M1, 3, "exit:talk", "Talk to the team")] });
+    const out = await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), Date.now(), w.deps);
+    expect(sentText(w)).toBe(fixedText("handoff", "en"));
+    expect(out.handoff).toMatchObject({ trigger: "asked_human", switched: true });
+    expect(w.handoffs).toEqual([expect.objectContaining({ trigger: "asked_human", priority: "high" })]);
+  });
+
+  it("a tap on Continue goes on as normal: no handover, answered like any message", async () => {
+    const w = world({ messages: [tap(M1, 3, "exit:continue", "Continue")] });
+    await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
+    expect(w.complete).toHaveBeenCalledOnce();
+  });
+
+  it("a tap on any other button (a booking button, a list row) is not ours", async () => {
+    const w = world({ messages: [tap(M1, 3, "booking:abc:confirm", "Confirm")] });
+    await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), Date.now(), w.deps);
+    expect(w.handoffs).toEqual([]);
   });
 });
 

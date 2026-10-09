@@ -29,6 +29,7 @@ const input = (over: Partial<PlanInput> = {}): PlanInput => ({
   settings: parseReplySettings({}),
   exitQuestionPending: false,
   customerSaidOne: false,
+  talkButtonTapped: false,
   deadlineExceeded: false,
   ...over,
 });
@@ -246,6 +247,27 @@ describe("understood, and the customer may be leaving but it is not clear how", 
   it('"1" after that question is a person taking over: handover asked_human, high priority', () => {
     const result = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "give_details", hasQuestion: false }), exitQuestionPending: true, customerSaidOne: true }));
     expect(result).toEqual({ case: "exit_question_talk", reply: { mode: "fixed", text: "handoff", language: "en" }, handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0 });
+  });
+
+  it("a tap on the Talk to the team button is a person taking over, whatever the model made of the title, and even if the question is not the last thing asked", () => {
+    for (const over of [{ intent: "greeting" as const }, { intent: "unclear_exit" as const }, { intent: "opt_out" as const, confidence: 0.99 }, { intent: "question" as const }]) {
+      const result = planReply(input({ understood: understood({ outcome: "skipped" }, over), talkButtonTapped: true }));
+      expect(result, JSON.stringify(over)).toMatchObject({ case: "exit_question_talk", handoff: { trigger: "asked_human", priority: "high" }, reply: { mode: "fixed", text: "handoff" } });
+      expect(result.optOut).toBeUndefined();
+    }
+  });
+
+  it("a tap on the button is not a handover when the business switched asked_human off (the question had no button then)", () => {
+    const settings = parseReplySettings({ handoffTriggers: [{ key: "asked_human", enabled: false }] });
+    expect(planReply(input({ understood: understood(found), talkButtonTapped: true, settings })).case).toBe("answered_from_kb");
+  });
+
+  it("when the business switched asked_human off the question has no way to reach the team: the short line with the STOP hint, no button and no '1'", () => {
+    const settings = parseReplySettings({ handoffTriggers: [{ key: "asked_human", enabled: false }] });
+    const result = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "unclear_exit", confidence: 0.7, language: "ta-en" }), settings }));
+    expect(result).toMatchObject({ case: "exit_unclear", reply: { mode: "fixed", text: "exit_prompt", language: "ta-en" } });
+    expect(fixedText("exit_prompt", "ta-en")).toContain("STOP");
+    expect(fixedText("exit_prompt", "en")).not.toMatch(/[0-9]/);
   });
 
   it('"1" wins over what the model made of it: not asked twice, not opted out after choosing the team', () => {

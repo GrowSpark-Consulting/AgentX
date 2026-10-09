@@ -66,7 +66,7 @@ Decided by Raja on 9 Oct (final):
 
 - Angry, a complaint or wants a human: hand to staff, polite line, high-priority handoff row and `handoff.opened`.
 - The model's clear opt-out is the same path as STOP. Threshold: **0.8** (approved), a named constant.
-- Unclear intent: ask once; no STOP button; "Reply 1 to talk to the team, or just continue" as plain text until `sendButtons` exists.
+- Unclear intent: ask once; no STOP button; two reply buttons now that #76 is on main (plain text "Reply 1 to talk to the team, or just continue" only if the buttons are refused).
 - "Not interested" moves the lead to `lost`.
 - The phrase list is examples, never keywords.
 
@@ -88,8 +88,7 @@ Mine (check these):
 - Your `handoff.opened` job: two new triggers need wording, `asked_human` and `complaint` (both high priority), and `opt_out`
   (above). The opt-out handoff stays open until staff resolve it; a later handover in that chat reuses it.
 - No new env var. The extraction prompt is now version 2 (traces say `extraction` version 2); a few hundred more cached tokens per call.
-- **Later (Day 3):** when `sendButtons` exists, the `exit_question` line becomes two reply buttons, [Talk to the team] and
-  [Continue] (ids to agree), and the "Reply 1" wording goes. The place is marked with a TODO in `fixed-texts.ts`.
+- **The exit question is now two real reply buttons** (Shaaz's #76, `interactive` in `notify.send`): [Talk to the team] [Continue], ids `exit:talk` and `exit:continue`, under a short line with the STOP hint; no STOP button. A tap comes back as an inbound message with `meta.buttonId`: `exit:talk` hands the chat to a person (at any time, it is the customer's own choice), `exit:continue` goes on as normal. The plain text with "Reply 1" is used only if the buttons are refused (not for a retry, not for an unknown outcome), and then a "1" right after it counts. `getBatchTexts` now also returns the tapped `buttonId`.
 
 ## 6. For Dev 3 (Dhatri)
 
@@ -102,13 +101,11 @@ Mine (check these):
 
 - **Knowledge gap from the reply (Day 3+):** when the reply model says the information is not available (for example "a 4BHK villa in Adyar" matched the Velachery document, and the model honestly said it had no details), record a knowledge gap for it. Today only a search with no match records one.
 - **Migration numbers:** this PR is `0022`, after the consent PR's `0021` (Shaaz's `0019` and `0020` are on main). Check main for the next free number before each merge, and renumber in order.
-- Switch `exit_question` to reply buttons when `sendButtons` exists (Day 3).
 - The six languages Raja marked (Telugu, Kannada, Bengali, Marathi, Gujarati, Punjabi) need a native speaker's check before
   they are final test data.
 - Real-model accuracy of the intents is not proven by these tests (the model is mocked): the conversation tests' `--live` mode
   (next PR) shows what the real model says for each of Raja's phrases.
-- **From the review, left as they are (tell me if you want them changed):** (a) if a business switches `asked_human` off, the
-  exit question still says "Reply 1", and a "1" is then answered like an ordinary message; (b) "1" counts only right after the
+- **From the review, left as they are (tell me if you want them changed):** (a) fixed in this PR: a business that switches `asked_human` off now gets only the short line with the STOP hint (no button, no "1"); (b) "1" counts only right after the
   question, but a long human-mode stretch in between is not detected (it also needs the customer to send exactly "1");
   (c) the pack's own `handoffTriggers` list is not consulted, only the business's setting (all three packs list both
   triggers); (d) a burst like "stop" then "actually book me" is read as one message, and a clear opt-out cannot be undone

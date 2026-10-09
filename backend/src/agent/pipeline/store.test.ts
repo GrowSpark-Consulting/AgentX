@@ -318,11 +318,19 @@ describe("mergeLeadFields", () => {
 });
 
 describe("getBatchTexts", () => {
+  it("tells which button or list row a tap was (the inbound message's meta.buttonId), and nothing else of the meta", async () => {
+    const { db } = fakeDb(() => ({ data: [{ id: "m1", body: "Talk to the team", created_at: "2026-10-08T10:00:00+00:00", meta: { buttonId: "exit:talk", other: "x" } }, { id: "m2", body: "hi", created_at: "2026-10-08T10:00:02+00:00", meta: { buttonId: 5 } }] }));
+    expect(await createPipelineStore(db).getBatchTexts(T, CONV, ["m1", "m2"])).toEqual([
+      { id: "m1", body: "Talk to the team", createdAt: "2026-10-08T10:00:00.000Z", buttonId: "exit:talk" },
+      { id: "m2", body: "hi", createdAt: "2026-10-08T10:00:02.000Z", buttonId: null },
+    ]);
+  });
+
   it("reads the text of these customer messages of this conversation, oldest first", async () => {
     const { db, calls } = fakeDb(() => ({ data: [{ id: "m1", body: "hi", created_at: "2026-10-08T10:00:00+00:00" }, { id: "m2", body: null, created_at: "2026-10-08T10:00:02+00:00" }] }));
     expect(await createPipelineStore(db).getBatchTexts(T, CONV, ["m1", "m2"])).toEqual([
-      { id: "m1", body: "hi", createdAt: "2026-10-08T10:00:00.000Z" },
-      { id: "m2", body: null, createdAt: "2026-10-08T10:00:02.000Z" },
+      { id: "m1", body: "hi", createdAt: "2026-10-08T10:00:00.000Z", buttonId: null },
+      { id: "m2", body: null, createdAt: "2026-10-08T10:00:02.000Z", buttonId: null },
     ]);
     tenantFilter(calls[0]);
     expect(filter(calls[0], "conversation_id")).toEqual(["conversation_id", "eq", CONV]);

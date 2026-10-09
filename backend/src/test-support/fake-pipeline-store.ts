@@ -158,7 +158,7 @@ export function fakePipelineStore(
         .map((id) => messages.get(id))
         .filter((m): m is FakeMessage => !!m && m.tenantId === tenantId && m.conversationId === conversationId && m.sender === "customer")
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
-        .map((m) => ({ id: m.id, body: m.body ?? null, createdAt: m.createdAt }));
+        .map((m) => ({ id: m.id, body: m.body ?? null, createdAt: m.createdAt, buttonId: typeof m.meta?.buttonId === "string" ? m.meta.buttonId : null }));
     },
     async getHistory(tenantId, conversationId, before, limit): Promise<HistoryItem[]> {
       calls.push("getHistory");

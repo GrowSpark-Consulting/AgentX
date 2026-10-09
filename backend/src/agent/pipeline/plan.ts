@@ -63,6 +63,8 @@ export interface PlanInput {
   exitQuestionPending: boolean;
   /** The customer's newest message is just "1". */
   customerSaidOne: boolean;
+  /** The customer tapped the "Talk to the team" button of the exit question (inbound message meta.buttonId). */
+  talkButtonTapped: boolean;
   /** The turn's hard stop has passed: no model call, the safe fallback. */
   deadlineExceeded: boolean;
 }
@@ -102,9 +104,11 @@ export function planReply(input: PlanInput): Plan {
   }
 
   const { summary, retrieval } = understood;
-  // The customer answered our question with "1": a person takes over. Checked first: the model's reading of a bare "1" is not
-  // under our control, and the customer must not be asked twice or opted out after choosing the team.
-  if (input.exitQuestionPending && input.customerSaidOne && settings.askedHumanHandoffEnabled) {
+  // The customer answered our question: they tapped Talk to the team, or (if the buttons were refused and the plain text went)
+  // sent "1". A person takes over. Checked first: the model's reading of a tap or a bare "1" is not under our control, and the
+  // customer must not be asked twice or opted out after choosing the team. A tap is the customer's own choice at any time;
+  // a bare "1" only counts right after the question.
+  if (settings.askedHumanHandoffEnabled && (input.talkButtonTapped || (input.exitQuestionPending && input.customerSaidOne))) {
     return { reply: fixed("handoff", language), handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0, case: "exit_question_talk" };
   }
   // Leaving, or not sure how (Raja, 9 Oct). Code decides; the model only reported the intent and how sure it was.
@@ -114,7 +118,8 @@ export function planReply(input: PlanInput): Plan {
   // Asked once: if the last turn already asked, a second unclear message is answered like any other (never the same question twice).
   const unclear = summary.intent === "opt_out" || (summary.intent === "unclear_exit" && summary.confidence >= UNCLEAR_EXIT_MIN_CONFIDENCE);
   if (unclear && !input.exitQuestionPending) {
-    return { reply: fixed("exit_question", language), kbMisses: carry, case: "exit_unclear" };
+    // With the team handover switched off a button (or a "1") would lead nowhere: the short line with the STOP hint only.
+    return { reply: fixed(settings.askedHumanHandoffEnabled ? "exit_question" : "exit_prompt", language), kbMisses: carry, case: "exit_unclear" };
   }
   // Wants a person, is unhappy or angry: the chat goes to staff. A business can switch each of these off, and then the
   // message is answered like any other.

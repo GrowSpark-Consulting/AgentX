@@ -10,12 +10,13 @@ import type { NotifyPayload, SendOutcome } from "../../notify/send";
 import type { LlmClient, LlmMessage } from "../llm/anthropic";
 import { LlmError } from "../llm/anthropic";
 import { buildReplyMessages, buildReplySystem, REPLY_PROMPT } from "../prompts/reply_v1";
-import { consentNotice, fixedText, textLanguage } from "./fixed-texts";
+import { consentNotice, EXIT_BUTTON_IDS, exitQuestionButtons, fixedText, textLanguage } from "./fixed-texts";
 import { parseReplySettings, type ReplySettings } from "./persona";
 import { planReply, type Plan, type PlanInput, type ReplyPlan } from "./plan";
 import { checkReply } from "./postcheck";
 import type { PortOutcome, SystemNoticePort } from "./ports";
 import type { StepRunner, TurnContext } from "./process-message";
+import type { Interactive } from "../../notify/interactive";
 import type { HandoffPriority, PipelineStore } from "./store";
 import { turnClock } from "./turn-deadline";
 import type { UnderstandResult } from "./understand";
@@ -118,7 +119,7 @@ async function loadPlanInput(turn: TurnContext, understood: UnderstandResult, de
     settings,
     businessName: info?.name ?? null,
     lastAt,
-    input: { understood, question: typeof asked === "string" ? asked : null, contactLanguage: contact?.language ?? null, previousMisses, settings, deadlineExceeded, exitQuestionPending: previousCase === "exit_unclear", customerSaidOne: texts.some((t) => isJustOne(t.body)) },
+    input: { understood, question: typeof asked === "string" ? asked : null, contactLanguage: contact?.language ?? null, previousMisses, settings, deadlineExceeded, exitQuestionPending: previousCase === "exit_unclear", customerSaidOne: texts.some((t) => isJustOne(t.body)), talkButtonTapped: texts.some((t) => t.buttonId === EXIT_BUTTON_IDS.talk) },
   };
 }
 
@@ -263,7 +264,16 @@ async function sendReply(turn: TurnContext, understood: UnderstandResult, starte
   const carriesNotice = loaded.settings.privacyNotice && contact.consentAt === null;
   const outgoing = carriesNotice ? `${text}\n\n${consentNotice(noticeLanguage, deps.privacyPolicyUrl)}` : text;
 
-  const outcome = await deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, text: outgoing });
+  // The exit question goes as two reply buttons (Raja, 9 Oct); if WhatsApp refuses them (not a retry, not an unknown outcome) the
+  // same question goes once as plain text with "Reply 1". A tap or a "1" is read by plan.ts.
+  const exit = plan.reply.mode === "fixed" && plan.reply.text === "exit_question" ? exitQuestionButtons(plan.reply.language) : null;
+  const send = (payload: { text: string } | { interactive: Interactive }) => deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, ...payload });
+  let outcome = exit
+    ? await send({ interactive: { type: "buttons", body: carriesNotice ? `${exit.body}
+
+${consentNotice(noticeLanguage, deps.privacyPolicyUrl)}` : exit.body, buttons: [...exit.buttons] } })
+    : await send({ text: outgoing });
+  if (exit && outcome.status === "failed" && !outcome.error.retryable && !outcome.error.outcomeUnknown) outcome = await send({ text: outgoing });
   switch (outcome.status) {
     case "sent":
       // The marker first (one cheap write), then the rows: if the rows cannot be written, a retry still sees the marker.
