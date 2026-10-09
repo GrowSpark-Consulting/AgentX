@@ -40,19 +40,19 @@ turns:
 ```
 
 What can be asserted: `stop`, `extracted` (intent, language, sentiment, asksIfHuman, notInterested, fields), `case`,
-`reply` (sent, fixed line and language, contains, notContains, notice), `noInventedPrice`, `optedOut`, `consent` (the new
+`reply` (sent, fixed line and language, buttons, contains, notContains, notice), `noInventedPrice`, `optedOut`, `consent` (the new
 consent_logs of the turn), `handoff` (trigger and priority, or null), `mode`, `leadStage`, `leadFields`, `aiReplies`,
 `confirmations`. Every turn also checks, always: at most one AI reply, sent as an `ai_reply` through notify.send, and nothing
 sent to a contact who opted out.
 
 Not covered here: the gate's other outcomes (a chat a person has, the AI switched off, a contact who opted out earlier) are tested
-in `gate.test.ts`; the runner starts every chat with the AI in charge. A turn must assert something (`expect` or `mockOnly`).
+in `gate.test.ts`; the runner starts every chat with the AI in charge. A turn can be a tap on a reply button (`tap: "exit:talk"`, with the button title as the text). A turn must assert something (`expect` or `mockOnly`).
 A STOP chat's later turns show the gate's opted-out outcome.
 
 ## The files
 
-- `01`-`09`: the first chats: price questions (English, Tanglish), off-topic, "are you a bot?", prompt injection, STOP, no
-  privacy notice by default, the notice switched on, and stray characters ("x", "?", "ok", an emoji) that must not start the exit question.
+- `01`-`11`: the first chats: price questions (English, Tanglish), off-topic, "are you a bot?", prompt injection, STOP, no
+  privacy notice by default, the notice switched on, and stray characters ("x", "?", "ok", an emoji) that must not start the exit question, and the exit question as two buttons (Talk to the team, Continue).
 - `20`-`45`: Raja's phrase list (`docs/reference/opt-out-handoff-phrases.md`), one opt-out and one handover per language.
   The six languages Raja marked (Telugu, Kannada, Bengali, Marathi, Gujarati, Punjabi) have `needsNativeCheck: true`: a
   native speaker must read them before they are final test data.

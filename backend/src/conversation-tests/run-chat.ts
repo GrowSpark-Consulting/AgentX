@@ -85,7 +85,7 @@ export async function runChat(chat: Chat, options: RunOptions): Promise<ChatRepo
   let extractionScript: Record<string, unknown> = {};
   let replyScript: string[] = [];
   let kb: string[] = chat.kb;
-  const sends: { kind: string; text: string }[] = [];
+  const sends: { kind: string; text: string; buttons: string[] }[] = [];
   const confirmations: string[] = [];
   const audits: AuditEntry[] = [];
   let outCount = 0;
@@ -102,9 +102,11 @@ export async function runChat(chat: Chat, options: RunOptions): Promise<ChatRepo
   if (!llm) throw new Error("live mode needs a language-model client");
 
   const send: ReplyDeps["send"] = async (_tenantId, kind, payload): Promise<SendOutcome> => {
-    sends.push({ kind, text: payload.text ?? "" });
+    const interactive = payload.interactive;
+    const text = interactive ? interactive.body : (payload.text ?? "");
+    sends.push({ kind, text, buttons: interactive?.type === "buttons" ? interactive.buttons.map((b) => b.title) : [] });
     const sentAt = new Date(Date.now()).toISOString();
-    fake.messages.set(messageId("out", ++outCount), { id: messageId("out", outCount), tenantId: A, conversationId: CONV, direction: "out", sender: "ai", kind: "text", createdAt: sentAt, body: payload.text ?? "", meta: {} } as FakeMessage);
+    fake.messages.set(messageId("out", ++outCount), { id: messageId("out", outCount), tenantId: A, conversationId: CONV, direction: "out", sender: "ai", kind: "text", createdAt: sentAt, body: text, meta: {} } as FakeMessage);
     return { status: "sent", messageId: `m-out-${outCount}`, providerMsgId: `wamid.${outCount}`, creditsCharged: 1, usedTemplate: false };
   };
   const audit = async (entry: AuditEntry) => {
@@ -117,12 +119,11 @@ export async function runChat(chat: Chat, options: RunOptions): Promise<ChatRepo
       return { status: "sent" as const };
     },
   };
-  const staffAlert = { send: async () => ({ status: "sent" as const }) };
   const handoffEvents: string[] = [];
   const sendEvent: ReplyDeps["sendEvent"] = async (event) => {
     handoffEvents.push(event.id);
   };
-  const replyDeps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice, staffAlert, privacyPolicyUrl: PRIVACY_URL, now: Date.now };
+  const replyDeps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice, privacyPolicyUrl: PRIVACY_URL, now: Date.now };
   const understandDeps: UnderstandDeps = {
     store: fake.store,
     llm,
@@ -142,7 +143,7 @@ export async function runChat(chat: Chat, options: RunOptions): Promise<ChatRepo
     const handoffsBefore = fake.handoffs.length;
 
     const id = messageId("in", index + 1);
-    fake.messages.set(id, { id, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: new Date(base + index * 60_000).toISOString(), body: turnSpec.customer, meta: {} } as FakeMessage);
+    fake.messages.set(id, { id, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: turnSpec.tap ? "interactive" : "text", createdAt: new Date(base + index * 60_000).toISOString(), body: turnSpec.customer, meta: turnSpec.tap ? { buttonId: turnSpec.tap } : {} } as FakeMessage);
     const turn: TurnContext = { tenantId: A, conversationId: CONV, contactId: CONTACT, leadId: LEAD, leadCreated: false, messageIds: [id], language: null, vertical: pack.key, verticalVersion: pack.version };
     const step = memoRunner();
 
@@ -200,6 +201,7 @@ export async function runChat(chat: Chat, options: RunOptions): Promise<ChatRepo
           const wanted = fixedText(r.fixed.key, r.fixed.language);
           if (!replyText?.includes(wanted)) fail(`reply: wanted the fixed line ${r.fixed.key}/${r.fixed.language}, got ${JSON.stringify(replyText)}`);
         }
+        if (r.buttons && JSON.stringify(turnSends[0]?.buttons ?? []) !== JSON.stringify(r.buttons)) fail(`reply buttons: wanted ${JSON.stringify(r.buttons)}, got ${JSON.stringify(turnSends[0]?.buttons ?? [])}`);
         for (const text of r.contains ?? []) if (!replyText?.includes(text)) fail(`reply: should contain ${JSON.stringify(text)}, got ${JSON.stringify(replyText)}`);
         for (const text of r.notContains ?? []) if (replyText?.includes(text)) fail(`reply: must not contain ${JSON.stringify(text)}`);
         if (r.notice !== undefined && (replyText?.includes(PRIVACY_URL) ?? false) !== r.notice) fail(`privacy notice on the reply: wanted ${r.notice}`);

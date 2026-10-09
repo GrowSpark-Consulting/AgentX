@@ -24,6 +24,8 @@ const ReplyExpect = z
     sent: z.boolean().optional(),
     /** The reply is this fixed line, in this language: "fallback", "clarify", "handoff", "exit_question", ... */
     fixed: z.object({ key: z.enum(["fallback", "clarify", "handoff", "stop_hint", "credits_holding", "opt_out_confirmation", "exit_question"]), language: z.enum(["en", "ta", "ta-en", "hi"]) }).strict().optional(),
+    /** The titles of the reply buttons the message carried, in order ([] = it was plain text). */
+    buttons: z.array(z.string()).optional(),
     contains: z.array(z.string()).optional(),
     notContains: z.array(z.string()).optional(),
     /** The privacy notice is on the reply (true) or not (false). */
@@ -57,6 +59,8 @@ const Expect = z
 const Turn = z
   .object({
     customer: z.string().min(1),
+    /** The customer tapped a reply button or list row with this id (the text is then its title): the inbound message has kind `interactive` and `meta.buttonId`. */
+    tap: z.string().min(1).optional(),
     mock: z
       .object({
         /** What the mocked extraction model returns; missing keys get quiet defaults (an English question, 0.9). */
