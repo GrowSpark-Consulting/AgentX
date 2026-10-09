@@ -15,6 +15,7 @@ const SECTIONS = [
   { link: "Calendar", path: "/dashboard/calendar", heading: /^(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day \d{1,2} [A-Z][a-z]{2}$/ },
   { link: "Knowledge base", path: "/dashboard/knowledge", heading: "Knowledge base" },
   { link: "Booking setup", path: "/dashboard/settings/booking", heading: "Booking setup" },
+  { link: "Team", path: "/dashboard/team", heading: "Team" },
   { link: "Send test message", path: "/dashboard/messages/test", heading: "Send a test message" },
   { link: "Create template", path: "/dashboard/templates/new", heading: "Create a message template" },
   { link: "WhatsApp", path: "/dashboard/whatsapp", heading: "WhatsApp connection" },

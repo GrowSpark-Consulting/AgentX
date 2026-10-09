@@ -308,8 +308,14 @@ top-up are simulated.
 
 ## 10. Team
 
-**Route:** today `/dashboard?screen=team`; proposed `/dashboard/team`
+**Route:** `/dashboard/team` (real, first slice); the full screen is still `/dashboard?screen=team` in the preview
 **Purpose:** Staff list, roles, invite, WhatsApp alert preferences, takeover preference.
+**Built (first slice):** "Your WhatsApp alerts": every member (owner, admin, staff) reads and sets their own
+`memberships.whatsapp_phone` (E.164, `PhoneInput`) under RLS (0002 `own_preferences`), filtered by business and
+member; an update RLS refuses returns no row and is reported as not saved (`features/team/`).
+**Not built, and why:** members list (no profile table for names), invites (`POST /api/team/invite` not built),
+alert choices (no column), takeover preference (the own-number and "ask" options need `handoff_own_number`, and no
+server-computed entitlement is readable from the browser yet).
 **Roles:** owner, admin (staff view self).
 **Current data source:** `team.ts` (`ALERTS`, `INIT`), `industries.ts` (`team`).
 **Future API dependency:**
