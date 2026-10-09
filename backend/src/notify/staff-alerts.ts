@@ -11,7 +11,7 @@ import { send, type SendOutcome } from "./send";
 // window, and the staff_alert_vN template's {{1}} and {{2}} outside it. The wording is a placeholder until
 // Raja's arrives. Who gets which alert comes with the Team screen; until then owners and admins get every one.
 
-export type StaffAlertKind = "handoff_opened" | "handoff_waiting" | "credits_exhausted" | "setup_problem";
+export type StaffAlertKind = "handoff_opened" | "handoff_waiting" | "credits_exhausted" | "setup_problem" | "visit_outcome" | "low_rating";
 
 export interface StaffAlert {
   kind: StaffAlertKind;
@@ -19,6 +19,10 @@ export interface StaffAlert {
   conversationId?: string;
   /** handoff_waiting: how long the customer has waited for a person. */
   waitedMinutes?: number;
+  /** visit_outcome and low_rating: what was booked ("site visit"). */
+  what?: string;
+  /** low_rating: the customer's rating, 1 to 5. */
+  rating?: number;
 }
 
 export type AlertRole = "owner" | "admin";
@@ -87,6 +91,13 @@ export async function staffAlertContent(
   }
   const who = await customerLabel(tenantId, alert.conversationId, deps.db);
   const link = alert.conversationId ? `${app}/dashboard/inbox?conversation=${alert.conversationId}` : `${app}/dashboard/inbox`;
+  const what = oneLine(alert.what ?? "visit", 40);
+  if (alert.kind === "visit_outcome") {
+    return { headline: `How did the ${what} with ${who} go? Update the lead so follow-ups stay right.`, link };
+  }
+  if (alert.kind === "low_rating") {
+    return { headline: `${who} rated their ${what} ${alert.rating ?? "?"} out of 5.`, link };
+  }
   if (alert.kind === "handoff_waiting") {
     const waited = alert.waitedMinutes ? `${alert.waitedMinutes} minute${alert.waitedMinutes === 1 ? "" : "s"}` : "a while";
     return { headline: `${who} has waited ${waited} and no one has picked up the chat yet.`, link };
