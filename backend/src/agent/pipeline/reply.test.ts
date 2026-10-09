@@ -5,7 +5,7 @@ import type { SendOutcome } from "../../notify/send";
 import { fakePipelineStore, HIDDEN, type FakeMessage } from "../../test-support/fake-pipeline-store";
 import { LlmError, type LlmClient, type LlmRequest, type LlmResult } from "../llm/anthropic";
 import { consentNotice, fixedText } from "./fixed-texts";
-import type { StaffAlertPort, SystemNoticePort } from "./ports";
+import type { SystemNoticePort } from "./ports";
 import type { StepRunner, TurnContext } from "./process-message";
 import { answerAfterFailure, replyTurn, type ReplyDeps } from "./reply";
 import type { Retrieval, UnderstandResult } from "./understand";
@@ -109,14 +109,22 @@ function world(over: WorldOptions = {}) {
   });
   const sendEvent = vi.fn<ReplyDeps["sendEvent"]>(async () => undefined);
   const systemNotice = { send: vi.fn(async (): Promise<{ status: "awaiting_notify_kind" }> => ({ status: "awaiting_notify_kind" })) };
-  const staffAlert = { send: vi.fn(async (): Promise<{ status: "awaiting_notify_kind" }> => ({ status: "awaiting_notify_kind" })) };
-  const deps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice: systemNotice as SystemNoticePort, staffAlert: staffAlert as StaffAlertPort, privacyPolicyUrl: PRIVACY_URL, now: () => Date.now() };
+  const deps: ReplyDeps = { store: fake.store, llm, send, audit, sendEvent, systemNotice: systemNotice as SystemNoticePort, privacyPolicyUrl: PRIVACY_URL, now: () => Date.now() };
   const turn: TurnContext = {
     tenantId: A, conversationId: CONV, contactId: CONTACT, leadId: LEAD, leadCreated: false,
     messageIds: over.messages ? over.messages.map((m) => m.id).filter((id) => !id.startsWith("a0000000-0000-0000-0000-00000000010")) : [M1],
     language: null, vertical: "sample-pack", verticalVersion: 1,
   };
-  return { ...fake, complete, send, audit, audits, sendEvent, systemNotice, staffAlert, deps, turn };
+  return { ...fake, complete, send, audit, audits, sendEvent, systemNotice, deps, turn };
+}
+
+/** Staff are told once, by Dev 2's handoff-alert job, from ONE handoff.opened event (id handoff_opened:<handoffId>). The pipeline has no alert call of its own. */
+function expectOneAlertEvent(w: ReturnType<typeof world>): void {
+  expect(w.deps).not.toHaveProperty("staffAlert");
+  expect(w.handoffs).toHaveLength(1);
+  const opened = w.sendEvent.mock.calls.filter(([event]) => event.name === "handoff.opened");
+  expect(opened).toHaveLength(1);
+  expect(opened[0][0]).toEqual({ id: `handoff_opened:${w.handoffs[0].id}`, name: "handoff.opened", data: { tenantId: A, conversationId: CONV, handoffId: w.handoffs[0].id } });
 }
 
 const sentText = (w: ReturnType<typeof world>, n = 0) => w.send.mock.calls[n][2].text;
@@ -289,7 +297,7 @@ describe("every way step 4 ends has an answer", () => {
     const out = await replyTurn(runner().step, w.turn, { status: "no_pack" }, Date.now(), w.deps);
     expect(out.handoff).toMatchObject({ trigger: "stuck", opened: true, switched: true });
     expect(w.handoffs[0]).toMatchObject({ trigger: "stuck", priority: "normal" });
-    expect(w.staffAlert.send).toHaveBeenCalledWith(expect.objectContaining({ kind: "setup_problem" }));
+    expectOneAlertEvent(w); // the owner is told by the handoff-alert job from handoff.opened, not by the pipeline
   });
 });
 
@@ -334,7 +342,7 @@ describe("a question the knowledge base cannot answer", () => {
     expect(w.conversations.get(CONV)?.mode).toBe("human");
     expect(w.sendEvent).toHaveBeenCalledWith({ id: `handoff_opened:${w.handoffs[0].id}`, name: "handoff.opened", data: { tenantId: A, conversationId: CONV, handoffId: w.handoffs[0].id } });
     expect(w.audits.map((a) => a.action)).toEqual(["message.answered", "handoff.opened"]);
-    expect(w.staffAlert.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "handoff_opened" });
+    expectOneAlertEvent(w);
   });
 
   it("a miss, an answered turn, then a miss is no handover", async () => {
@@ -378,14 +386,12 @@ describe("when the business is out of credits", () => {
     expect(w.sendEvent).toHaveBeenCalledOnce();
   });
 
-  it("goes through the system-notice and staff-alert ports, and is skipped only there: awaiting_notify_kind", async () => {
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  it("sends the holding line through the system notice, and the owner alert is only the handoff.opened event", async () => {
     const w = broke();
     const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
     expect(w.systemNotice.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "credits_holding", text: fixedText("credits_holding", "ta") });
-    expect(w.staffAlert.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "credits_exhausted" });
-    expect(out.handoff).toMatchObject({ alert: "awaiting_notify_kind", holding: "awaiting_notify_kind" });
-    log.mockRestore();
+    expectOneAlertEvent(w);
+    expect(out.handoff).toMatchObject({ trigger: "credits_exhausted", holding: "awaiting_notify_kind" });
   });
 
   it("opens one handoff however often the turn runs, and sends the event once", async () => {
@@ -397,12 +403,11 @@ describe("when the business is out of credits", () => {
     expect(w.systemNotice.send).toHaveBeenCalledOnce(); // a real message now: one holding line, not one per run
   });
 
-  it("a port that fails does not fail the handover", async () => {
+  it("a holding line that fails does not fail the handover", async () => {
     const w = broke();
-    w.staffAlert.send.mockRejectedValue(new Error("down"));
     w.systemNotice.send.mockRejectedValue(new Error("down"));
     const out = await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
-    expect(out.handoff).toMatchObject({ opened: true, alert: "failed", holding: "failed" });
+    expect(out.handoff).toMatchObject({ opened: true, holding: "failed" });
   });
 });
 

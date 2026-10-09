@@ -110,6 +110,8 @@ Need review by Dev 2 (Shaaz):
 
 ## 7. Follow-ups
 
+- **Done 9 Oct:** the pipeline's own owner-alert call (the staff-alert port) is removed now that Shaaz's `handoff-alert` job (#71) alerts owners from `handoff.opened`: one handoff sends one `handoff.opened` event (id `handoff_opened:<handoffId>`) and no direct alert, so owners get exactly one alert. Tests: `reply.test.ts` (`expectOneAlertEvent`).
+
 - **Dhatri:** the inbox's `TRIGGER_TEXT` map (`frontend/features/inbox/data.ts`) has no `opt_out` entry; it falls back to "opt out". A clearer reason such as "opted out: call instead of messaging" would help staff. I did not touch your file.
 - **Shaaz:** `handoff.opened` carries no trigger, so the alert job must read the handoff row to pick the `opt_out` wording.
 - If the chat already has an open handoff, the STOP reuses it (no new alert). A STOP never fails because of that, and the contact is opted out either way.

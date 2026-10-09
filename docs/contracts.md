@@ -430,8 +430,8 @@ The send is `notify.send(tenantId, "ai_reply", { conversationId, text })`, after
 contact's opt-out; **in the same step `message.answered` is written for every message of the turn** (a few tries; a failure
 is logged and never thrown, since a retry would send again), and a send whose outcome is unknown counts as answered.
 `insufficient_credits` sends no AI reply: the chat goes to `human`, a `handoffs` row (`credits_exhausted`, priority
-`high`) opens, `handoff.opened` is sent (id `handoff_opened:<handoffId>`), and the free holding message and the owner alert
-go through two ports (`ports.ts`): the holding message is `notify.send(..., "system_notice", ...)` (built, #70); the owner alert is sent by Dev 2's `handoff-alert` job from the `handoff.opened` event (#71), so its port sends nothing and reports `queued`. The whole turn has one
+`high`) opens, `handoff.opened` is sent (id `handoff_opened:<handoffId>`), and the free holding message goes through the
+system-notice port (`ports.ts`): `notify.send(..., "system_notice", ...)` (built, #70). The owner alert is sent ONLY by Dev 2's `handoff-alert` job from that `handoff.opened` event (#71); the pipeline has no alert call of its own, so owners get exactly one alert. The whole turn has one
 clock (`turn-deadline.ts`): target 10 s, hard stop 25 s, after which the model calls stop and the safe line is sent.
 `persona` and `tone` are read from `tenants.agent_settings` as the Agent settings screen saves them. The turn's clock also
 runs while a failed step waits for its retry, so a slow second attempt can be answered with the safe line. **Never two

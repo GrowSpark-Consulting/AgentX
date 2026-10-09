@@ -6,7 +6,7 @@ import { send } from "../../notify/send";
 import { llm } from "../llm";
 import type { PackSource } from "../packs/load";
 import { createDbPackSource } from "../packs/store";
-import { createSystemNoticePort, staffAlertPort } from "./ports";
+import { createSystemNoticePort } from "./ports";
 import type { ReplyDeps } from "./reply";
 import type { PipelineStore } from "./store";
 import type { UnderstandDeps } from "./understand";
@@ -43,7 +43,7 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-/** The real dependencies of the reply step: notify.send (including the system notice), the audit, the queue, and the staff-alert port that waits for Dev 2's kind. */
+/** The real dependencies of the reply step: notify.send (including the system notice), the audit and the queue. Owners are alerted by the handoff-alert job, not here. */
 export function replyDeps(store: PipelineStore): ReplyDeps {
   return {
     store,
@@ -52,7 +52,6 @@ export function replyDeps(store: PipelineStore): ReplyDeps {
     audit: writeAudit,
     sendEvent: (event) => inngest.send(event),
     systemNotice: createSystemNoticePort((tenantId, kind, payload) => send(tenantId, kind, payload)),
-    staffAlert: staffAlertPort,
     privacyPolicyUrl: serverEnv().PRIVACY_POLICY_URL,
   };
 }

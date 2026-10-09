@@ -14,7 +14,7 @@ import { consentNotice, fixedText, textLanguage } from "./fixed-texts";
 import { parseReplySettings, type ReplySettings } from "./persona";
 import { planReply, type Plan, type PlanInput, type ReplyPlan } from "./plan";
 import { checkReply } from "./postcheck";
-import type { PortOutcome, StaffAlertPort, SystemNoticePort } from "./ports";
+import type { PortOutcome, SystemNoticePort } from "./ports";
 import type { StepRunner, TurnContext } from "./process-message";
 import type { HandoffPriority, PipelineStore } from "./store";
 import { turnClock } from "./turn-deadline";
@@ -33,7 +33,7 @@ import type { UnderstandResult } from "./understand";
 //            through notify.send, and write `message.answered` for every message of the turn IN THIS STEP: a crash
 //            between the send and the record would send the reply twice on retry.
 //   handoff  when the plan says a person must take over (after the reply went), or the business is out of credits: the
-//            handoffs row, the switch of the chat to `human`, the `handoff.opened` event, the alerts.
+//            handoffs row, the switch of the chat to `human`, the `handoff.opened` event (the owner's alert is Dev 2's `handoff-alert` job, from that event: the pipeline sends none).
 //
 // Never two replies: a step that finds the last message answered does nothing; a send whose outcome is unknown is
 // treated as answered (the sender says it may have gone out); the answered rows are written with a few tries and a
@@ -49,7 +49,6 @@ export interface ReplyDeps {
   /** Inngest's send, for `handoff.opened`. */
   sendEvent: (event: { id: string; name: string; data: Record<string, string> }) => Promise<unknown>;
   systemNotice: SystemNoticePort;
-  staffAlert: StaffAlertPort;
   /** The link in the privacy notice (PRIVACY_POLICY_URL, https). */
   privacyPolicyUrl: string;
   now?: () => number;
@@ -67,7 +66,6 @@ export interface HandoffSummary {
   trigger: HandoffTrigger;
   opened: boolean;
   switched: boolean;
-  alert: PortOutcome["status"];
   holding: PortOutcome["status"] | "not_needed";
 }
 
@@ -293,9 +291,6 @@ async function openHandoff(turn: TurnContext, handoff: { trigger: HandoffTrigger
       return "failed";
     }
   };
-  const alert = await settle(() =>
-    deps.staffAlert.send({ tenantId: turn.tenantId, conversationId: turn.conversationId, kind: handoff.trigger === "credits_exhausted" ? "credits_exhausted" : handoff.trigger === "stuck" ? "setup_problem" : "handoff_opened" }),
-  );
   // Out of credits: the customer got no reply from the assistant, so one free holding line says a person will answer.
   let holding: HandoffSummary["holding"] = "not_needed";
   // Only the run that opened the handoff sends it: the line is a real message now, and a retry must not send it twice (the
@@ -306,7 +301,7 @@ async function openHandoff(turn: TurnContext, handoff: { trigger: HandoffTrigger
       deps.systemNotice.send({ tenantId: turn.tenantId, conversationId: turn.conversationId, kind: "credits_holding", text: fixedText("credits_holding", textLanguage(contact?.language)) }),
     );
   }
-  return { trigger: handoff.trigger, opened: opened.created, switched, alert, holding };
+  return { trigger: handoff.trigger, opened: opened.created, switched, holding };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
