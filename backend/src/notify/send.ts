@@ -1,5 +1,6 @@
 import { redactSecrets } from "@pakka/types";
-import { randomUUID } from "node:crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CREDIT_COST } from "../billing/credit-costs";
 import { refundCredits, spendCredits } from "../billing/credits";
@@ -37,6 +38,12 @@ export type NotifyPayload = {
   templateParams?: string[];
   /** The staff user who sent it (staff_reply, test_message); recorded in audit_logs. */
   actorId?: string;
+  /**
+   * Names this exact message (for example `reminder_24h:<bookingId>:<start>`), so a job's retry never sends it twice:
+   * the message id is derived from it, and once that message has gone out, a repeat returns the first send's outcome
+   * without sending or charging again. Up to 200 characters.
+   */
+  idempotencyKey?: string;
 };
 
 export type SendOutcome =
@@ -75,6 +82,30 @@ const failed = (
   { retryable = false, outcomeUnknown = false }: { retryable?: boolean; outcomeUnknown?: boolean } = {},
 ): SendOutcome => ({ status: "failed", error: { code, message, retryable, outcomeUnknown } });
 
+/** The same message always gets the same id: a UUID (RFC 4122 version 5 layout) from the business, the kind and the key. */
+export function keyedMessageId(tenantId: string, kind: NotificationKind, key: string): string {
+  const hash = createHash("sha1").update(`pakka:notify:${tenantId}:${kind}:${key}`).digest();
+  hash[6] = (hash[6] & 0x0f) | 0x50;
+  hash[8] = (hash[8] & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// A message that fell back to the template (the window closed mid-send) went out under its own id.
+const templateFallbackKey = (key: string) => `${key}#template`;
+
+const SentRow = z.object({ id: z.guid(), provider_msg_id: z.string().nullable(), credits_charged: z.number().int(), template_name: z.string().nullable() });
+
+/** The earlier send of this key, if it went out (notify_record wrote its row). */
+async function earlierSend(db: SupabaseClient, tenantId: string, kind: NotificationKind, key: string): Promise<SendOutcome | null> {
+  const ids = [keyedMessageId(tenantId, kind, key), keyedMessageId(tenantId, kind, templateFallbackKey(key))];
+  const { data, error } = await db.from("messages").select("id, provider_msg_id, credits_charged, template_name").eq("tenant_id", tenantId).in("id", ids).limit(1);
+  if (error) throw new Error(`notify.send: checking for an earlier send failed: ${error.message}`);
+  const [row] = z.array(SentRow).parse(data ?? []);
+  if (!row) return null;
+  return { status: "sent", messageId: row.id, providerMsgId: row.provider_msg_id ?? "", creditsCharged: row.credits_charged, usedTemplate: row.template_name !== null };
+}
+
 /** A sender's SendError keeps its code and flags; anything else is unexpected, so it is logged and generic. */
 function senderFailure(err: unknown, message: string): SendOutcome {
   if (err instanceof SendError) return failed(err.code, err.message, { retryable: err.retryable, outcomeUnknown: err.outcomeUnknown });
@@ -90,8 +121,19 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
     conversation: !payload.conversationId ? "conversationId" : null,
   }[kindConfig.audience];
   if (missing) throw new Error(`notify.send(${kind}): ${missing} required`);
+  const key = payload.idempotencyKey;
+  if (key !== undefined && (typeof key !== "string" || key.length === 0 || key.length > 200)) {
+    throw new Error(`notify.send(${kind}): idempotencyKey must be 1 to 200 characters`);
+  }
   if (payload.interactive !== undefined && !Interactive.safeParse(payload.interactive).success) {
     return failed("validation_failed", "The buttons or list don't fit WhatsApp's limits, so the message was not sent.");
+  }
+
+  const db = supabaseAdmin();
+  // Before anything else: a message that has already gone out is never sent again, whatever changed since.
+  if (key !== undefined) {
+    const earlier = await earlierSend(db, tenantId, kind, key);
+    if (earlier) return earlier;
   }
 
   if (kindConfig.feature && !(await isEnabled(tenantId, kindConfig.feature))) {
@@ -103,7 +145,6 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
     return failed("not_available", "Sending WhatsApp messages isn't switched on yet, so the message was not sent.");
   }
 
-  const db = supabaseAdmin();
   const targetResult =
     kindConfig.audience === "staff"
       ? await db.rpc("notify_staff_target", { p_tenant_id: tenantId, p_user_id: payload.staffUserId })
@@ -156,7 +197,7 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
     return senderFailure(err, "The WhatsApp connection could not be used, so the message was not sent.");
   }
 
-  const messageId = randomUUID();
+  const messageId = key !== undefined ? keyedMessageId(tenantId, kind, key) : randomUUID();
   if (cost > 0 && reason && !(await spendCredits(tenantId, cost, reason, messageId))) {
     return { status: "skipped", reason: "insufficient_credits" };
   }
@@ -175,7 +216,12 @@ export async function send(tenantId: string, kind: NotificationKind, payload: No
     // which picks the kind's approved template; a kind with no template is skipped.
     if (err instanceof OutsideWindowError && !template) {
       if (!kindConfig.template) return { status: "skipped", reason: "outside_window" };
-      return send(tenantId, kind, { ...payload, text: undefined, interactive: undefined });
+      return send(tenantId, kind, {
+        ...payload,
+        text: undefined,
+        interactive: undefined,
+        idempotencyKey: key !== undefined ? templateFallbackKey(key) : undefined,
+      });
     }
     return senderFailure(err, "WhatsApp did not accept the message, so it was not sent.");
   }

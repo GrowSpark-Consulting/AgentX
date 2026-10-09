@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fakeSupabase, type FakeResponse } from "../test-support/fake-supabase";
 
 type RpcResult = { data: unknown; error: { code?: string; message: string } | null };
 const rpcHandlers: Record<string, (args: Record<string, unknown>) => RpcResult> = {};
 const rpc = vi.fn(async (fn: string, args: Record<string, unknown>) => rpcHandlers[fn](args));
 const isEnabled = vi.fn(async () => true);
-vi.mock("../lib/supabase-admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
+// Tables read directly (the idempotency check reads messages); filled per test.
+const tables: Record<string, FakeResponse> = {};
+const db = fakeSupabase(tables);
+vi.mock("../lib/supabase-admin", () => ({ supabaseAdmin: () => ({ rpc, from: (table: string) => db.client.from(table) }) }));
 vi.mock("../features/is-enabled", () => ({ isEnabled }));
 
-const { send, TEST_MESSAGES_PER_HOUR } = await import("./send");
+const { keyedMessageId, send, TEST_MESSAGES_PER_HOUR } = await import("./send");
 const { OutsideWindowError, registerSender, SendError } = await import("./sender");
 
 const TENANT = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
@@ -42,6 +46,66 @@ beforeEach(() => {
   rpcHandlers.notify_record = () => ok(null);
   rpcHandlers.spend_credits = () => ok(true);
   rpcHandlers.refund_credits = () => ok(1);
+  tables.messages = { data: [], error: null };
+  db.calls.length = 0;
+});
+
+describe("idempotencyKey", () => {
+  const KEY = "reminder_24h:9b2f0a4e-1c3d-4e5f-8a6b-7c8d9e0f1a2b:2026-10-10T11:30:00.000Z";
+  const reminder = { conversationId: CONVERSATION, text: "Reminder: your visit is on Sat 10 Oct, 5:00 pm.", idempotencyKey: KEY };
+
+  it("derives one stable message id per business, kind and key", () => {
+    const id = keyedMessageId(TENANT, "reminder_24h", KEY);
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(keyedMessageId(TENANT, "reminder_24h", KEY)).toBe(id);
+    expect(keyedMessageId(TENANT, "reminder_2h", KEY)).not.toBe(id);
+    expect(keyedMessageId(CONVERSATION, "reminder_24h", KEY)).not.toBe(id);
+  });
+
+  it("sends under the keyed id the first time", async () => {
+    const outcome = await send(TENANT, "reminder_24h", reminder);
+    expect(outcome).toMatchObject({ status: "sent", messageId: keyedMessageId(TENANT, "reminder_24h", KEY) });
+    expect(calls("spend_credits")[0]).toMatchObject({ p_ref_id: keyedMessageId(TENANT, "reminder_24h", KEY) });
+    expect(calls("notify_record")[0]).toMatchObject({ p_message_id: keyedMessageId(TENANT, "reminder_24h", KEY) });
+    // It looked for an earlier send under both ids (the free-form one and the template fallback's), for this business.
+    expect(db.calls).toContainEqual({ table: "messages", method: "eq", args: ["tenant_id", TENANT] });
+    expect(db.calls).toContainEqual({
+      table: "messages",
+      method: "in",
+      args: ["id", [keyedMessageId(TENANT, "reminder_24h", KEY), keyedMessageId(TENANT, "reminder_24h", `${KEY}#template`)]],
+    });
+  });
+
+  it("returns the first send for a repeat, without sending, charging or checking toggles again", async () => {
+    const id = keyedMessageId(TENANT, "reminder_24h", KEY);
+    tables.messages = { data: [{ id, provider_msg_id: "wamid.first", credits_charged: 1, template_name: null }], error: null };
+    isEnabled.mockResolvedValue(false);
+    await expect(send(TENANT, "reminder_24h", reminder)).resolves.toEqual({
+      status: "sent",
+      messageId: id,
+      providerMsgId: "wamid.first",
+      creditsCharged: 1,
+      usedTemplate: false,
+    });
+    expect(sender.sendText).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("gives the template fallback its own id, which a repeat also finds", async () => {
+    sender.sendText.mockRejectedValueOnce(new OutsideWindowError());
+    await expect(send(TENANT, "reminder_24h", { ...reminder, templateParams: ["visit", "Skyline Homes", "Sat 10 Oct, 5:00 pm"] })).resolves.toMatchObject({
+      status: "sent",
+      usedTemplate: true,
+      messageId: keyedMessageId(TENANT, "reminder_24h", `${KEY}#template`),
+    });
+    expect(calls("refund_credits")[0]).toMatchObject({ p_ref_id: keyedMessageId(TENANT, "reminder_24h", KEY) });
+  });
+
+  it("refuses a key that is empty or too long, before anything is read", async () => {
+    await expect(send(TENANT, "reminder_24h", { ...reminder, idempotencyKey: "" })).rejects.toThrow("idempotencyKey");
+    await expect(send(TENANT, "reminder_24h", { ...reminder, idempotencyKey: "k".repeat(201) })).rejects.toThrow("idempotencyKey");
+    expect(db.calls).toHaveLength(0);
+  });
 });
 
 describe("staff_alert", () => {
