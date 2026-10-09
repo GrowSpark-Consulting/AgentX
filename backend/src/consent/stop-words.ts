@@ -5,8 +5,8 @@ import type { TextLanguage } from "../agent/pipeline/fixed-texts";
 // no model: opting someone out must never depend on a guess. A message is a STOP only when the WHOLE message is one of
 // these phrases (case, punctuation, emoji and spacing ignored), so "bus stop near the project", "don't stop calling" and
 // "stop by tomorrow at 5" are ordinary messages. "cancel" alone is not on the list (it means a booking), and neither are
-// "vendam" or "band" alone: too common in other sentences. The lone words ruko / रुको / रुकिए / niruthu / niruthunga (and the
-// spellings nirutthu / nirutthunga) are off too: they often mean "wait" or "stop that for now", and a wrong opt-out silently cuts a
+// "vendam" or "band" alone: too common in other sentences. The lone words ruko / रुको / रुकिए / niruthu / niruthunga / நிறுத்து /
+// நிறுத்துங்கள் / நிறுத்துங்க (and the spellings nirutthu / nirutthunga) are off too (Raja, 9 Oct): they often mean "wait" or "stop that for now", and a wrong opt-out silently cuts a
 // customer off, while a real one can always type STOP.
 //
 // The language of a phrase is the language of the one confirmation sent afterwards.
@@ -31,7 +31,7 @@ export const STOP_PHRASES: Record<TextLanguage, readonly string[]> = {
   // Tamil in English letters
   "ta-en": ["message panna vendam", "msg panna vendam", "message pannadheenga", "enakku message vendam"],
   // Tamil script
-  ta: ["நிறுத்து", "நிறுத்துங்கள்", "நிறுத்துங்க", "மெசேஜ் அனுப்பாதீர்கள்", "மெசேஜ் அனுப்பாதீங்க", "எனக்கு மெசேஜ் வேண்டாம்"],
+  ta: ["மெசேஜ் அனுப்பாதீர்கள்", "மெசேஜ் அனுப்பாதீங்க", "எனக்கு மெசேஜ் வேண்டாம்"],
   // Hindi, in script and in English letters
   hi: ["बंद करो", "बन्द करो", "बंद करें", "मैसेज बंद करो", "मैसेज मत भेजो", "band karo", "message mat bhejo"],
 };

@@ -1,6 +1,7 @@
 import { matchStop } from "../../consent/stop-words";
 import { recordAnswered } from "./answered";
 import { fixedText } from "./fixed-texts";
+import { recordHandoff } from "./handoff";
 import type { PortOutcome } from "./ports";
 import { BATCH_WINDOW_MS, type StepRunner, type TurnContext } from "./process-message";
 import type { ReplyDeps } from "./reply";
@@ -15,13 +16,13 @@ import type { ReplyDeps } from "./reply";
 // switched off, must honour STOP too (`stopCheckAfterGate`), and so must the safe line sent after a run gave up
 // (`answerAfterFailure`). An opt-out never depends on a feature toggle.
 //
-// The confirmation goes through the system-notice port (a free line the opt-out check must not block). Until Dev 2 adds that
-// kind it only logs `awaiting_notify_kind`; the opt-out itself does not wait for it. The confirmation is sent only by the call
-// that recorded the opt-out: a run that dies between the two never sends it (at most once, never twice).
+// The confirmation goes through the system-notice port (notify.send's free `system_notice` kind, which the opt-out check does
+// not block). It is sent only by the call that recorded the opt-out: a run that dies between the two never sends it (at most
+// once, never twice). Then a high-priority handoff (trigger `opt_out`) tells staff to call instead of messaging.
 
 export type StopResult = { status: "continue" } | { status: "opted_out"; confirmation: PortOutcome["status"] | "not_needed" };
 type OptedOut = Extract<StopResult, { status: "opted_out" }>;
-type StopDeps = Pick<ReplyDeps, "store" | "audit" | "systemNotice">;
+type StopDeps = Pick<ReplyDeps, "store" | "audit" | "systemNotice" | "sendEvent">;
 
 export interface StopScope {
   tenantId: string;
@@ -52,6 +53,11 @@ export async function applyStop(scope: StopScope, deps: StopDeps): Promise<Opted
       confirmation = "failed"; // the opt-out stands; a notice that could not go is not worth undoing it
     }
   }
+  // Staff must know, and a call is safer than a message: a high-priority handoff (trigger opt_out) and `handoff.opened`, whose
+  // alert says "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer." (Raja, 9 Oct). Done
+  // on every run that finds the STOP (an open handoff is reused, the event id is fixed), so a retry still tells staff. The
+  // chat's mode is not touched: nobody can message this contact anyway (the gate and notify.send refuse), and a person only calls.
+  await recordHandoff(scope, { trigger: "opt_out", priority: "high" }, deps);
   await recordAnswered(scope, deps); // every message of the turn: it was handled, and is not looked at again
   return { status: "opted_out", confirmation };
 }

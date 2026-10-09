@@ -442,17 +442,17 @@ reply. The handover's event is sent on every run of the step (its id makes it on
 **Reply-button ids (agreed 9 Oct, built on Day 3).** A booking confirmation's reply buttons carry the ids `booking:<bookingId>:confirm`, `booking:<bookingId>:reschedule` and `booking:<bookingId>:cancel` (WhatsApp allows 3 buttons, ids up to 256 characters). The pipeline, not the webhook, routes the tap: the webhook stores it as a customer message, and step 5 reads the id and calls `confirmBooking` / `rescheduleBooking` / `cancelBooking`.
 
 **Consent (DPDP): the notice and STOP.** *The notice:* the first AI reply to a contact (`contacts.consent_at` is null)
-carries one extra line after a blank line: who answers (an AI assistant), how to stop (reply STOP) and the privacy policy link
+carries one extra line after a blank line, **only when the business turned it on (`agent_settings.privacyNotice`, default off, Raja 9 Oct)**: who answers (an AI assistant), how to stop (reply STOP) and the privacy policy link
 last (`PRIVACY_POLICY_URL`, an optional https env var, default https://pakkaagent.in/privacy), in the reply's language
 (English, Tamil, Tanglish, Hindi; `fixed-texts.ts`). Every first reply carries it, a fixed line too; it is added after the
 post-check and is not part of the 600 characters. After a send (or one whose outcome is unknown) `record_notice_shown` sets
 `consent_at` and writes `consent_logs` `notice_shown` (source `first_message`, the outbound message id) in one transaction,
 once; a failure there is logged, never thrown, and the next reply carries the notice again. *STOP:* a step `stop-check` runs
 before the message is read by the model: if a message of the turn IS a STOP (the whole message, ignoring case, punctuation and
-emoji, is one of the fixed phrases in `consent/stop-words.ts`; "bus stop near the project" is not), `record_opt_out` sets
+emoji, is one of the fixed phrases in `consent/stop-words.ts`; "bus stop near the project" is not, and neither is a lone ambiguous word such as ruko or நிறுத்து), `record_opt_out` sets
 `contacts.opted_out_at` and writes `consent_logs` `opted_out` (source `stop_keyword`, the message id), AT MOST ONE final confirmation
-goes through the system-notice port (the only message sent after opting out; only the call that recorded the opt-out sends it,
-and it only logs `awaiting_notify_kind` until Dev 2's kind exists), every message of the turn is marked answered, and the
+goes through `notify.send`'s `system_notice` (the only message sent after opting out; only the call that recorded the opt-out sends it),
+a high-priority `handoffs` row (trigger `opt_out`) opens and `handoff.opened` is sent (id `handoff_opened:<handoffId>`; the alert says: "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer."; the chat's mode is not changed), every message of the turn is marked answered, and the
 turn ends: nothing is read, updated or replied to. The check also runs for a chat a person has and one with the AI switched
 off (an opt-out never depends on a toggle; step `stop-check-gated`), and for the safe line sent after a run gave up. The gate
 (step 3) and `notify.send` (which checks `opted_out_at`) refuse every later message of that contact. The notice is recorded

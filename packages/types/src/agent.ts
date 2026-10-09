@@ -10,6 +10,7 @@ export const HandoffTrigger = z.enum([
   "kb_gap",
   "stuck",
   "credits_exhausted",
+  "opt_out",
 ]);
 export type HandoffTrigger = z.infer<typeof HandoffTrigger>;
 

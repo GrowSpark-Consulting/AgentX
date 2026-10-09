@@ -3,6 +3,7 @@ import { NonRetriableError } from "inngest";
 import { normaliseQuestion } from "../../kb/question";
 import type { AuditEntry } from "../../lib/audit";
 import { recordAnswered } from "./answered";
+import { recordHandoff } from "./handoff";
 import { applyStop } from "./stop";
 import { stripUnsafeCharacters } from "../../lib/text";
 import type { NotifyPayload, SendOutcome } from "../../notify/send";
@@ -232,9 +233,10 @@ async function sendReply(turn: TurnContext, understood: UnderstandResult, starte
   // The model can take seconds: look once more, right before the send, in case another run answered meanwhile.
   if (await store.isAnswered(turn.tenantId, lastMessageId, loaded.lastAt)) return { status: "already_answered" };
 
-  // The first AI reply to a contact carries the privacy notice (DPDP): who answers, how to stop, the policy link.
+  // The first AI reply to a contact carries the privacy notice (DPDP): who answers, how to stop, the policy link, only when
+  // the business turned it on (agent_settings.privacyNotice; off by default per Raja, 9 Oct).
   const noticeLanguage = plan.reply.mode === "fixed" ? plan.reply.language : textLanguage(plan.reply.language, loaded.input.contactLanguage);
-  const carriesNotice = contact.consentAt === null;
+  const carriesNotice = loaded.settings.privacyNotice && contact.consentAt === null;
   const outgoing = carriesNotice ? `${text}\n\n${consentNotice(noticeLanguage, deps.privacyPolicyUrl)}` : text;
 
   const outcome = await deps.send(turn.tenantId, "ai_reply", { conversationId: turn.conversationId, text: outgoing });
@@ -280,17 +282,8 @@ async function noticeShown(turn: TurnContext, messageId: string | null, deps: Re
 
 async function openHandoff(turn: TurnContext, handoff: { trigger: HandoffTrigger; priority: HandoffPriority }, deps: ReplyDeps): Promise<HandoffSummary> {
   const { store } = deps;
-  const opened = await store.openHandoff(turn.tenantId, turn.conversationId, handoff.trigger, handoff.priority);
-  if (opened.created) {
-    try {
-      await deps.audit({ tenantId: turn.tenantId, actor: "ai", action: "handoff.opened", entity: "handoff", entityId: opened.id, diff: { trigger: handoff.trigger } });
-    } catch {
-      console.error(`${TAG} could not record the handoff (business ${turn.tenantId})`);
-    }
-  }
-  // On every run, not only the one that made the row: a retry after a failure between the row and the event must still
-  // tell staff. The fixed id makes the same handover one event however often it is sent.
-  await deps.sendEvent({ id: `handoff_opened:${opened.id}`, name: "handoff.opened", data: { tenantId: turn.tenantId, handoffId: opened.id, conversationId: turn.conversationId } });
+  // On every run, not only the one that made the row (handoff.ts): a retry after a failure between the row and the event must still tell staff.
+  const opened = await recordHandoff(turn, handoff, deps);
   const switched = await store.setConversationMode(turn.tenantId, turn.conversationId, "human");
 
   const settle = async (send: () => Promise<PortOutcome>): Promise<PortOutcome["status"]> => {
@@ -342,7 +335,8 @@ export async function answerAfterFailure(ids: { tenantId: string; conversationId
     if (conversation.mode !== "ai") return "nothing_to_do";
 
     const language = textLanguage(contact.language);
-    const notice = contact.consentAt === null ? `\n\n${consentNotice(language, deps.privacyPolicyUrl)}` : "";
+    const info = await store.getTenantReplyInfo(ids.tenantId);
+    const notice = parseReplySettings(info?.agentSettings).privacyNotice && contact.consentAt === null ? `\n\n${consentNotice(language, deps.privacyPolicyUrl)}` : "";
     const outcome = await deps.send(ids.tenantId, "ai_reply", { conversationId: ids.conversationId, text: fixedText("fallback", language) + notice });
     if (outcome.status === "sent" || (outcome.status === "failed" && outcome.error.outcomeUnknown)) {
       // A notice is recorded as shown only when the send is known to have gone out: an unknown outcome leaves consent_at

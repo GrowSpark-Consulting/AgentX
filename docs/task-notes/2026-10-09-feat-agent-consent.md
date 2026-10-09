@@ -2,18 +2,16 @@
 
 Audience: Dev 2 (Shaaz) and Dev 3 (Dhatri).
 
-> **STACKED on `feat/agent-reply` (which is stacked on `feat/agent-extraction`, #65). Do not merge before them.** Base tip when
-> this branch was made: `de5335122c5b4a9109d1848b9a896e61413895db` (the reply PR's last commit). After the PR below it is
-> squash-merged, move this PR onto `main`:
+> **STACKED on `feat/agent-reply` (#68, base `main` since #65 merged). Do not merge before it.** Base tip when this branch was
+> last rebased: `a75a57c` (the reply PR's last commit). After #68 is squash-merged, move this PR onto `main`:
 >
 > ```
 > git fetch origin
-> git rebase --onto origin/main de5335122c5b4a9109d1848b9a896e61413895db feat/agent-consent
+> git rebase --onto origin/main a75a57c feat/agent-consent
 > git push --force-with-lease origin feat/agent-consent
 > ```
 >
-> then change the PR's base to `main`. (If the reply PR is rebased first, use the tip it had when this branch was made, as
-> written above, not the new one.)
+> then change the PR's base to `main`.
 
 ## 1. What I built and why
 
@@ -27,14 +25,14 @@ someone out must be certain.
 
 Technical summary (details in `docs/contracts.md`, section 5, "Consent (DPDP)"):
 
-- **Notice**: `contacts.consent_at` null means the next AI reply carries it. Added after the post-check, after a blank line,
+- **Notice**: **off by default** (`tenants.agent_settings.privacyNotice`, a boolean, validated with Zod; missing or anything but `true` means off). When on, `contacts.consent_at` null means the next AI reply carries it. Added after the post-check, after a blank line,
   in the reply's language, with the policy link last (`PRIVACY_POLICY_URL`, optional env var, default
   https://pakkaagent.in/privacy). After the send, `record_notice_shown` sets `consent_at` and writes `consent_logs`
   `notice_shown` in one transaction, once, with the outbound message id.
 - **STOP**: a new step `stop-check` (before the model reads anything), and `stop-check-gated` for a turn the gate turned
   away because a person has the chat or the AI is off. If a message of the turn is one of the fixed phrases (the whole
   message), `record_opt_out` sets `opted_out_at` and logs `opted_out`, at most one confirmation goes through the system-notice
-  port, every message of the turn is marked answered, and the turn ends. The safe line sent after a run gave up checks for
+  port, a high-priority `opt_out` handoff row and `handoff.opened` tell staff, every message of the turn is marked answered, and the turn ends. The safe line sent after a run gave up checks for
   STOP first, so a customer who said stop never gets that line or a notice. The gate and `notify.send` refuse everything after.
 - **Migration 0021** (`record_notice_shown`, `record_opt_out`): each writes the contact and the log in one transaction, so a
   retry can never log twice or set one without the other.
@@ -91,7 +89,11 @@ Need review by Dev 2 (Shaaz):
   நிறுத்துங்கள், நிறுத்துங்க, மெசேஜ் அனுப்பாதீர்கள், மெசேஜ் அனுப்பாதீங்க, எனக்கு மெசேஜ் வேண்டாம். Hindi: बंद करो,
   **बन्द करो** (added: the other spelling), बंद करें, मैसेज बंद करो, मैसेज मत भेजो, band karo, message mat bhejo. Not on
   the list on purpose: "cancel" alone (a booking), "vendam" alone, "band" alone.
-- **The notice goes on every first reply, including a fixed line** (the safe fallback, a clarifying question), and is not
+- **Privacy notice: disabled by default per Raja (9 Oct); switchable per business if legal review requires it.** Nothing is appended and `notice_shown` is never logged while the setting is off (`consent_at` stays null). The code is kept as it was.
+- **STOP also opens a handoff (Raja, 9 Oct).** A high-priority handoff row with trigger `opt_out` and `handoff.opened` (event id `handoff_opened:<handoffId>`), so staff see it. The alert wording Raja wants: "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer." The chat's mode is NOT changed (nobody can message the contact anyway; a person only calls). It runs on every run that finds the STOP, so a retry still tells staff (the open handoff is reused). If the chat already had an open handoff (for example `kb_gap`), that one is reused and its event already exists: the opt-out is then visible on the contact, not as a new alert. `opt_out` is added to `HandoffTrigger` in `packages/types`.
+- **Single ambiguous words do not opt out (Raja, 9 Oct):** also the Tamil script நிறுத்து, நிறுத்துங்கள், நிறுத்துங்க are off the list (negative tests added). STOP and every explicit phrase still opt out.
+- **The STOP confirmation goes through `system_notice`** (Shaaz's #70): free, sent even to a contact who just opted out, inside the 24-hour window only.
+- **The notice (when on) goes on every first reply, including a fixed line** (the safe fallback, a clarifying question), and is not
   part of the 600 characters or the post-check. It is added at the end of the text, after a blank line, with the link last.
 - **Wording** (mine, `fixed-texts.ts`; Raja can change any line there): notice: "This chat is answered by an AI assistant.
   Reply STOP to opt out. Privacy policy: <link>" and its Tamil, Tanglish and Hindi versions; confirmation: "You've been
@@ -103,9 +105,7 @@ Need review by Dev 2 (Shaaz):
 - **Migration `0021_consent_functions.sql`** must be on each database before this deploys (as for 0018).
 - **New optional env var `PRIVACY_POLICY_URL`** (https, default https://pakkaagent.in/privacy): nothing to set unless the policy
   is elsewhere.
-- **Still waiting for your kinds** (see the reply PR's note): the opt-out confirmation goes through the system-notice port,
-  which only logs `awaiting_notify_kind` until the free system kind exists (and it must not be blocked by the opt-out: the
-  contact has just opted out). The opt-out itself does not wait for it.
+- **The STOP confirmation now uses your `system_notice`** (#70). **Please add the alert for the new `opt_out` handoff trigger** to your `handoff.opened` consumer (#71): high priority, wording "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer." (Raja to confirm Tamil). **Migration number clash:** your #71 also adds `0019` (`notify_staff_target`); whichever of us merges second renumbers to the next free number.
 - The `stop-check` step runs before every turn's understanding step: one small database read per turn, and nothing else
   unless the message is a STOP.
 

@@ -43,9 +43,10 @@ function world(bodies: string[], over: { mode?: "ai" | "human" | "external"; opt
   const audits: AuditEntry[] = [];
   const audit = vi.fn(async (entry: AuditEntry) => void audits.push(entry));
   const systemNotice = { send: vi.fn(async (): Promise<{ status: "awaiting_notify_kind" }> => ({ status: "awaiting_notify_kind" })) };
-  const deps = { store: fake.store, audit, systemNotice: systemNotice as SystemNoticePort };
+  const sendEvent = vi.fn<(event: { id: string; name: string; data: Record<string, string> }) => Promise<undefined>>(async () => undefined);
+  const deps = { store: fake.store, audit, systemNotice: systemNotice as SystemNoticePort, sendEvent };
   const turn: TurnContext = { tenantId: A, conversationId: CONV, contactId: CONTACT, leadId: "10000000-0000-0000-0000-0000000000f1", leadCreated: false, messageIds: messages.map((m) => m.id), language: null, vertical: "sample-pack", verticalVersion: 1 };
-  return { ...fake, audits, audit, systemNotice, deps, turn };
+  return { ...fake, audits, audit, systemNotice, sendEvent, deps, turn };
 }
 
 describe("a message that is STOP", () => {
@@ -57,11 +58,37 @@ describe("a message that is STOP", () => {
     expect(w.consentLogs).toEqual([{ tenantId: A, contactId: CONTACT, event: "opted_out", source: "stop_keyword", messageId: M1 }]);
     expect(w.systemNotice.send).toHaveBeenCalledOnce();
     expect(w.systemNotice.send).toHaveBeenCalledWith({ tenantId: A, conversationId: CONV, kind: "opt_out_confirmation", text: fixedText("opt_out_confirmation", "en") });
-    expect(w.audits).toEqual([{ tenantId: A, actor: "ai", action: "message.answered", entity: "message", entityId: M1 }]);
+    expect(w.audits.filter((a) => a.action === "message.answered")).toEqual([{ tenantId: A, actor: "ai", action: "message.answered", entity: "message", entityId: M1 }]);
+  });
+
+  it("opens a high-priority opt_out handoff and sends handoff.opened once, without switching the chat to a person", async () => {
+    const w = world(["STOP"]);
+    await stopCheck(runner().step, w.turn, w.deps);
+    expect(w.handoffs).toEqual([expect.objectContaining({ tenantId: A, conversationId: CONV, trigger: "opt_out", priority: "high" })]);
+    expect(w.sendEvent).toHaveBeenCalledOnce();
+    expect(w.sendEvent).toHaveBeenCalledWith({ id: `handoff_opened:${w.handoffs[0].id}`, name: "handoff.opened", data: { tenantId: A, handoffId: w.handoffs[0].id, conversationId: CONV } });
+    expect(w.audits).toContainEqual({ tenantId: A, actor: "ai", action: "handoff.opened", entity: "handoff", entityId: w.handoffs[0].id, diff: { trigger: "opt_out" } });
+    expect(w.conversations.get(CONV)?.mode).toBe("ai");
+  });
+
+  it("a retry of the step opens no second handoff and sends the same event id (so it is one event)", async () => {
+    const w = world(["STOP"]);
+    await stopCheck(runner().step, w.turn, w.deps);
+    await stopCheck(runner().step, w.turn, w.deps); // a fresh runner: the step ran again
+    expect(w.handoffs).toHaveLength(1);
+    expect(new Set(w.sendEvent.mock.calls.map((c) => c[0].id)).size).toBe(1);
+    expect(w.systemNotice.send).toHaveBeenCalledOnce(); // and still one confirmation
+  });
+
+  it("does nothing of the kind for an ordinary message", async () => {
+    const w = world(["2BHK price?"]);
+    await stopCheck(runner().step, w.turn, w.deps);
+    expect(w.handoffs).toHaveLength(0);
+    expect(w.sendEvent).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["Tamil script", "நிறுத்துங்கள்", "ta"],
+    ["Tamil script", "மெசேஜ் அனுப்பாதீர்கள்", "ta"],
     ["Tanglish", "Message panna vendam", "ta-en"],
     ["Hindi", "बंद करो", "hi"],
     ["Hindi in English letters", "band karo", "hi"],
@@ -77,7 +104,7 @@ describe("a message that is STOP", () => {
     const result = await stopCheck(runner().step, w.turn, w.deps);
     expect(result.status).toBe("opted_out");
     expect(w.consentLogs).toEqual([expect.objectContaining({ messageId: M2 })]); // the STOP message itself
-    expect(w.audits.map((a) => a.entityId)).toEqual([M1, M2, M3]);
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1, M2, M3]);
   });
 
   it("sends AT MOST one confirmation and logs once, however often the turn runs", async () => {
@@ -147,13 +174,13 @@ describe("STOP in a chat the gate turned away (a person has it, or the AI is swi
     expect(result).toEqual({ status: "opted_out", confirmation: "awaiting_notify_kind" });
     expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
     expect(w.consentLogs).toEqual([expect.objectContaining({ event: "opted_out", source: "stop_keyword", messageId: M1 })]);
-    expect(w.audits.map((a) => a.entityId)).toEqual([M1]);
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1]);
   });
 
   it("finds the burst around the message: a STOP sent after another message, both marked answered", async () => {
     const w = world(["hello", "stop"], { mode: "human" });
     expect((await stopCheckAfterGate(runner().step, { ...ids, messageId: M2 }, w.deps)).status).toBe("opted_out");
-    expect(w.audits.map((a) => a.entityId).sort()).toEqual([M1, M2]);
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId).sort()).toEqual([M1, M2]);
   });
 
   it("does nothing for a message that is not STOP", async () => {

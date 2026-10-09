@@ -6,17 +6,17 @@ import { parseReplySettings } from "./persona";
 
 describe("parseReplySettings", () => {
   it("reads the persona and the tone the dashboard saves", () => {
-    expect(parseReplySettings({ persona: "Maya", tone: "formal" })).toEqual({ persona: "Maya", tone: "formal", kbGapHandoffEnabled: true });
+    expect(parseReplySettings({ persona: "Maya", tone: "formal" })).toEqual({ persona: "Maya", tone: "formal", kbGapHandoffEnabled: true, privacyNotice: false });
   });
 
   it("uses no persona and the friendly tone when nothing is saved", () => {
     for (const raw of [{}, null, undefined, "text", 5, []]) {
-      expect(parseReplySettings(raw)).toEqual({ persona: null, tone: "friendly", kbGapHandoffEnabled: true });
+      expect(parseReplySettings(raw)).toEqual({ persona: null, tone: "friendly", kbGapHandoffEnabled: true, privacyNotice: false });
     }
   });
 
   it("ignores a tone that is not offered and a persona that is not text, keeping the rest", () => {
-    expect(parseReplySettings({ persona: 42, tone: "sarcastic" })).toEqual({ persona: null, tone: "friendly", kbGapHandoffEnabled: true });
+    expect(parseReplySettings({ persona: 42, tone: "sarcastic" })).toEqual({ persona: null, tone: "friendly", kbGapHandoffEnabled: true, privacyNotice: false });
     expect(parseReplySettings({ persona: { x: 1 }, tone: "formal" }).tone).toBe("formal");
   });
 
@@ -38,5 +38,12 @@ describe("parseReplySettings", () => {
     expect(parseReplySettings({ handoffTriggers: [{ key: "kb_gap" }] }).kbGapHandoffEnabled).toBe(true);
     expect(parseReplySettings({ handoffTriggers: "nope" }).kbGapHandoffEnabled).toBe(true);
     expect(parseReplySettings({ handoffTriggers: [null, 3, { key: "kb_gap", enabled: false }] }).kbGapHandoffEnabled).toBe(false);
+  });
+
+  it("reads privacyNotice: off unless it is exactly true", () => {
+    expect(parseReplySettings({ privacyNotice: true }).privacyNotice).toBe(true);
+    for (const raw of [undefined, {}, { privacyNotice: false }, { privacyNotice: "true" }, { privacyNotice: 1 }, { privacyNotice: null }, "x"]) {
+      expect(parseReplySettings(raw).privacyNotice, JSON.stringify(raw)).toBe(false);
+    }
   });
 });

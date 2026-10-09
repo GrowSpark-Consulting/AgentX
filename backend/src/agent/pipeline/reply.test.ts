@@ -508,8 +508,27 @@ describe("never two replies", () => {
   });
 });
 
-describe("the privacy notice on a contact's first AI reply", () => {
-  const first = (over: WorldOptions = {}) => world({ consentAt: null, ...over });
+describe("the privacy notice is a per-business setting, off by default (Raja, 9 Oct)", () => {
+  it("is not added to the first reply, and notice_shown is never logged, when the setting is missing or false", async () => {
+    for (const agentSettings of [undefined, {}, { privacyNotice: false }, { privacyNotice: "yes" }]) {
+      const w = world({ consentAt: null, agentSettings });
+      await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+      expect(sentText(w)).toBe("Yes, we do site visits. Shall we plan one?");
+      expect(w.consentLogs).toEqual([]);
+      expect(w.contacts.get(CONTACT)?.consentAt ?? null).toBeNull();
+    }
+  });
+
+  it("is added once when the business turned it on: the first reply carries it, the second does not", async () => {
+    const w = world({ consentAt: null, agentSettings: { privacyNotice: true }, script: ["First answer.", "Second answer."] });
+    await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
+    expect(sentText(w, 0)).toContain(consentNotice("en", PRIVACY_URL));
+    expect(w.consentLogs).toHaveLength(1);
+  });
+});
+
+describe("the privacy notice on a contact's first AI reply (setting on)", () => {
+  const first = (over: WorldOptions = {}) => world({ consentAt: null, agentSettings: { privacyNotice: true }, ...over });
 
   it("is added to the first reply, after a blank line, as one line with the policy link last", async () => {
     const w = first();
@@ -618,6 +637,13 @@ describe("the privacy notice on a contact's first AI reply", () => {
     await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);
     expect(sentText(w)).toBe(`${fixedText("fallback", "ta")}\n\n${consentNotice("ta", PRIVACY_URL)}`);
     expect(w.consentLogs).toHaveLength(1);
+  });
+
+  it("is not on the safe line when the setting is off (the default)", async () => {
+    const w = world({ consentAt: null, language: "ta" });
+    await answerAfterFailure({ tenantId: A, conversationId: CONV, messageId: M1 }, 15_000, w.deps);
+    expect(sentText(w)).toBe(fixedText("fallback", "ta"));
+    expect(w.consentLogs).toEqual([]);
   });
 
   it("but not when that send's outcome is unknown", async () => {
@@ -736,7 +762,7 @@ describe("answerAfterFailure: when a run gave up", () => {
     const w = world({ language: "ta" });
     expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("sent");
     expect(sentText(w)).toBe(fixedText("fallback", "ta"));
-    expect(w.audits.map((a) => a.entityId)).toEqual([M1]);
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1]);
     expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("nothing_to_do"); // safe to call twice
     expect(w.send).toHaveBeenCalledOnce();
   });
@@ -748,11 +774,11 @@ describe("answerAfterFailure: when a run gave up", () => {
     expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
     expect(w.consentLogs).toEqual([expect.objectContaining({ event: "opted_out", source: "stop_keyword" })]);
     expect(w.systemNotice.send).toHaveBeenCalledWith(expect.objectContaining({ kind: "opt_out_confirmation" }));
-    expect(w.audits.map((a) => a.entityId)).toEqual([M1]);
+    expect(w.audits.filter((a) => a.action === "message.answered").map((a) => a.entityId)).toEqual([M1]);
   });
 
   it("the same, in a chat a person has", async () => {
-    const w = world({ mode: "human", messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "நிறுத்துங்கள்", meta: {} }] });
+    const w = world({ mode: "human", messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: "மெசேஜ் அனுப்பாதீர்கள்", meta: {} }] });
     expect(await answerAfterFailure(ids, 15_000, w.deps)).toBe("opted_out");
     expect(w.contacts.get(CONTACT)?.optedOut).toBe(true);
   });
