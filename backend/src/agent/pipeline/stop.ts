@@ -54,7 +54,7 @@ export async function applyStop(scope: StopScope, deps: StopDeps): Promise<Opted
     }
   }
   // Staff must know, and a call is safer than a message: a high-priority handoff (trigger opt_out) and `handoff.opened`, whose
-  // alert says "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer." (Raja, 9 Oct). Done
+  // alert should say "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer." (Raja, 9 Oct; the wording is in Dev 2's handoff-alert job, which reads the trigger). Done
   // on every run that finds the STOP (an open handoff is reused, the event id is fixed), so a retry still tells staff. The
   // chat's mode is not touched: nobody can message this contact anyway (the gate and notify.send refuse), and a person only calls.
   let handoffError: unknown = null;

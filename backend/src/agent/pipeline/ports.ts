@@ -28,5 +28,3 @@ export function createSystemNoticePort(send: (tenantId: string, kind: "system_no
     },
   };
 }
-
-
