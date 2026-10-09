@@ -69,6 +69,14 @@ const serverEnvSchema = z
     // One pinned version; an unset variable can never build a "/undefined/" Graph API URL.
     .default("v26.0"),
   META_WEBHOOK_VERIFY_TOKEN: secret.optional(),
+  // This API's public https origin (e.g. https://sparkagent-production-dc1a.up.railway.app). Builds the webhook
+  // callback URL shown to a client who connects their own Meta app. Unset: that screen says it isn't available.
+  API_PUBLIC_URL: z
+    .url({ protocol: /^https$/, error: "must be the API's https origin" })
+    .refine((v) => new URL(v).pathname === "/" && !new URL(v).search && !new URL(v).hash, "must be an origin only, no path")
+    .optional(),
+  // Spark Agent's Business Portfolio ID, shown for partner access. Not a secret. Unset: the screen says it isn't available.
+  META_PARTNER_BUSINESS_ID: z.string().regex(/^\d{5,20}$/, "must be digits only").optional(),
   META_SYSTEM_USER_TOKEN: secret.optional(),
   WHATSAPP_DEMO_WABA_ID: secret.optional(),
   WHATSAPP_DEMO_PHONE_NUMBER_ID: secret.optional(),

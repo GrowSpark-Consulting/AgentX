@@ -33,6 +33,7 @@ const apiEnv = {
   ...supabaseEnv,
   SUPABASE_SERVICE_ROLE_KEY: SERVICE_ROLE_KEY,
   EMBEDDINGS_API_KEY: "e2e-embeddings-key", // required by the API; the e2e mock never calls the provider
+  ANTHROPIC_API_KEY: "e2e-anthropic-key", // required by the API; the e2e tests never call the model
   PORT: String(API_PORT),
   HOST: "127.0.0.1",
   NEXT_PUBLIC_APP_URL: `http://localhost:${PORT}`,

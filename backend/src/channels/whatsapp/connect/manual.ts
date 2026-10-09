@@ -1,0 +1,242 @@
+import { randomUUID } from "node:crypto";
+import { ManualConnectInput, WhatsAppConnectionPublic } from "@pakka/types";
+import { z } from "zod";
+import { connectionSecretContext, encryptSecret } from "../../../lib/crypto";
+import { serverEnv } from "../../../lib/env";
+import { AppError, zodFieldErrors } from "../../../lib/errors";
+import { supabaseAdmin } from "../../../lib/supabase-admin";
+
+// Manual connection (method `manual_byo`): a business that runs its own Meta app gives us the account id,
+// the number's id, a token and the app secret (docs/whatsapp-connection-contract.md, "Admin: manual
+// connection"). Order: validate the input, ask Meta whether the token reaches the number, then store the
+// token and the app secret encrypted. The answer is the public connection shape only; the secrets are never
+// echoed, logged or kept after the call. Meta's text is never passed on: the UI gets fixed messages.
+
+const metaId = (message: string) => z.string().regex(/^\d{5,20}$/, message);
+const secretText = (message: string, max: number) => z.string().min(8, message).max(max, message).regex(/^\S+$/, message);
+
+/** `ManualConnectInput` with the shape rules Meta's identifiers and credentials follow. */
+const StrictInput = ManualConnectInput.extend({
+  wabaId: metaId("Enter the WhatsApp Business Account ID: digits only."),
+  phoneNumberId: metaId("Enter the Phone number ID: digits only (not the phone number itself)."),
+  token: secretText("Enter the access token without spaces.", 2048),
+  appSecret: secretText("Enter the app secret without spaces.", 256),
+});
+
+export type CheckStatus = "pass" | "warn" | "fail" | "not_verified" | "skipped";
+export type CheckKey = "token_permissions" | "number_registered" | "webhook_subscribed" | "display_name_approved" | "payment_method" | "test_message_delivered";
+export type Check = { key: CheckKey; status: CheckStatus; message: string; checked_at: string };
+export type LastCheck = { ran_at: string; overall: "pass" | "warn" | "fail"; checks: Check[] };
+
+export type ConnectionRecord = {
+  id: string;
+  tenantId: string;
+  channelId: string;
+  wabaId: string;
+  phoneNumberId: string;
+  displayPhone: string | null;
+  verifiedName: string | null;
+  clientBusinessId: string | null;
+  tokenEnc: string;
+  tokenType: "business" | "system_user";
+  appSecretEnc: string;
+  status: "active" | "failed";
+  lastCheck: LastCheck;
+  qualityRating: string | null;
+  connectedBy: string;
+};
+
+export interface ManualConnectDb {
+  tenantExists(tenantId: string): Promise<boolean>;
+  findByPhoneNumberId(phoneNumberId: string): Promise<{ id: string; tenantId: string; channelId: string; method: string; status: string } | null>;
+  channelIdFor(tenantId: string): Promise<string>;
+  /** Writes the record (insert, or update when `replace` is true) and returns the public row. */
+  save(record: ConnectionRecord, replace: boolean): Promise<unknown>;
+}
+
+export type NumberInfo = { displayPhone: string | null; verifiedName: string | null; qualityRating: string | null };
+export type MetaProbe =
+  | { state: "ok"; info: NumberInfo; numberInAccount: boolean }
+  | { state: "rejected" } // Meta answered, and the token or ids are not accepted
+  | { state: "unreachable" }; // we could not get an answer
+
+export type ManualConnectDeps = {
+  db: ManualConnectDb;
+  probe(args: { wabaId: string; phoneNumberId: string; token: string }): Promise<MetaProbe>;
+  encrypt: typeof encryptSecret;
+  now: () => Date;
+  newId: () => string;
+};
+
+/**
+ * Asks the Graph API, with the client's token, whether the number is reachable and belongs to the account.
+ * UNVERIFIED against a live Meta account: the two reads and their field names follow Meta's Cloud API
+ * documentation as we understand it and must be confirmed with a real test number.
+ */
+export async function probeMeta(args: { wabaId: string; phoneNumberId: string; token: string }): Promise<MetaProbe> {
+  const version = serverEnv().META_GRAPH_API_VERSION;
+  const get = async (path: string) => {
+    const res = await fetch(`https://graph.facebook.com/${version}/${path}`, {
+      headers: { authorization: `Bearer ${args.token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return { ok: res.ok, status: res.status, body: (await res.json().catch(() => null)) as unknown };
+  };
+  try {
+    const number = await get(`${args.phoneNumberId}?fields=display_phone_number,verified_name,quality_rating`);
+    if (number.status >= 500 || number.status === 429) return { state: "unreachable" };
+    if (!number.ok) return { state: "rejected" };
+    const n = (number.body ?? {}) as Record<string, unknown>;
+    const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+
+    const account = await get(`${args.wabaId}/phone_numbers?fields=id&limit=100`);
+    if (account.status >= 500 || account.status === 429) return { state: "unreachable" };
+    const list = account.ok ? ((account.body as { data?: { id?: unknown }[] } | null)?.data ?? []) : [];
+    return {
+      state: "ok",
+      info: { displayPhone: text(n.display_phone_number), verifiedName: text(n.verified_name), qualityRating: text(n.quality_rating) },
+      numberInAccount: list.some((item) => String(item?.id) === args.phoneNumberId),
+    };
+  } catch {
+    return { state: "unreachable" };
+  }
+}
+
+const SAFE = {
+  tokenPass: "Meta accepted the access token for this number.",
+  tokenFail: "Meta did not accept the access token or the Phone number ID. Check both, and that the token can manage this WhatsApp account.",
+  numberPass: "The number belongs to this WhatsApp Business Account.",
+  numberFail: "This number isn't in that WhatsApp Business Account. Check the Account ID and the Phone number ID.",
+  webhook: "Waiting for Meta: this is confirmed when your app's webhook delivers a first message to Spark Agent.",
+  later: "Not checked yet.",
+} as const;
+
+function buildChecks(probe: Extract<MetaProbe, { state: "ok" | "rejected" }>, at: string): LastCheck {
+  const ok = probe.state === "ok";
+  const registered = ok && probe.numberInAccount;
+  const checks: Check[] = [
+    { key: "token_permissions", status: ok ? "pass" : "fail", message: ok ? SAFE.tokenPass : SAFE.tokenFail, checked_at: at },
+    {
+      key: "number_registered",
+      status: !ok ? "skipped" : registered ? "pass" : "fail",
+      message: !ok ? SAFE.later : registered ? SAFE.numberPass : SAFE.numberFail,
+      checked_at: at,
+    },
+    { key: "webhook_subscribed", status: "not_verified", message: SAFE.webhook, checked_at: at },
+    { key: "display_name_approved", status: "not_verified", message: SAFE.later, checked_at: at },
+    { key: "payment_method", status: "not_verified", message: SAFE.later, checked_at: at },
+    { key: "test_message_delivered", status: "not_verified", message: SAFE.later, checked_at: at },
+  ];
+  const overall = checks.some((c) => c.status === "fail") ? "fail" : checks.some((c) => c.status === "warn" || c.status === "not_verified") ? "warn" : "pass";
+  return { ran_at: at, overall, checks };
+}
+
+/**
+ * Connects (or reconnects) a business's own Meta app number. `actor` is the audit value for
+ * `connected_by`: a user id, or `admin:<id>` from the platform route. `rawInput.tenantId` has already been
+ * decided by the caller (the signed-in member's business, or the one an admin named), never by the browser.
+ */
+export async function connectManual(
+  rawInput: unknown,
+  actor: string,
+  deps: ManualConnectDeps = { db: realDb(), probe: probeMeta, encrypt: encryptSecret, now: () => new Date(), newId: randomUUID },
+): Promise<WhatsAppConnectionPublic> {
+  const parsed = StrictInput.safeParse(rawInput);
+  if (!parsed.success) throw new AppError("validation_failed", "Some details need fixing.", zodFieldErrors(parsed.error));
+  const input = parsed.data;
+
+  if (!(await deps.db.tenantExists(input.tenantId))) throw new AppError("not_found", "We couldn't find that business.");
+
+  // A number is connected to one business at a time. Our own failed, disconnected or pending row may be retried in place.
+  const existing = await deps.db.findByPhoneNumberId(input.phoneNumberId);
+  const retry = existing !== null && existing.method === "manual_byo" && existing.tenantId === input.tenantId && ["failed", "disconnected", "pending"].includes(existing.status);
+  if (existing !== null && !retry) {
+    throw new AppError("conflict", "This phone number is already connected.", { phoneNumberId: "This Phone number ID is already connected." });
+  }
+
+  const probe = await deps.probe({ wabaId: input.wabaId, phoneNumberId: input.phoneNumberId, token: input.token });
+  if (probe.state === "unreachable") throw new AppError("upstream_failed", "We couldn't reach Meta to check these details. Try again in a moment.");
+
+  const lastCheck = buildChecks(probe, deps.now().toISOString());
+  const id = existing?.id ?? deps.newId();
+  const info = probe.state === "ok" ? probe.info : { displayPhone: null, verifiedName: null, qualityRating: null };
+
+  const record: ConnectionRecord = {
+    id,
+    tenantId: input.tenantId,
+    channelId: existing?.channelId ?? (await deps.db.channelIdFor(input.tenantId)),
+    wabaId: input.wabaId,
+    phoneNumberId: input.phoneNumberId,
+    displayPhone: info.displayPhone ?? input.displayPhone ?? null,
+    verifiedName: info.verifiedName,
+    clientBusinessId: input.clientBusinessId ?? null,
+    tokenEnc: deps.encrypt(input.token, connectionSecretContext({ column: "token_enc", tenantId: input.tenantId, connectionId: id })),
+    tokenType: input.tokenType,
+    appSecretEnc: deps.encrypt(input.appSecret, connectionSecretContext({ column: "app_secret_enc", tenantId: input.tenantId, connectionId: id })),
+    status: lastCheck.overall === "fail" ? "failed" : "active",
+    lastCheck,
+    qualityRating: info.qualityRating,
+    connectedBy: actor,
+  };
+  const saved = WhatsAppConnectionPublic.safeParse(await deps.db.save(record, retry));
+  if (!saved.success) throw new AppError("upstream_failed", "We couldn't save the connection. Try again in a moment.");
+  return saved.data;
+}
+
+const PUBLIC_COLUMNS =
+  "id, tenant_id, method, waba_id, phone_number_id, display_phone, verified_name, coexistence, status, last_check, quality_rating, messaging_limit, created_at";
+
+function realDb(): ManualConnectDb {
+  const db = supabaseAdmin();
+  const fail = (what: string) => new AppError("upstream_failed", `We couldn't ${what}. Try again in a moment.`);
+  return {
+    async tenantExists(tenantId) {
+      const { data, error } = await db.from("tenants").select("id").eq("id", tenantId).maybeSingle();
+      if (error) throw fail("look up the business");
+      return data !== null;
+    },
+    async findByPhoneNumberId(phoneNumberId) {
+      const { data, error } = await db.from("whatsapp_connections").select("id, tenant_id, channel_id, method, status").eq("phone_number_id", phoneNumberId).maybeSingle();
+      if (error) throw fail("check the number");
+      return data ? { id: String(data.id), tenantId: String(data.tenant_id), channelId: String(data.channel_id), method: String(data.method), status: String(data.status) } : null;
+    },
+    async channelIdFor(tenantId) {
+      const found = await db.from("channels").select("id").eq("tenant_id", tenantId).eq("type", "whatsapp").order("created_at", { ascending: true }).limit(1);
+      if (found.error) throw fail("read the channel");
+      if (found.data && found.data.length > 0) return String(found.data[0].id);
+      const made = await db.from("channels").insert({ tenant_id: tenantId, type: "whatsapp", status: "active" }).select("id").single();
+      if (made.error) throw fail("create the channel");
+      return String(made.data.id);
+    },
+    async save(r, replace) {
+      const columns = {
+        channel_id: r.channelId,
+        method: "manual_byo",
+        waba_id: r.wabaId,
+        phone_number_id: r.phoneNumberId,
+        display_phone: r.displayPhone,
+        verified_name: r.verifiedName,
+        client_business_id: r.clientBusinessId,
+        token_enc: r.tokenEnc,
+        token_type: r.tokenType,
+        app_secret_enc: r.appSecretEnc,
+        status: r.status,
+        last_check: r.lastCheck,
+        quality_rating: r.qualityRating,
+        connected_by: r.connectedBy,
+      };
+      // Both writes are filtered by the business, so a retry can never touch another business's row.
+      const { error } = replace
+        ? await db.from("whatsapp_connections").update(columns).eq("id", r.id).eq("tenant_id", r.tenantId)
+        : await db.from("whatsapp_connections").insert({ id: r.id, tenant_id: r.tenantId, ...columns });
+      if (error) {
+        // The number was connected by someone else between our check and this write.
+        if (error.code === "23505") throw new AppError("conflict", "This phone number is already connected.");
+        throw fail("save the connection");
+      }
+      const row = await db.from("whatsapp_connections").select(PUBLIC_COLUMNS).eq("id", r.id).eq("tenant_id", r.tenantId).single();
+      if (row.error) throw fail("read the connection");
+      return row.data;
+    },
+  };
+}

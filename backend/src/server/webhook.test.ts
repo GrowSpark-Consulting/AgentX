@@ -9,6 +9,9 @@ vi.stubEnv("EMBEDDINGS_API_KEY", "synthetic-embeddings-key");
 vi.stubEnv("ANTHROPIC_API_KEY", "synthetic-anthropic-key");
 vi.stubEnv("META_WEBHOOK_VERIFY_TOKEN", "synthetic-route-token");
 
+// The handshake may look a token up in the database; no business has one here.
+vi.mock("../channels/whatsapp/connect/webhook-token", () => ({ isTenantWebhookToken: async () => false }));
+
 const { createApp } = await import("./app");
 const app = createApp();
 

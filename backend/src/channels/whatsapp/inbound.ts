@@ -16,9 +16,10 @@ import { verifySignature } from "./signature";
 // Meta retries; the dedupe makes the retry safe. Logs hold counts only: no numbers, names, text, message
 // ids or secrets, and no database error text (it can contain values).
 //
-// Only META_APP_SECRET is verified here, so only connections that use our Meta app are served: the
-// methods listed below. A manual_byo connection signs with the client's own app secret, and a method
-// we have not listed is not trusted by default; both are treated as an unknown number.
+// A request can be signed two ways. With META_APP_SECRET (our own Meta app) it serves the methods listed
+// below. Otherwise the signature is tried against the app secrets of the manual_byo connections for the phone
+// numbers the (not yet trusted) body names; a match serves only those connections. A method we have not
+// listed is not trusted by default, and a connection is never served on the other kind's signature.
 
 const SIGNATURE_FORMAT = /^sha256=[0-9a-fA-F]{64}$/;
 /** Connection methods whose webhooks come from our own Meta app, signed with META_APP_SECRET. */
@@ -54,6 +55,7 @@ function toStorable(parsed: ParsedMessage): Pick<StoreInboundArgs, "kind" | "bod
 export interface WebhookDeps {
   findConnections: typeof db.findConnections;
   findConnectionsByWaba: typeof db.findConnectionsByWaba;
+  findByoSecrets: typeof db.findByoSecrets;
   storeInboundMessage: typeof db.storeInboundMessage;
   applyMessageStatus: typeof db.applyMessageStatus;
   templateBelongsToTenant: typeof db.templateBelongsToTenant;
@@ -66,6 +68,7 @@ export interface WebhookDeps {
 const realDeps = (): WebhookDeps => ({
   findConnections: db.findConnections,
   findConnectionsByWaba: db.findConnectionsByWaba,
+  findByoSecrets: db.findByoSecrets,
   storeInboundMessage: db.storeInboundMessage,
   applyMessageStatus: db.applyMessageStatus,
   templateBelongsToTenant: db.templateBelongsToTenant,
@@ -85,14 +88,38 @@ export async function handleWhatsAppWebhook(request: Request, deps: WebhookDeps 
     console.error(`${TAG} environment invalid`);
     return Response.json({ error: { code: "internal", message: "Something went wrong on our side." } }, { status: 500 });
   }
-  if (!appSecret) {
-    console.error(`${TAG} META_APP_SECRET is not set`);
-    return Response.json({ error: { code: "internal", message: "Something went wrong on our side." } }, { status: 500 });
-  }
 
   // The body is read once, as bytes, and verified before it is decoded.
   const raw = new Uint8Array(await request.arrayBuffer());
-  if (!verifySignature(raw, signature, appSecret)) throw unauthenticated();
+  const signedByPlatform = !!appSecret && verifySignature(raw, signature, appSecret);
+
+  // Connections whose own app secret signed this request (manual_byo). Only tried when ours did not match.
+  const byoVerified = new Set<string>();
+  if (!signedByPlatform) {
+    try {
+      // The ids in a body that is not verified yet only choose which secrets to try.
+      const candidates = parseWebhook(JSON.parse(new TextDecoder().decode(raw)));
+      const phoneIds = [...new Set([...candidates.messages, ...candidates.statuses].map((item) => item.phoneNumberId))];
+      for (const { connectionId, secret } of await deps.findByoSecrets(phoneIds)) {
+        if (verifySignature(raw, signature, secret)) byoVerified.add(connectionId);
+      }
+    } catch (err) {
+      if (err instanceof WebhookDbError) {
+        console.error(`${TAG} secret lookup failed code=${err.code}`);
+        return Response.json({ error: { code: "internal", message: "Something went wrong on our side." } }, { status: 500 });
+      }
+      // a body that is not JSON cannot name a connection; it falls through to the refusal below
+    }
+    if (byoVerified.size === 0) {
+      if (!appSecret) {
+        console.error(`${TAG} META_APP_SECRET is not set`);
+        return Response.json({ error: { code: "internal", message: "Something went wrong on our side." } }, { status: 500 });
+      }
+      throw unauthenticated();
+    }
+  }
+  const trusted = (connection: ConnectionRow) =>
+    signedByPlatform ? PLATFORM_SIGNED.has(connection.method) : connection.method === "manual_byo" && byoVerified.has(connection.id);
 
   let payload: unknown;
   try {
@@ -121,7 +148,7 @@ export async function handleWhatsAppWebhook(request: Request, deps: WebhookDeps 
   // Which connection may act on an item: signed by our app, for this account, and active.
   const connectionFor = (item: { phoneNumberId: string; wabaId: string }): ConnectionRow | null => {
     const connection = connections.get(item.phoneNumberId);
-    if (!connection || !PLATFORM_SIGNED.has(connection.method) || connection.wabaId !== item.wabaId) {
+    if (!connection || !trusted(connection) || connection.wabaId !== item.wabaId) {
       counts.unknown++;
       return null;
     }
@@ -183,7 +210,7 @@ export async function handleWhatsAppWebhook(request: Request, deps: WebhookDeps 
     let lookedUp = true;
     try {
       for (const connection of await deps.findConnectionsByWaba(wabaIds)) {
-        if (PLATFORM_SIGNED.has(connection.method)) byWaba.set(connection.wabaId, [...(byWaba.get(connection.wabaId) ?? []), connection]);
+        if (trusted(connection)) byWaba.set(connection.wabaId, [...(byWaba.get(connection.wabaId) ?? []), connection]);
       }
     } catch (err) {
       lookedUp = false;

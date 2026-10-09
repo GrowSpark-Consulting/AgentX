@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { serverEnv } from "../../lib/env";
+import { isTenantWebhookToken } from "./connect/webhook-token";
 
 // Meta's webhook verification (GET /api/webhooks/whatsapp): Meta sends hub.mode, hub.verify_token and
 // hub.challenge. If the mode is "subscribe" and the token is ours, we answer 200 with the challenge as
@@ -77,6 +78,34 @@ export function handleWhatsAppVerification(
       },
     });
   } catch {
+    return forbidden();
+  }
+}
+
+/**
+ * The route's GET handler: our own Meta app's platform token first (no database), then a business's own token
+ * for a client who connected their own Meta app (migration 0020). Same answers either way: the challenge on
+ * success, an empty 403 otherwise. A database failure refuses, like a wrong token, and logs one fixed line.
+ */
+export async function handleWhatsAppHandshake(
+  request: Request,
+  isTenantToken: (token: string) => Promise<boolean> = isTenantWebhookToken,
+): Promise<Response> {
+  const platform = handleWhatsAppVerification(request);
+  if (platform.status === 200) return platform;
+  try {
+    const params = new URL(request.url).searchParams;
+    const one = (name: string) => (params.getAll(name).length === 1 ? params.get(name) : null);
+    const token = one("hub.verify_token");
+    // Same mode and challenge checks as above, by asking the pure verifier with the token as the expected one.
+    const challenge = verifyWebhookChallenge({ mode: one("hub.mode"), token, challenge: one("hub.challenge") }, token ?? undefined);
+    if (challenge === null || token === null || !(await isTenantToken(token))) return forbidden();
+    return new Response(challenge, {
+      status: 200,
+      headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff", "cache-control": "no-store" },
+    });
+  } catch {
+    console.error("webhook verification: token lookup failed");
     return forbidden();
   }
 }
