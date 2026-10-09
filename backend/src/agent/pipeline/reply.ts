@@ -301,7 +301,9 @@ async function openHandoff(turn: TurnContext, handoff: { trigger: HandoffTrigger
   );
   // Out of credits: the customer got no reply from the assistant, so one free holding line says a person will answer.
   let holding: HandoffSummary["holding"] = "not_needed";
-  if (handoff.trigger === "credits_exhausted") {
+  // Only the run that opened the handoff sends it: the line is a real message now, and a retry must not send it twice (the
+  // cost: a crash between the row and this send means no holding line; staff still see the handoff).
+  if (handoff.trigger === "credits_exhausted" && opened.created) {
     const contact = await store.getContact(turn.tenantId, turn.contactId);
     holding = await settle(() =>
       deps.systemNotice.send({ tenantId: turn.tenantId, conversationId: turn.conversationId, kind: "credits_holding", text: fixedText("credits_holding", textLanguage(contact?.language)) }),

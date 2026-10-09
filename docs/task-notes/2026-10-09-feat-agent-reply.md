@@ -123,7 +123,7 @@ Fixed-text wording (Tamil, Tanglish, Hindi) is mine, in `fixed-texts.ts`; Raja c
   more steps (`started`, `plan`, `reply`, `handoff`).
 - **Every reply now costs one credit through `notify.send`** (the `ai_reply` kind). From this deploy on, a customer's message
   on a connected number is answered for real. Make sure `ANTHROPIC_API_KEY` is set (Sonnet 5.5, about a cent per reply).
-- **Update 9 Oct: item 1 below is DONE** (your #70, `system_notice`): the holding message now goes through it (`createSystemNoticePort` in `ports.ts`, tested in `ports.test.ts`). Items 2 and 3 are still open (your #71): when it lands, only the staff-alert port in `ports.ts` changes, and the `handoff.opened` event the reply step already sends (id `handoff_opened:<handoffId>`) is what your job reads.
+- **Update 9 Oct: item 1 of the list further down is DONE** (your #70, `system_notice`): the holding message now goes through it (`createSystemNoticePort` in `ports.ts`, tested in `ports.test.ts`). Items 2 and 3 are still open (your #71): when it lands, only the staff-alert port in `ports.ts` changes, and the `handoff.opened` event the reply step already sends (id `handoff_opened:<handoffId>`) is what your job reads.
 - **What I need you to add to `notify`** (I did not touch your files; only `backend/src/agent/pipeline/ports.ts` changes when
   you do):
   1. **A free system kind** (suggested name `system_notice`): 0 credits, `sender: "system"`, `audience: "conversation"`, no
@@ -137,6 +137,8 @@ Fixed-text wording (Tamil, Tanglish, Hindi) is mine, in `fixed-texts.ts`; Raja c
   Until items 2 and 3 land the staff-alert port logs `awaiting_notify_kind` and the rest of the handover (the row, the switch to human, the event,
   the audit) still happens.
 - The reply step calls `writeAudit` (`message.answered`, `handoff.opened`) and `record_kb_gap` through the service role.
+
+- **The holding message is sent only by the run that opened the handoff** (`opened.created`), so a retry never sends it twice. If a run crashes between the row and the send, no holding line goes out; staff still see the handoff.
 
 ## 6. For Dev 3 (Dhatri)
 

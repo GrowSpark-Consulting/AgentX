@@ -391,6 +391,7 @@ describe("when the business is out of credits", () => {
     await replyTurn(runner().step, w.turn, understood(found), Date.now(), w.deps);
     expect(w.handoffs).toHaveLength(1);
     expect(w.sendEvent).toHaveBeenCalledOnce(); // the second run found the handoff open and sent nothing more
+    expect(w.systemNotice.send).toHaveBeenCalledOnce(); // a real message now: one holding line, not one per run
   });
 
   it("a port that fails does not fail the handover", async () => {

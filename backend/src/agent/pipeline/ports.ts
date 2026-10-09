@@ -36,8 +36,8 @@ export function createSystemNoticePort(send: (tenantId: string, kind: "system_no
   };
 }
 
-// Kinds only in the log: no ids, no text.
 
+// Kinds only in the log: no ids, no text.
 export const staffAlertPort: StaffAlertPort = {
   async send({ kind }) {
     console.log(`[pipeline] awaiting_notify_kind (staff alert: ${kind})`);

@@ -31,6 +31,15 @@ describe("the system notice port", () => {
     expect(await port(outcome).port.send(INPUT)).toEqual({ status: "failed", reason: "rate_limited" });
   });
 
+  it.each(["feature_off", "opted_out", "insufficient_credits"] as const)("reports a skipped notice (%s) as failed with that reason", async (reason) => {
+    expect(await port({ status: "skipped", reason }).port.send(INPUT)).toEqual({ status: "failed", reason });
+  });
+
+  it("reports a send whose outcome is unknown as failed by its code (never resent here)", async () => {
+    const outcome: SendOutcome = { status: "failed", error: { code: "timeout", message: "x", retryable: false, outcomeUnknown: true } };
+    expect(await port(outcome).port.send(INPUT)).toEqual({ status: "failed", reason: "timeout" });
+  });
+
   it("lets a thrown error reach the caller, which settles it (reply.ts)", async () => {
     await expect(port(new Error("down")).port.send(INPUT)).rejects.toThrow("down");
   });
