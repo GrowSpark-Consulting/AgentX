@@ -16,7 +16,8 @@ export type NotificationKind =
   | "noshow_rebooking"
   | "feedback_request"
   | "review_request"
-  | "system_notice";
+  | "system_notice"
+  | "staff_alert";
 
 export type KindConfig = {
   /** isEnabled gate; kinds without one are always allowed. */
@@ -29,8 +30,11 @@ export type KindConfig = {
   template?: string;
   /** messages.sender */
   sender: "ai" | "staff" | "system";
-  /** Who receives it: an existing conversation, or a number typed by staff (test message). */
-  audience: "conversation" | "number";
+  /**
+   * Who receives it: an existing conversation, a number typed by staff (test message), or a member's alert
+   * number (memberships.whatsapp_phone).
+   */
+  audience: "conversation" | "number" | "staff";
   /**
    * Sent even to a contact who opted out. Only system_notice, and only for the confirmation that a STOP
    * was received and the holding message when the business is out of credits.
@@ -52,4 +56,7 @@ export const KINDS: Record<NotificationKind, KindConfig> = {
   // A fixed line from the system to the customer: free, no toggle, free text inside the 24-hour window only
   // (no template, so outside it is skipped).
   system_notice: { charged: false, sender: "system", audience: "conversation", ignoresOptOut: true },
+  // To a staff member's own WhatsApp: free, behind the staff_alerts toggle; outside their 24-hour window the
+  // approved staff_alert_vN template ({{1}} what happened, {{2}} the link).
+  staff_alert: { feature: "staff_alerts", charged: false, template: "staff_alert", sender: "system", audience: "staff" },
 };

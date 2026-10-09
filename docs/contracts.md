@@ -34,6 +34,7 @@ screen-level contracts in `docs/dashboard-screen-contracts.md`; WhatsApp connect
 | `0015_booking_engine` | `services.buffer_min`/`min_notice_min`, booking status `expired`, end after start, slot kinds need a resource, `hold_slot`, `confirm_booking`, `reschedule_booking`, `cancel_booking`, `release_expired_holds` (service_role only, section 4) |
 | `0016_platform_admins_and_link_tokens` | `platform_admins` (server only), `connect_links.token` → `token_hash` (SHA-256 hex; existing links rehashed) |
 | `0017_google_calendar` | `google_calendar_connections`: one per resource, refresh token encrypted, `status connected \| needs_reconnect`; members read everything but the token (section 6) |
+| `0019_notify_staff_target` | `notify_staff_target(tenantId, userId)`: a member's alert number as a contact tagged `staff` with a `human`-mode conversation (service_role only, section 2) |
 
 - `kb_chunks.embedding` is `vector(1024)`: Cohere `embed-multilingual-v3.0`, cosine distance (`<=>`).
   Retrieval filters by `tenant_id` and sets `hnsw.iterative_scan = relaxed_order`.
@@ -123,6 +124,7 @@ type SendOutcome =
 type NotifyPayload = {
   conversationId?: string;   // customer messages
   to?: string;               // test_message only: E.164 recipient
+  staffUserId?: string;      // staff_alert only: the member to alert
   text?: string;             // free text, inside the 24-hour window
   templateParams?: string[]; // in {{1}}… order, outside the window
   actorId?: string;          // the staff user (staff_reply, test_message); recorded in audit_logs
@@ -131,14 +133,37 @@ type NotifyPayload = {
 
 **Built in `backend/src/notify`** (`send.ts`, `kinds.ts`, `sender.ts`): `NotifyPayload` and
 `SendOutcome` as above. The credit ref is the generated message id (not a payload field).
-`NotificationKind` covers `ai_reply`, `staff_reply`, `test_message`, the customer automations and
-`system_notice`; staff-facing kinds arrive with their jobs.
+`NotificationKind` covers `ai_reply`, `staff_reply`, `test_message`, the customer automations,
+`system_notice` and `staff_alert`; the other staff-facing kinds (`lead_card`, `daily_agenda`) arrive with
+their jobs.
 
 **`system_notice` (built, 9 Oct; for Dev 1's pipeline):** a fixed line from the system to the customer.
 `send(tenantId, 'system_notice', { conversationId, text })`: 0 credits (so it goes out when the business is
 out of credits), `sender 'system'`, no feature toggle, free text inside the 24-hour window only (no template,
 so outside it the outcome is `skipped / outside_window`). It is the one kind sent to a contact who opted
 out. Use it only for the STOP confirmation and the out-of-credits holding message.
+
+**`staff_alert` (built, 9 Oct):** a WhatsApp alert to a member of the business, not to a customer.
+`send(tenantId, 'staff_alert', { staffUserId, text, templateParams: [headline, link] })`: 0 credits, feature
+`staff_alerts`, `sender 'system'`. The number is `memberships.whatsapp_phone` (E.164; none or invalid is
+`not_found`, "That person has no WhatsApp number for alerts."). `notify_staff_target` makes it a contact tagged
+`staff` with an open conversation in `human` mode, so the AI never answers a member's reply and the alert is
+stored like any other message. Free text when the member has written to the business in the last 24 hours,
+otherwise the approved `staff_alert_vN` template: `{{1}}` the one-line headline, `{{2}}` the dashboard link.
+**Nobody calls it directly:** `backend/src/notify/staff-alerts.ts` builds the content and picks the recipients
+(owners and admins with an alert number), and the `handoff-alert` job (section 5) sends it.
+
+| Alert | When | Headline | Link |
+|---|---|---|---|
+| `handoff_opened` | a handoff that is not one of the two below | "{name} is waiting for a person on WhatsApp." | `/dashboard/inbox?conversation=<id>` |
+| `credits_exhausted` | handoff trigger `credits_exhausted` | "{business} is out of credits, so the assistant has stopped replying." | `/dashboard/billing` |
+| `setup_problem` | handoff trigger `stuck` | "The assistant couldn't continue the chat with {name}." | `/dashboard/inbox?conversation=<id>` |
+
+`{name}` is the contact's name, else the masked number (`+9198xxxxxx45`). Every parameter is one line with no
+tabs or runs of spaces (Meta refuses them, 132018); customer and business names are cut to 40 characters.
+
+**For the inbox (Dev 3):** contacts tagged `staff` or `test` are our own numbers; their chats should be hidden
+from the inbox list (or shown under a separate filter).
 
 **Adapter plug-in (built by Dev 2, 8 Oct):** `registerSender(factory)`, where
 `factory({ tenantId, connectionId }) → { sendText(to, text), sendTemplate(to, name, language, params) }`
@@ -283,7 +308,7 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
 | `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`) |
 | `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`) |
-| `handoff.opened` | `{ tenantId, handoffId, conversationId }` |
+| `handoff.opened` | `{ tenantId, handoffId, conversationId }`; sent by Dev 1's reply step when it opens a handoff (id `handoff_opened:<handoffId>`); starts `handoff-alert`, which sends one `staff_alert` to each owner and admin with an alert number (section 2). A handoff already resolved by the time the job runs gets no alert. **The job is the only sender of handoff alerts:** the reply step does not alert staff itself |
 | `handoff.own_number` | `{ tenantId, handoffId }` |
 | `tenant.trial_started` | `{ tenantId }` |
 | `credits.spent` | `{ tenantId, amount, reason, balanceAfter }` |

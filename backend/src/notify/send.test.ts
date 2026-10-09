@@ -36,10 +36,49 @@ beforeEach(() => {
   sender.sendTemplate.mockReset().mockResolvedValue({ providerMsgId: "wamid.tpl" });
   registerSender(async () => sender);
   rpcHandlers.notify_target = () => ok([target()]);
+  rpcHandlers.notify_staff_target = () => ok([target({ to_phone: "+919800011111" })]);
   rpcHandlers.notify_template = () => ok([{ name: "reminder_24h_v2", language: "en", category: "utility" }]);
   rpcHandlers.notify_record = () => ok(null);
   rpcHandlers.spend_credits = () => ok(true);
   rpcHandlers.refund_credits = () => ok(1);
+});
+
+describe("staff_alert", () => {
+  const OWNER = "2c4d6e8f-1a3b-4c5d-8e7f-9a0b1c2d3e4f";
+  const alert = { staffUserId: OWNER, text: "Asha is waiting for a person.\nhttps://app.test/dashboard/inbox", templateParams: ["Asha is waiting for a person.", "https://app.test/dashboard/inbox"] };
+
+  it("goes to the member's alert number, free, as free text inside their window", async () => {
+    const outcome = await send(TENANT, "staff_alert", alert);
+    expect(outcome).toMatchObject({ status: "sent", creditsCharged: 0, usedTemplate: false });
+    expect(calls("notify_staff_target")[0]).toEqual({ p_tenant_id: TENANT, p_user_id: OWNER });
+    expect(calls("notify_target")).toHaveLength(0);
+    expect(sender.sendText).toHaveBeenCalledWith("+919800011111", alert.text);
+    expect(isEnabled).toHaveBeenCalledWith(TENANT, "staff_alerts");
+    expect(calls("spend_credits")).toHaveLength(0);
+    expect(calls("notify_record")[0]).toMatchObject({ p_sender: "system", p_kind: "staff_alert", p_credits: 0 });
+  });
+
+  it("uses the approved staff_alert template outside their window, still free", async () => {
+    rpcHandlers.notify_staff_target = () => ok([target({ to_phone: "+919800011111", last_customer_msg_at: null })]);
+    rpcHandlers.notify_template = () => ok([{ name: "staff_alert_v1", language: "en", category: "utility" }]);
+    const outcome = await send(TENANT, "staff_alert", alert);
+    expect(outcome).toMatchObject({ status: "sent", usedTemplate: true, creditsCharged: 0 });
+    expect(calls("notify_template")[0]).toMatchObject({ p_base_name: "staff_alert" });
+    expect(sender.sendTemplate).toHaveBeenCalledWith("+919800011111", "staff_alert_v1", "en", alert.templateParams);
+    expect(calls("spend_credits")).toHaveLength(0);
+  });
+
+  it("is off with the staff_alerts toggle, needs a member, and says when they have no alert number", async () => {
+    isEnabled.mockResolvedValue(false);
+    await expect(send(TENANT, "staff_alert", alert)).resolves.toEqual({ status: "skipped", reason: "feature_off" });
+    isEnabled.mockResolvedValue(true);
+    await expect(send(TENANT, "staff_alert", { text: "x" })).rejects.toThrow("staffUserId required");
+    rpcHandlers.notify_staff_target = () => ({ data: null, error: { code: "PA404", message: "no WhatsApp number for alerts" } });
+    await expect(send(TENANT, "staff_alert", alert)).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "not_found", message: "That person has no WhatsApp number for alerts." },
+    });
+  });
 });
 
 describe("test_message", () => {
