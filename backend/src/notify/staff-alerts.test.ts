@@ -48,6 +48,11 @@ describe("staffAlertRecipients", () => {
     expect(queries).toContainEqual({ table: "memberships", op: "in", args: ["role", ["owner", "admin"]] });
     expect(queries).toContainEqual({ table: "memberships", op: "not", args: ["whatsapp_phone", "is", null] });
   });
+
+  it("can be narrowed to owners, for an escalation", async () => {
+    await staffAlertRecipients(TENANT, deps(), ["owner"]);
+    expect(queries).toContainEqual({ table: "memberships", op: "in", args: ["role", ["owner"]] });
+  });
 });
 
 describe("staffAlertContent", () => {
@@ -67,6 +72,28 @@ describe("staffAlertContent", () => {
     const long = await staffAlertContent(TENANT, { kind: "handoff_opened", conversationId: CONVERSATION }, deps());
     expect(long.headline).not.toMatch(/[\t\n]| {2,}/);
     expect(long.headline.length).toBeLessThan(90);
+  });
+
+  it("says how long the customer has waited when no one picked the chat up", async () => {
+    await expect(staffAlertContent(TENANT, { kind: "handoff_waiting", conversationId: CONVERSATION, waitedMinutes: 15 }, deps())).resolves.toEqual({
+      headline: "Asha Raman has waited 15 minutes and no one has picked up the chat yet.",
+      link: `https://app.test/dashboard/inbox?conversation=${CONVERSATION}`,
+    });
+    const one = await staffAlertContent(TENANT, { kind: "handoff_waiting", conversationId: CONVERSATION, waitedMinutes: 1 }, deps());
+    expect(one.headline).toContain("waited 1 minute and");
+  });
+
+  it("tells staff a customer opted out, so they call instead of messaging", async () => {
+    const outcome = await staffAlertContent(TENANT, { kind: "opted_out", conversationId: CONVERSATION }, deps());
+    expect(outcome.headline).toBe("Asha Raman sent STOP, so the assistant won't message them again. Call them if you need to.");
+  });
+
+  it("asks staff how a visit went, and tells the owner about a low rating", async () => {
+    const outcome = await staffAlertContent(TENANT, { kind: "visit_outcome", conversationId: CONVERSATION, what: "site visit" }, deps());
+    expect(outcome.headline).toBe("How did the site visit with Asha Raman go? Update the lead so follow-ups stay right.");
+    const low = await staffAlertContent(TENANT, { kind: "low_rating", conversationId: CONVERSATION, what: "site visit", rating: 2 }, deps());
+    expect(low.headline).toBe("Asha Raman rated their site visit 2 out of 5.");
+    expect(low.link).toBe(`https://app.test/dashboard/inbox?conversation=${CONVERSATION}`);
   });
 
   it("tells the owner the business is out of credits, with the billing link", async () => {
