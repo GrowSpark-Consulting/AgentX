@@ -165,21 +165,134 @@ test("Connect with Facebook: a labelled preview that ends without connecting any
   await expect(page.getByText("Not connected yet")).toBeVisible();
 });
 
-test("own Meta app: no token or secret fields, and no made-up ids to copy", async ({ page }) => {
+// The webhook details and the connect route are emulated with page.route: the e2e API has no Meta, and the
+// live Meta handshake is verified separately (docs/whatsapp-connection-contract.md). What is tested here is
+// what the screen does with each answer of the real routes' envelopes.
+const WEBHOOK_URL = "https://api.example.test/api/webhooks/whatsapp";
+const VERIFY_TOKEN = "e2e-tenant-verify-token";
+const CONNECTION = {
+  id: "c0000000-0000-4000-8000-0000000000c1", tenant_id: "a0000000-0000-4000-8000-00000000000a", method: "manual_byo",
+  waba_id: "100000000000001", phone_number_id: "200000000000001", display_phone: "+91 98765 43210", verified_name: "Skyline Homes",
+  coexistence: false, status: "active", quality_rating: null, messaging_limit: null, created_at: "2026-10-24T09:00:00Z",
+  last_check: {
+    ran_at: "2026-10-24T09:00:00Z", overall: "warn",
+    checks: [
+      { key: "token_permissions", status: "pass", message: "Meta accepted the access token for this number.", checked_at: "2026-10-24T09:00:00Z" },
+      { key: "webhook_subscribed", status: "not_verified", message: "Waiting for Meta.", checked_at: "2026-10-24T09:00:00Z" },
+    ],
+  },
+};
+const apiError = (status: number, code: string, message: string, fields?: Record<string, string>) => ({
+  status, contentType: "application/json", body: JSON.stringify({ error: { code, message, ...(fields && { fields }) } }),
+});
+const ok = (status: number, body: unknown) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
+
+async function openOwnApp(page: Page, config: Parameters<Page["route"]>[1]) {
+  await page.route(/\/api\/whatsapp\/webhook-config/, config);
   await openOnboarding(page);
   await walkTo(page, "WhatsApp");
   await option(page, "Manual connection").click();
-  await expect(page.getByText("Not available yet. Our team shares it when connecting opens.")).toHaveCount(1);
-  await expect(page.getByText("3141592653589793")).toHaveCount(0);
   await page.getByRole("tab", { name: "Use my own Meta app" }).click();
-  await expect(page.getByText("access tokens and app secrets are never typed into this page")).toBeVisible();
-  await expect(page.locator("input[type=password]")).toHaveCount(0);
-  await expect(page.getByLabel(/access token|app secret/i)).toHaveCount(0);
-  await expect(page.getByText("Not available yet. Our team shares it when connecting opens.")).toHaveCount(2);
-  await expect(page.locator("body")).not.toContainText(/webhooks\/wa\/conn_|vt_9QX2/);
-  await expect(page.getByRole("button", { name: "Copy" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Check connection" })).toHaveCount(0);
+}
+
+async function fillOwnApp(page: Page) {
+  await page.getByLabel("WhatsApp Business Account ID").fill("100000000000001");
+  await page.getByLabel("Phone number ID").fill("200000000000001");
+  await page.getByLabel("Access token").fill("EAAB-e2e-synthetic-token");
+  await page.getByLabel("App secret").fill("e2e-synthetic-app-secret");
+}
+
+test("own Meta app: shows the real webhook URL and this business's verify token, with copy buttons", async ({ page }) => {
+  await openOwnApp(page, (route) => route.fulfill(ok(200, { webhookUrl: WEBHOOK_URL, verifyToken: VERIFY_TOKEN, partnerBusinessId: null })));
+  await expect(page.getByText(WEBHOOK_URL, { exact: true })).toBeVisible();
+  await expect(page.getByText(VERIFY_TOKEN, { exact: true })).toBeVisible();
+  await expect(page.getByText("Not available yet. Our team shares it when connecting opens.")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy" })).toHaveCount(2);
+  // The own-app path is real, so it carries no "preview" notice; the token fields are masked.
+  await expect(page.getByRole("note", { name: "Preview" })).toHaveCount(0);
+  await expect(page.locator("input[type=password]")).toHaveCount(2);
   await expectNoHorizontalOverflow(page);
+});
+
+test("own Meta app: says so, and offers no form, when the API's address isn't configured", async ({ page }) => {
+  await openOwnApp(page, (route) => route.fulfill(apiError(501, "not_available", "The webhook address isn’t configured yet. Our team will set it up.")));
+  await expect(page.getByRole("alert").filter({ hasText: "isn’t configured yet" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect number" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy" })).toHaveCount(0);
+});
+
+test("own Meta app: a backend failure can be retried", async ({ page }) => {
+  let calls = 0;
+  await openOwnApp(page, (route) => {
+    calls += 1;
+    return calls === 1
+      ? route.fulfill(apiError(502, "upstream_failed", "We couldn’t prepare your webhook details. Try again in a moment."))
+      : route.fulfill(ok(200, { webhookUrl: WEBHOOK_URL, verifyToken: VERIFY_TOKEN, partnerBusinessId: null }));
+  });
+  await expect(page.getByRole("alert").filter({ hasText: "couldn’t prepare" })).toBeVisible();
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText(VERIFY_TOKEN, { exact: true })).toBeVisible();
+});
+
+test("own Meta app: a rejected field is shown, a successful connect shows what the API returned, and the secrets are cleared", async ({ page }) => {
+  let posted: Record<string, unknown> | null = null;
+  let attempt = 0;
+  await page.route(/\/api\/whatsapp\/manual/, (route) => {
+    attempt += 1;
+    posted = route.request().postDataJSON();
+    return attempt === 1
+      ? route.fulfill(apiError(422, "validation_failed", "Some details need fixing.", { wabaId: "Enter the WhatsApp Business Account ID: digits only." }))
+      : route.fulfill(ok(201, CONNECTION));
+  });
+  await openOwnApp(page, (route) => route.fulfill(ok(200, { webhookUrl: WEBHOOK_URL, verifyToken: VERIFY_TOKEN, partnerBusinessId: null })));
+  await fillOwnApp(page);
+  await page.getByRole("button", { name: "Connect number" }).click();
+  await expect(page.getByText("Enter the WhatsApp Business Account ID: digits only.")).toBeVisible();
+  // Nothing claims a connection that the API did not confirm.
+  await expect(page.locator("body")).not.toContainText(/^Connected/m);
+
+  await page.getByRole("button", { name: "Connect number" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Connected" })).toContainText("+91 98765 43210");
+  await expect(page.getByText("Meta accepted the access token for this number.")).toBeVisible();
+  await expect(page.getByText("Waiting for Meta.")).toBeVisible();
+  expect(posted).toMatchObject({ wabaId: "100000000000001", phoneNumberId: "200000000000001", tokenType: "system_user" });
+  expect(posted).not.toHaveProperty("tenantId");
+  // The form is gone and the secrets are nowhere on the page.
+  await expect(page.getByRole("button", { name: "Connect number" })).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("EAAB-e2e-synthetic-token");
+  await expectNoHorizontalOverflow(page);
+});
+
+test("own Meta app: a connection Meta rejected is shown as failed, never as connected", async ({ page }) => {
+  await page.route(/\/api\/whatsapp\/manual/, (route) =>
+    route.fulfill(ok(201, { ...CONNECTION, status: "failed", last_check: { checks: [{ key: "token_permissions", status: "fail", message: "Meta did not accept the access token or the Phone number ID.", checked_at: "x" }] } })),
+  );
+  await openOwnApp(page, (route) => route.fulfill(ok(200, { webhookUrl: WEBHOOK_URL, verifyToken: VERIFY_TOKEN, partnerBusinessId: null })));
+  await fillOwnApp(page);
+  await page.getByRole("button", { name: "Connect number" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Meta didn’t accept these details" })).toBeVisible();
+  await expect(page.getByText("Meta did not accept the access token or the Phone number ID.")).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Connected" })).toHaveCount(0);
+  // The form stays so the customer can fix and retry.
+  await expect(page.getByRole("button", { name: "Connect number" })).toBeVisible();
+});
+
+test("own Meta app: a backend error on connect is shown and nothing is claimed", async ({ page }) => {
+  await page.route(/\/api\/whatsapp\/manual/, (route) => route.fulfill(apiError(502, "upstream_failed", "We couldn’t reach Meta to check these details. Try again in a moment.")));
+  await openOwnApp(page, (route) => route.fulfill(ok(200, { webhookUrl: WEBHOOK_URL, verifyToken: VERIFY_TOKEN, partnerBusinessId: null })));
+  await fillOwnApp(page);
+  await page.getByRole("button", { name: "Connect number" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "couldn’t reach Meta" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect number" })).toBeEnabled();
+});
+
+test("partner access shows Spark Agent's portfolio ID when the API has it, and stays a labelled preview", async ({ page }) => {
+  await page.route(/\/api\/whatsapp\/webhook-config/, (route) => route.fulfill(ok(200, { webhookUrl: WEBHOOK_URL, verifyToken: VERIFY_TOKEN, partnerBusinessId: "123456789012345" })));
+  await openOnboarding(page);
+  await walkTo(page, "WhatsApp");
+  await option(page, "Manual connection").click();
+  await expect(page.getByText("123456789012345", { exact: true })).toBeVisible();
+  await expectPreviewNotice(page);
 });
 
 test("manual partner access fails without IDs, then waits for “hi”", async ({ page }) => {

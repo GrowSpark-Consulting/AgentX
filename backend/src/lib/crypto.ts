@@ -133,6 +133,12 @@ export function connectionSecretContext(parts: {
   return `whatsapp_connections:${column}:${tenantId}:${connectionId}` as SecretContext;
 }
 
+// whatsapp_webhook_tokens.token_enc: one token per business, so the business id identifies the row.
+export function webhookTokenSecretContext(tenantId: string): SecretContext {
+  if (tenantId === "" || tenantId.includes(":")) throw new CryptoError("invalid context part");
+  return `whatsapp_webhook_tokens:token_enc:${tenantId}` as SecretContext;
+}
+
 // google_calendar_connections.refresh_token_enc. A resource has at most one connection, and its id
 // never changes, so the resource id identifies the row (and is known before the row exists).
 export function calendarSecretContext(parts: { tenantId: string; resourceId: string }): SecretContext {

@@ -41,12 +41,13 @@ const db = vi.hoisted(() => {
     contacts: [] as { id: string; tenantId: string; phone: string; name?: string }[],
     conversations: [] as { id: string; tenantId: string; contactId: string; channelId: string; status: string; lastCustomerMsgAt?: string }[],
     messages: [] as Msg[],
+    byoSecrets: {} as Record<string, string>,
     failFind: null as null | Error,
     failStore: null as null | ((args: StoreArgs) => Error | null),
     failStatus: null as null | Error,
     reset() {
       state.connections = []; state.contacts = []; state.conversations = []; state.messages = [];
-      state.failFind = null; state.failStore = null; state.failStatus = null;
+      state.byoSecrets = {}; state.failFind = null; state.failStore = null; state.failStatus = null;
     },
   };
 
@@ -62,6 +63,11 @@ const db = vi.hoisted(() => {
     async findConnections(ids: string[]) {
       if (state.failFind) throw state.failFind;
       return state.connections.filter((c) => ids.includes(c.phoneNumberId));
+    },
+    async findByoSecrets(ids: string[]) {
+      return state.connections
+        .filter((c) => c.method === "manual_byo" && ids.includes(c.phoneNumberId) && state.byoSecrets[c.id] !== undefined)
+        .map((c) => ({ connectionId: c.id, secret: state.byoSecrets[c.id] }));
     },
     async storeInboundMessage(args: StoreArgs) {
       const failure = state.failStore?.(args);
@@ -120,6 +126,7 @@ vi.mock("../channels/whatsapp/inbound-db", () => ({
   WebhookDbError: db.WebhookDbError,
   findConnections: db.findConnections,
   findConnectionsByWaba: db.findConnectionsByWaba,
+  findByoSecrets: db.findByoSecrets,
   templateBelongsToTenant: db.templateBelongsToTenant,
   setTemplateStatus: db.setTemplateStatus,
   updateConnectionHealth: db.updateConnectionHealth,
@@ -569,5 +576,69 @@ describe("what gets logged", () => {
     send.mockRejectedValueOnce(new Error("rejected event for 910000000101"));
     await post(fixture("synthetic-text-message"));
     expect(allLogs()).not.toContain("910000000101");
+  });
+});
+
+describe("a client's own Meta app (manual_byo)", () => {
+  const BYO_SECRET = "synthetic-client-app-secret";
+
+  // The business-A fixture, but the number is a manual_byo connection with its own app secret.
+  const withByoConnection = (secret: string | null = BYO_SECRET) => {
+    db.state.connections.length = 0;
+    const byo = connection({ method: "manual_byo" });
+    db.state.connections.push(byo);
+    if (secret !== null) db.state.byoSecrets[byo.id] = secret;
+    return byo;
+  };
+
+  it("stores and queues a message signed with the connection's own app secret", async () => {
+    withByoConnection();
+    const raw = fixture("synthetic-text-message");
+    const res = await post(raw, { "x-hub-signature-256": sign(raw, BYO_SECRET) });
+    expect(res.status).toBe(200);
+    expect(db.state.messages).toHaveLength(1);
+    expect(db.state.messages[0].tenantId).toBe(TENANT_A);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("is idempotent: the same delivery twice stores one message", async () => {
+    withByoConnection();
+    const raw = fixture("synthetic-text-message");
+    await post(raw, { "x-hub-signature-256": sign(raw, BYO_SECRET) });
+    await post(raw, { "x-hub-signature-256": sign(raw, BYO_SECRET) });
+    expect(db.state.messages).toHaveLength(1);
+  });
+
+  it("refuses a signature made with another secret: 401, nothing stored", async () => {
+    withByoConnection();
+    const raw = fixture("synthetic-text-message");
+    expect((await post(raw, { "x-hub-signature-256": sign(raw, "someone-elses-secret") })).status).toBe(401);
+    expect(db.state.messages).toEqual([]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not serve a manual_byo number on OUR app's signature", async () => {
+    withByoConnection();
+    const raw = fixture("synthetic-text-message");
+    expect((await post(raw)).status).toBe(200); // signed correctly, but the number is not one of ours
+    expect(db.state.messages).toEqual([]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not let one client's secret act for another client's number", async () => {
+    const a = withByoConnection();
+    const b = connection({ tenantId: TENANT_B, channelId: CHANNEL_B, phoneNumberId: PNID_B, wabaId: WABA_B, method: "manual_byo" });
+    db.state.connections.push(b);
+    db.state.byoSecrets[b.id] = "tenant-b-secret";
+    const raw = forTenantB(fixture("synthetic-text-message"));
+    expect((await post(raw, { "x-hub-signature-256": sign(raw, db.state.byoSecrets[a.id]) })).status).toBe(401);
+    expect(db.state.messages).toEqual([]);
+  });
+
+  it("a manual_byo number with no stored secret can never verify", async () => {
+    withByoConnection(null);
+    const raw = fixture("synthetic-text-message");
+    expect((await post(raw, { "x-hub-signature-256": sign(raw, BYO_SECRET) })).status).toBe(401);
+    expect(db.state.messages).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { connectionSecretContext, decryptSecret } from "../../lib/crypto";
 import { supabaseAdmin } from "../../lib/supabase-admin";
 
 // The webhook route's database access: one lookup and two functions from migration 0013. Service role,
@@ -140,4 +141,31 @@ export async function updateConnectionHealth(args: { tenantId: string; connectio
   if (Object.keys(patch).length === 0) return;
   const { error } = await supabaseAdmin().from("whatsapp_connections").update(patch).eq("id", args.connectionId).eq("tenant_id", args.tenantId);
   if (error) throw new WebhookDbError("connection health update", error.code);
+}
+
+/**
+ * App secrets of the manual_byo connections for these phone number ids, decrypted, to check a webhook signature
+ * made with a client's own Meta app. A row that cannot be decrypted is skipped (it can never verify). The ids come
+ * from a body that is not verified yet, so they only choose which secrets to try; nothing else is read from it.
+ */
+export async function findByoSecrets(phoneNumberIds: string[]): Promise<{ connectionId: string; secret: string }[]> {
+  const ids = phoneNumberIds.slice(0, 20);
+  if (ids.length === 0) return [];
+  const { data, error } = await supabaseAdmin()
+    .from("whatsapp_connections")
+    .select("id, tenant_id, app_secret_enc")
+    .eq("method", "manual_byo")
+    .in("phone_number_id", ids);
+  if (error) throw new WebhookDbError("secret lookup", error.code);
+  const found: { connectionId: string; secret: string }[] = [];
+  for (const row of data ?? []) {
+    if (typeof row.app_secret_enc !== "string") continue;
+    try {
+      const context = connectionSecretContext({ column: "app_secret_enc", tenantId: String(row.tenant_id), connectionId: String(row.id) });
+      found.push({ connectionId: String(row.id), secret: decryptSecret(row.app_secret_enc, context) });
+    } catch {
+      // wrong key or tampered value: this connection cannot verify
+    }
+  }
+  return found;
 }

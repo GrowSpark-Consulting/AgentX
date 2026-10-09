@@ -130,6 +130,23 @@ PR, not in this one.
   admin), `not_found` (404, no such business), `conflict` (409, `phoneNumberId` is already connected),
   `upstream_failed` (502, Meta could not be reached).
 
+### Added with the onboarding "own Meta app" flow (not yet reviewed by Shaaz and Raja)
+
+Built for the wizard's "Use my own Meta app" path; they go beyond the admin-only route above and need sign-off.
+
+- `GET /api/whatsapp/webhook-config`, owner or admin, business from the token + `X-Pakka-Tenant`. 200
+  `{ webhookUrl, verifyToken, partnerBusinessId }`. `verifyToken` is this business's own token (created on first
+  call, migration 0020; stored as a SHA-256 plus an encrypted copy). It is never the platform-wide
+  `META_WEBHOOK_VERIFY_TOKEN`. `not_available` (501) while `API_PUBLIC_URL` is unset; `forbidden` for staff.
+- `POST /api/whatsapp/manual`, owner or admin. Same body as `ManualConnectInput` without `tenantId` (the business
+  is the caller's own; a `tenantId` in the body is overwritten). 201 the connection (`manual_byo`, `active` or
+  `failed`, with `last_check`). Same errors as the admin route. Secrets are encrypted and never returned.
+- `POST /api/admin/whatsapp/manual` (platform admin) now exists and shares the same service.
+- Meta's GET handshake accepts the platform token or any business's own verify token. A POST signed with a
+  `manual_byo` connection's own app secret is accepted for that connection's numbers only.
+- `last_check` for a manual connection: `token_permissions` and `number_registered` are checked against the
+  Graph API (UNVERIFIED against a live account); `webhook_subscribed` and the rest are `not_verified`.
+
 ### Recheck and disconnect
 
 - `POST /api/whatsapp/connections/:id/recheck`, no body. Owner or admin of the business that owns the

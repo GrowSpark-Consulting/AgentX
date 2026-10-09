@@ -227,6 +227,12 @@ Moving a custom domain changes its origin: update `NEXT_PUBLIC_API_URL` on Verce
 `NEXT_PUBLIC_APP_URL` / `CORS_ALLOWED_ORIGINS` and `INNGEST_SERVE_ORIGIN` on Railway, the Inngest app
 URL, the Meta callback URL, and Supabase Auth's Site URL and redirect URLs.
 
+Railway also needs `API_PUBLIC_URL` (this API's https origin, no path, e.g. the Railway or custom domain) so the
+onboarding screen can show clients the callback URL for their own Meta app, and optionally
+`META_PARTNER_BUSINESS_ID` (Spark Agent's Business Portfolio ID, digits). Neither is a secret. Without
+`API_PUBLIC_URL` the screen says the address isn't available instead of guessing one. A client's own Meta app
+uses a per-business verify token shown on that screen, not `META_WEBHOOK_VERIFY_TOKEN`.
+
 Meta's webhook check: the Meta app's callback URL is `https://<API host>/api/webhooks/whatsapp`
 (note `/api/`), and its verify token is the Railway environment's `META_WEBHOOK_VERIFY_TOKEN`. Only
 the GET verification exists today; don't subscribe the app to `messages` until the POST handler is
