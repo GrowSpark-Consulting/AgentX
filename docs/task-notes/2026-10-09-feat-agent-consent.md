@@ -2,16 +2,7 @@
 
 Audience: Dev 2 (Shaaz) and Dev 3 (Dhatri).
 
-> **STACKED on `feat/agent-reply` (#68, base `main` since #65 merged). Do not merge before it.** Base tip when this branch was
-> last rebased: `a75a57c` (the reply PR's last commit). After #68 is squash-merged, move this PR onto `main`:
->
-> ```
-> git fetch origin
-> git rebase --onto origin/main a75a57c feat/agent-consent
-> git push --force-with-lease origin feat/agent-consent
-> ```
->
-> then change the PR's base to `main`.
+> **#68 (the reply PR) is merged (9 Oct); this branch was rebased onto `main` and its PR base is `main`.** Nothing else to do before merging.
 
 ## 1. What I built and why
 
