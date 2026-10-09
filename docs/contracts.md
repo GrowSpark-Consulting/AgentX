@@ -478,7 +478,7 @@ Plain lists (leads, conversations, bookings, services) are read directly under R
 | 3 | `NotificationKind`, `SendOutcome`, `NotifyPayload` | Proposed (`test_message` Agreed). **Agreed 8 Oct:** a `failed` outcome keeps the sender's code and carries `retryable` and `outcomeUnknown` | Dev 1 + Dev 2 |
 | 4 | Event payloads: ids only, fixed ids for re-sendable events | Proposed | All |
 | 5 | Read routes vs views (screen-contracts Q1) | Proposed: routes | Dev 2 + Dev 3 |
-| 6 | Prices (screen-contracts Q6) | Handover v1.0 prices, seeded; Raja to confirm | Raja |
+| 6 | Prices (screen-contracts Q6) | Handover v1.0 prices, seeded; Raja to confirm. **Confirmed 9 Oct (Raja):** every automated message is 1 credit, inside or outside the 24-hour window; nudges and the other marketing templates included (`CREDIT_COST`, `features.credit_cost`) | Raja |
 | 7 | Notification matrix, quiet hours, weekly report, retention (Q7) | Proposed: not in v1 | Raja |
 | 8 | `agent_settings` and `last_check` shapes | Open | Dev 1, Dev 3 |
 | 9 | Pack `bookingType` vs `bookingModes` | Open | Raja + Dev 1 |

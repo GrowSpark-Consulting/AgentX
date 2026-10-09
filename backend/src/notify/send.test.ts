@@ -248,6 +248,12 @@ describe("customer messages", () => {
     expect(calls("spend_credits")[0]).toMatchObject({ p_reason: "template_marketing" });
   });
 
+  it("charges a nudge 1 credit inside the window too (Raja, 9 Oct: every automated message is 1)", async () => {
+    const outcome = await send(TENANT, "followup_nudge", { conversationId: CONVERSATION, text: "Still interested?" });
+    expect(outcome).toMatchObject({ status: "sent", usedTemplate: false, creditsCharged: 1 });
+    expect(calls("spend_credits")[0]).toMatchObject({ p_amount: 1, p_reason: "template_marketing" });
+  });
+
   it("uses a template even inside the window when the job gives no free text", async () => {
     const outcome = await send(TENANT, "reminder_24h", { conversationId: CONVERSATION, templateParams: ["4 pm"] });
     expect(outcome).toMatchObject({ status: "sent", usedTemplate: true });

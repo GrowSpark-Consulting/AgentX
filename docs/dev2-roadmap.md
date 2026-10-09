@@ -54,7 +54,7 @@ unless Raja says otherwise.
 | Plans | Starter ₹2,499 / 1,500 cr · Growth ₹5,999 / 5,000 · Pro ₹12,999 / 15,000 | ₹1,999 / 1,000 · ₹4,999 / 3,000 · ₹9,999 / 8,000 |
 | Trial credits | 300 | 150 |
 | Top-ups | 1,000 credits for ₹1,199 (₹1.20 a credit) | 500 / 1,000 / 2,000 at ₹2.40 a credit |
-| Marketing templates | 1 credit | 2 credits |
+| Marketing templates | 1 credit (**confirmed by Raja, 9 Oct**, inside or outside the 24-hour window) | 2 credits |
 | Pro seats | Unlimited (999) | 15 |
 | Auto top-up pack | Not specified | 500 credits for ₹1,199 |
 
