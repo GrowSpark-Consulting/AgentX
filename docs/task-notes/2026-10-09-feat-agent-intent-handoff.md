@@ -76,6 +76,7 @@ Mine (check these):
   migration, `0022`, because `record_opt_out` limited the sources. Numbered 0022 (after the consent PR's 0021, which follows Shaaz's 0019 and 0020); check main for a free number again before merging.
 - **`handoff.opened` has no trigger in its payload**, so the alert job must read the handoff row to pick its wording: for
   `opt_out` Raja wants "Customer opted out. Don't message on WhatsApp unless they write again; a call is safer."
+- **An unclear_exit below 0.5 is ignored (Raja approved, 9 Oct, after the local run).** In the local run a lone "x" was read as `unclear_exit` at 0.3 and the customer got the exit question. `extraction_v2` now says `unclear_exit` is only for a message that suggests leaving (a stray character, a symbol, an emoji alone, "ok", "?" and gibberish are not), and `plan.ts` ignores the reading below `UNCLEAR_EXIT_MIN_CONFIDENCE = 0.5` (a named constant): the message is answered like any other. Tests: "x", "?", "ok" and an emoji alone. The prompt hash in `fingerprints.test.ts` was updated because v2 is not merged yet.
 - **A doubtful opt-out (below 0.8) is never an opt-out.** A wrong opt-out silently cuts a customer off, a question costs one message.
 - **"1" only counts right after the question** (the previous turn's plan case is `exit_unclear`), and only as the whole message.
 - A business can switch the `asked_human` and `complaint` handovers off (`agent_settings.handoffTriggers`); the message is then answered normally.
@@ -83,7 +84,7 @@ Mine (check these):
 
 ## 5. For Dev 2 (Shaaz)
 
-- **Migration `0022_consent_model_intent.sql`** must be on each database before this deploys.
+- **Migration `0022_consent_model_intent.sql`** must be on each database before this deploys (after the consent PR's `0021`).
 - Your `handoff.opened` job: two new triggers need wording, `asked_human` and `complaint` (both high priority), and `opt_out`
   (above). The opt-out handoff stays open until staff resolve it; a later handover in that chat reuses it.
 - No new env var. The extraction prompt is now version 2 (traces say `extraction` version 2); a few hundred more cached tokens per call.
@@ -99,6 +100,8 @@ Mine (check these):
 
 ## 7. Follow-ups
 
+- **Knowledge gap from the reply (Day 3+):** when the reply model says the information is not available (for example "a 4BHK villa in Adyar" matched the Velachery document, and the model honestly said it had no details), record a knowledge gap for it. Today only a search with no match records one.
+- **Migration numbers:** this PR is `0022`, after the consent PR's `0021` (Shaaz's `0019` and `0020` are on main). Check main for the next free number before each merge, and renumber in order.
 - Switch `exit_question` to reply buttons when `sendButtons` exists (Day 3).
 - The six languages Raja marked (Telugu, Kannada, Bengali, Marathi, Gujarati, Punjabi) need a native speaker's check before
   they are final test data.

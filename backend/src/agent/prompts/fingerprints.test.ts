@@ -19,7 +19,7 @@ describe("prompt fingerprints", () => {
 
   it("extraction_v2: the rules, the exit examples and the way a pack's fields are described are unchanged", () => {
     const withFields = buildExtractionSystemV2({ fields: [{ key: "k", label: "L", type: "enum", required: true, options: ["a", "b"] }] });
-    expect(sha(withFields.map((b) => b.text).join("\n---\n"))).toBe("3d8d11436bf6dd1b");
+    expect(sha(withFields.map((b) => b.text).join("\n---\n"))).toBe("9541b84e745187ac");
   });
 
   it("reply_v1: the rules and both tones are unchanged", () => {

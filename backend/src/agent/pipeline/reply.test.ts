@@ -922,6 +922,16 @@ describe("a clear request to stop that the model read (model_intent)", () => {
     expect(w.consentLogs).toEqual([]);
   });
 
+  it.each(["x", "?", "ok", "👍"])("a stray %j that the model doubtfully reads as unclear_exit (below 0.5) is answered like any message: no question, no opt-out, no handover", async (stray) => {
+    const w = world({ messages: [{ id: M1, tenantId: A, conversationId: CONV, direction: "in", sender: "customer", kind: "text", createdAt: at(3), body: stray, meta: {} }], script: ["How can I help you today?"] });
+    const out = await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "unclear_exit", confidence: 0.3, hasQuestion: false }), Date.now(), w.deps);
+    expect(out.case).toBe("nothing_to_look_up");
+    expect(sentText(w)).toBe("How can I help you today?");
+    expect(w.contacts.get(CONTACT)?.optedOut).toBe(false);
+    expect(w.handoffs).toEqual([]);
+    expect(w.consentLogs).toEqual([]);
+  });
+
   it("never lets the words of the customer into a step result or a log", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const out = vi.spyOn(console, "log").mockImplementation(() => {});

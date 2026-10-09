@@ -38,6 +38,12 @@ export const KB_MISSES_FOR_HANDOFF = 2;
  */
 export const OPT_OUT_MIN_CONFIDENCE = 0.8;
 
+/**
+ * An "unclear_exit" reading below this is not believed: a stray character, "ok", "?" or an emoji alone is read that way by a
+ * model that is unsure what a message even is (seen in the local run, 9 Oct: "x" at 0.3). The message is then answered like any other.
+ */
+export const UNCLEAR_EXIT_MIN_CONFIDENCE = 0.5;
+
 export type ReplyPlan =
   | { mode: "model"; action: NextAction; facts: string[]; language: Extraction["language"] | null }
   | { mode: "fixed"; text: FixedTextKey; language: TextLanguage }
@@ -106,7 +112,8 @@ export function planReply(input: PlanInput): Plan {
     return { reply: { mode: "none" }, optOut: { notInterested: summary.notInterested }, kbMisses: 0, case: summary.notInterested ? "opt_out_not_interested" : "opt_out_intent" };
   }
   // Asked once: if the last turn already asked, a second unclear message is answered like any other (never the same question twice).
-  if ((summary.intent === "opt_out" || summary.intent === "unclear_exit") && !input.exitQuestionPending) {
+  const unclear = summary.intent === "opt_out" || (summary.intent === "unclear_exit" && summary.confidence >= UNCLEAR_EXIT_MIN_CONFIDENCE);
+  if (unclear && !input.exitQuestionPending) {
     return { reply: fixed("exit_question", language), kbMisses: carry, case: "exit_unclear" };
   }
   // Wants a person, is unhappy or angry: the chat goes to staff. A business can switch each of these off, and then the

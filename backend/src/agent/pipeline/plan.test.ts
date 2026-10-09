@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fixedText } from "./fixed-texts";
 import { parseReplySettings } from "./persona";
-import { KB_MISSES_FOR_HANDOFF, OPT_OUT_MIN_CONFIDENCE, planReply, type PlanInput } from "./plan";
+import { KB_MISSES_FOR_HANDOFF, OPT_OUT_MIN_CONFIDENCE, planReply, UNCLEAR_EXIT_MIN_CONFIDENCE, type PlanInput } from "./plan";
 import type { Retrieval, UnderstandResult } from "./understand";
 
 // The table of outcomes: what the customer gets for every way the understanding step can end. Every row of the
@@ -214,6 +214,23 @@ describe("understood, and the customer may be leaving but it is not clear how", 
     const result = plan({ ...over, language: "ta-en" });
     expect(result).toEqual({ case: "exit_unclear", reply: { mode: "fixed", text: "exit_question", language: "ta-en" }, kbMisses: 0 });
     expect(result.optOut).toBeUndefined();
+  });
+
+  it("the floor is 0.5: an unclear_exit reading below it is not believed (a stray character, \"ok\", \"?\", an emoji alone)", () => {
+    expect(UNCLEAR_EXIT_MIN_CONFIDENCE).toBe(0.5);
+    for (const confidence of [0, 0.2, 0.3, 0.49]) {
+      const result = planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "unclear_exit", confidence, hasQuestion: false }) }));
+      expect(result.case, String(confidence)).not.toBe("exit_unclear");
+      expect(result.optOut).toBeUndefined();
+      expect(result.handoff).toBeUndefined();
+      expect(result.reply.mode).toBe("model"); // answered like any message with nothing to look up
+    }
+    expect(planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "unclear_exit", confidence: 0.5 }) })).case).toBe("exit_unclear");
+  });
+
+  it("the floor does not weaken the opt-out rules: opt_out below 0.8 is still asked, opt_out at 0.8 is still an opt-out", () => {
+    expect(planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "opt_out", confidence: 0.6 }) })).case).toBe("exit_unclear");
+    expect(planReply(input({ understood: understood({ outcome: "skipped" }, { intent: "opt_out", confidence: 0.8 }) })).optOut).toBeDefined();
   });
 
   it("the line has the STOP hint and the two choices as text until sendButtons exists, and no STOP button", () => {

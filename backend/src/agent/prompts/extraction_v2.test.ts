@@ -149,6 +149,12 @@ describe("version 2: leaving and asking for a person (Raja, 9 Oct)", () => {
     for (const intent of Extraction.shape.intent.options) expect(rules, intent).toContain(`"${intent}"`);
   });
 
+  it("says unclear_exit is only for a message that suggests leaving: a stray character, a symbol, an emoji alone, ok, ? and gibberish are not", () => {
+    expect(rules).toMatch(/only when the message itself suggests/i);
+    for (const word of ["a stray character", "an emoji alone", "\"ok\"", "\"?\"", "gibberish"]) expect(rules, word).toContain(word);
+    expect(rules).toMatch(/NOT "unclear_exit"/);
+  });
+
   it("tells the model how sure it must be for a clear opt-out (0.8) and that it is not a keyword list", () => {
     expect(rules).toContain("0.8");
     expect(examples).toContain("meaning only");
