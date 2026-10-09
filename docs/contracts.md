@@ -170,6 +170,13 @@ otherwise the approved `staff_alert_vN` template: `{{1}}` the one-line headline,
 | `opted_out` | handoff trigger `opt_out` (the customer sent STOP; Dev 1's #69) | "{name} sent STOP, so the assistant won't message them again. Call them if you need to." | `/dashboard/inbox?conversation=<id>` |
 | `visit_outcome` | `post-visit`, after the visit: to the booked staff member if they have an alert number, else owners and admins | "How did the {what} with {name} go? Update the lead so follow-ups stay right." | `/dashboard/inbox?conversation=<id>` |
 | `low_rating` | `post-visit`: the customer rated the visit 1–3; **owners only** | "{name} rated their {what} {n} out of 5." | `/dashboard/inbox?conversation=<id>` |
+| `own_number_outcome` | `own-number-outcome`, 4 h after an own-number takeover: the staff member who took it; with Booked / Follow-up / Lost buttons inside their window | "How did your WhatsApp chat with {name} go? Update the lead." | `/dashboard/inbox?conversation=<id>` |
+
+**`daily_agenda` (built, 9 Oct):** the day's bookings to the owners, free, behind the `daily_agenda` toggle (Growth and
+Pro). Like `staff_alert` it goes to a member's alert number (`staffUserId`): free text inside their window ("Good
+morning! Today at {business}: 2 bookings." then one "• 10:00 am, Site visit with Asha (Priya)" line per booking and the
+calendar link), else the approved `daily_agenda_vN` template with {{1}} how many ("2 bookings"), {{2}} the first one and
+{{3}} the calendar link.
 
 `{name}` is the contact's name, else the masked number (`+9198xxxxxx45`). Every parameter is one line with no
 tabs or runs of spaces (Meta refuses them, 132018); customer and business names are cut to 40 characters.
@@ -242,6 +249,7 @@ passes through in the `failed` outcome. A plain `Error` is unexpected: it is log
 | `tenant_features.settings` of `feedback_request` | `{ "offset_minutes": 120 }`: minutes after the booking's end before the rating question, 0 to 10080; anything else uses 120 | Built: read by `post-visit` |
 | `tenant_features.settings` of `review_request` | `{ "review_url": "https://…" }`: the business's review page (https only). Without it no review link is sent | Proposed: read by `post-visit`; Dev 3's settings screen to edit it |
 | `tenant_features.settings` of `followup_nudges` | `{ "offset_minutes": [120, 1380], "nurture_after_minutes": 2880 }`: minutes after the customer's message for the two nudges and the move to nurture, each 1 to 10080 and in that order; anything else uses the defaults shown | Proposed (decision 18): read by `lead-nudges` |
+| `tenant_features.settings` of `handoff_own_number` | `{ "outcome_after_minutes": 240 }`: minutes after an own-number takeover before the staff member is asked how it went, 1 to 10080; anything else uses 240 | Built: read by `own-number-outcome` |
 | `bookings.details` | Free-form per booking kind (pax, pickup point, package id) | Fixed (handover) |
 | `whatsapp_templates.components` | As submitted: body, examples, header, footer, buttons | Agreed |
 | `tenants.agent_settings` | Persona name, tone, languages, handoff default, scoring overrides | **To define: Dev 1 + Dev 3** |
@@ -371,10 +379,10 @@ sent twice carries a fixed `id` so Inngest drops the duplicate (`tenant.trial_st
 | `kb/document.uploaded` | `{ tenantId, documentId }`; sent by `POST /api/kb/documents` (id `kb_document_uploaded:<documentId>`), starts the `kb-ingest` job |
 | `whatsapp/connected` | `{ tenantId, connectionId }` |
 | `booking.confirmed` | `{ tenantId, bookingId }`; sent by `confirmBooking` and `rescheduleBooking` (id `booking.confirmed:<bookingId>`); starts `booking-reminders` and `post-visit`, and `google-calendar-sync` adds the booking to Google |
-| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run, and its `post-visit` run unless the change is `completed`; `google-calendar-sync` removes its Google event when `cancelled` or `rescheduled` |
+| `booking.changed` | `{ tenantId, bookingId, change: 'rescheduled' \| 'cancelled' \| 'completed' \| 'no_show' }`; sent by `rescheduleBooking` and `cancelBooking` (id `booking.changed:<bookingId>:<change>`); cancels that booking's `booking-reminders` run, and its `post-visit` run unless the change is `completed`; `google-calendar-sync` removes its Google event when `cancelled` or `rescheduled`; `no_show` starts `noshow-rebooking` |
 | `booking.rated` | `{ tenantId, bookingId, rating }` (1–5); sent by `recordVisitRating` when the customer taps a rating (id `booking.rated:<bookingId>`, so the first rating counts); the `post-visit` run waits for it |
 | `handoff.opened` | `{ tenantId, handoffId, conversationId }`; sent by Dev 1's reply step when it opens a handoff (id `handoff_opened:<handoffId>`); starts `handoff-alert`, which sends one `staff_alert` to each owner and admin with an alert number (section 2). A handoff already resolved by the time the job runs gets no alert. **The job is the only sender of handoff alerts:** the reply step does not alert staff itself. Also starts `handoff-sla`: after the SLA (section 3) it alerts the owners again (`handoff_waiting`) unless someone has the chat: the handoff was picked up, assigned or resolved, a staff member took the chat over, or it is no longer in `human` mode (back with the AI, or on the business's own number) |
-| `handoff.own_number` | `{ tenantId, handoffId }` |
+| `handoff.own_number` | `{ tenantId, handoffId }`; to be sent by Dev 1's own-number takeover; starts `own-number-outcome` |
 | `tenant.trial_started` | `{ tenantId }` |
 | `credits.spent` | `{ tenantId, amount, reason, balanceAfter }` |
 
@@ -419,6 +427,26 @@ marker), the customer has not written since, the chat is still with the assistan
 still `new`, `engaged` or `qualified`. Anything else ends the follow-up. Still quiet at `nurture_after_minutes` (48 h),
 the lead moves to `nurture` (only from those stages; audited as `lead.stage_changed`). Keys
 `followup_nudge:<messageId>:<1|2>`.
+
+**No-show rebooking (`noshow-rebooking`, built 9 Oct).** `booking.changed` with `no_show` → if the booking is still
+marked no-show, the customer gets "Sorry we missed you for your {what} with {business}. Would you like to pick a new
+time?" (`noshow_rebooking`, 1 credit) with one button, the reminders' `booking:<bookingId>:reschedule`, so the pipeline
+answers it the same way; outside the window the `noshow_rebook_vN` template with {{1}} what and {{2}} the business. Key
+`noshow_rebooking:<bookingId>`. No-shows are marked by the booking action routes (Day 5).
+
+**Daily agenda (`daily-agenda`, built 9 Oct).** A cron every 15 minutes: each live business (trial or active) where it
+is now 8:00–8:14 in its own time zone, with `daily_agenda` on, gets today's confirmed bookings (its local day) sent to
+each owner with an alert number (`daily_agenda`, free). A day without bookings sends nothing. Key
+`daily_agenda:<business>:<owner>:<local date>`, so one a day whatever retries do.
+
+**Own-number outcome (`own-number-outcome`, built 9 Oct).** `handoff.own_number` → after `outcome_after_minutes` (4 h)
+the staff member who took the chat (`handoffs.assigned_user_id`) is asked how it went (`staff_alert`
+`own_number_outcome`): inside their window with buttons `outcome:<handoffId>:booked|follow_up|lost`, outside it the
+staff_alert template (the question and the chat's link). A handoff that already has an outcome is not asked about.
+**For Dev 1:** a staff member's tap arrives from their staff-tagged contact; `parseOutcomeButton(buttonId)` gives
+`{ handoffId, outcome }` and `recordHandoffOutcome(tenantId, handoffId, outcome, actor)` (`backend/src/leads/
+own-number-outcome.ts`) saves the first answer on the handoff (and resolves it), moves the lead to `booked` or `lost`
+(follow-up leaves it) and audits it. The own-number takeover itself, and sending `handoff.own_number`, are Dev 1's.
 
 **The message pipeline (`process-message`, built: steps 2 and 3).** One conversation at a time (concurrency key
 `conversationId`); messages from one conversation within 3 seconds (never longer than 15) start one run. A debounce keeps
