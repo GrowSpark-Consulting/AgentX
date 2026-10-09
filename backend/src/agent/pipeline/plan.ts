@@ -90,6 +90,15 @@ export function planReply(input: PlanInput): Plan {
   const language = textLanguage(understood.status === "understood" ? understood.summary.language : null, input.contactLanguage);
   const carry = previousMisses;
 
+  // The customer answered our question: they tapped Talk to the team, or (if the buttons were refused and the plain text went)
+  // sent "1". A person takes over. Checked before anything else, even when the message could not be understood (the model down,
+  // a bad answer, no time left): the model's reading of a tap or a bare "1" is not under our control, and the customer must not
+  // be asked twice or opted out after choosing the team. A tap is the customer's own choice at any time; a bare "1" only counts
+  // right after the question.
+  if (settings.askedHumanHandoffEnabled && (input.talkButtonTapped || (input.exitQuestionPending && input.customerSaidOne))) {
+    return { reply: fixed("handoff", language), handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0, case: "exit_question_talk" };
+  }
+
   if (input.deadlineExceeded) return { reply: fixed("fallback", language), kbMisses: carry, case: "deadline" };
 
   switch (understood.status) {
@@ -104,13 +113,6 @@ export function planReply(input: PlanInput): Plan {
   }
 
   const { summary, retrieval } = understood;
-  // The customer answered our question: they tapped Talk to the team, or (if the buttons were refused and the plain text went)
-  // sent "1". A person takes over. Checked first: the model's reading of a tap or a bare "1" is not under our control, and the
-  // customer must not be asked twice or opted out after choosing the team. A tap is the customer's own choice at any time;
-  // a bare "1" only counts right after the question.
-  if (settings.askedHumanHandoffEnabled && (input.talkButtonTapped || (input.exitQuestionPending && input.customerSaidOne))) {
-    return { reply: fixed("handoff", language), handoff: { trigger: "asked_human", priority: "high" }, kbMisses: 0, case: "exit_question_talk" };
-  }
   // Leaving, or not sure how (Raja, 9 Oct). Code decides; the model only reported the intent and how sure it was.
   if (summary.intent === "opt_out" && summary.confidence >= OPT_OUT_MIN_CONFIDENCE) {
     return { reply: { mode: "none" }, optOut: { notInterested: summary.notInterested }, kbMisses: 0, case: summary.notInterested ? "opt_out_not_interested" : "opt_out_intent" };

@@ -1003,6 +1003,33 @@ describe("the exit question as two reply buttons", () => {
     expect(w.handoffs).toEqual([expect.objectContaining({ trigger: "asked_human", priority: "high" })]);
   });
 
+  it("a tap on Talk to the team reaches a person even if the language model is down", async () => {
+    const w = world({ messages: [tap(M1, 3, "exit:talk", "Talk to the team")] });
+    const out = await replyTurn(runner().step, w.turn, { status: "model_unavailable" }, Date.now(), w.deps);
+    expect(out.case).toBe("exit_question_talk");
+    expect(out.handoff).toMatchObject({ trigger: "asked_human", switched: true });
+    expect(w.complete).not.toHaveBeenCalled();
+  });
+
+  it("carries the privacy notice once on the first question: in the buttons' text, and in the plain text if they were refused", async () => {
+    const on = { agentSettings: { privacyNotice: true }, consentAt: null } as const;
+    const w = world({ ...on });
+    await replyTurn(runner().step, w.turn, unclear(), Date.now(), w.deps);
+    const body = (w.send.mock.calls[0][2].interactive as { body: string }).body;
+    expect(body).toBe(`${fixedText("exit_prompt", "en")}
+
+${consentNotice("en", PRIVACY_URL)}`);
+    expect(w.consentLogs).toHaveLength(1);
+
+    const refused: SendOutcome = { status: "failed", error: { code: "validation_failed", message: "x", retryable: false, outcomeUnknown: false } };
+    const f = world({ ...on, send: (n) => (n === 1 ? refused : SENT) });
+    await replyTurn(runner().step, f.turn, unclear(), Date.now(), f.deps);
+    expect(f.send.mock.calls[1][2].text).toBe(`${fixedText("exit_question", "en")}
+
+${consentNotice("en", PRIVACY_URL)}`);
+    expect(f.consentLogs).toHaveLength(1); // logged once, for the one message that went
+  });
+
   it("a tap on Continue goes on as normal: no handover, answered like any message", async () => {
     const w = world({ messages: [tap(M1, 3, "exit:continue", "Continue")] });
     await replyTurn(runner().step, w.turn, understood({ outcome: "skipped" }, { intent: "greeting", hasQuestion: false }), Date.now(), w.deps);

@@ -257,6 +257,20 @@ describe("understood, and the customer may be leaving but it is not clear how", 
     }
   });
 
+  it("a tap on Talk to the team is a handover even when the message could not be understood: the model down, the answer invalid, no pack, the turn out of time", () => {
+    const cases: Partial<PlanInput>[] = [
+      { understood: { status: "model_unavailable" } },
+      { understood: { status: "fallback", reason: "invalid_output" } },
+      { understood: { status: "fallback", reason: "model_declined" } },
+      { understood: { status: "no_pack" } },
+      { deadlineExceeded: true },
+    ];
+    for (const over of cases) {
+      const result = planReply(input({ ...over, talkButtonTapped: true, contactLanguage: "hi" }));
+      expect(result, JSON.stringify(over)).toMatchObject({ case: "exit_question_talk", handoff: { trigger: "asked_human", priority: "high" }, reply: { mode: "fixed", text: "handoff", language: over.deadlineExceeded ? "en" : "hi" } }); // (an understood message keeps its own language)
+    }
+  });
+
   it("a tap on the button is not a handover when the business switched asked_human off (the question had no button then)", () => {
     const settings = parseReplySettings({ handoffTriggers: [{ key: "asked_human", enabled: false }] });
     expect(planReply(input({ understood: understood(found), talkButtonTapped: true, settings })).case).toBe("answered_from_kb");
