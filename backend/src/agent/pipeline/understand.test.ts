@@ -258,6 +258,35 @@ describe("the details kept on the lead", () => {
     expect(w.messages.get(M1)?.meta?.agent).toMatchObject({ extraction: { intent: "unclear_exit", fields: {}, question: null } });
   });
 
+  describe("an unclear_exit the model is not sure of (below 0.5) is read as what the message otherwise is", () => {
+    it("keeps a question and the details given with it: nothing is lost, and the knowledge base is searched", async () => {
+      const w = world({ script: [good({ intent: "unclear_exit", confidence: 0.4 })] });
+      const result = await understandTurn(runner().step, w.turn, w.deps);
+      expect(result).toMatchObject({ status: "understood", summary: { intent: "question" }, retrieval: { outcome: "found" } });
+      expect(w.retrieve).toHaveBeenCalledOnce();
+      expect(w.leads.get(LEAD)?.fields).toMatchObject({ area: "Velachery" });
+      expect(w.leads.get(LEAD)?.stage).toBe("engaged");
+    });
+
+    it("keeps details given without a question as details (give_details)", async () => {
+      const w = world({ script: [good({ intent: "unclear_exit", confidence: 0.3, question: null })] });
+      expect(await understandTurn(runner().step, w.turn, w.deps)).toMatchObject({ summary: { intent: "give_details" }, retrieval: { outcome: "skipped" } });
+      expect(w.leads.get(LEAD)?.fields).toMatchObject({ area: "Velachery" });
+    });
+
+    it("a stray character with nothing in it is a greeting (nothing to look up, nothing kept)", async () => {
+      const w = world({ script: [good({ intent: "unclear_exit", confidence: 0.3, question: null, fields: {} })] });
+      expect(await understandTurn(runner().step, w.turn, w.deps)).toMatchObject({ summary: { intent: "greeting", hasQuestion: false, fieldKeys: [] } });
+      expect(w.retrieve).not.toHaveBeenCalled();
+    });
+
+    it("at 0.5 and above it is still an unclear_exit: no details, no question kept", async () => {
+      const w = world({ script: [good({ intent: "unclear_exit", confidence: 0.5 })] });
+      expect(await understandTurn(runner().step, w.turn, w.deps)).toMatchObject({ summary: { intent: "unclear_exit", fieldKeys: [], hasQuestion: false } });
+      expect(w.leads.get(LEAD)?.fields).toEqual({});
+    });
+  });
+
   it("reports notInterested only with an opt-out (a model that sets it on another intent is not believed)", async () => {
     const optOut = world({ script: [good({ intent: "opt_out", notInterested: true, question: null, fields: {} })] });
     expect(await understandTurn(runner().step, optOut.turn, optOut.deps)).toMatchObject({ summary: { intent: "opt_out", notInterested: true } });

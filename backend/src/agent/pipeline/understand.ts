@@ -6,6 +6,7 @@ import { LlmError } from "../llm/anthropic";
 import { PackError, resolvePack } from "../packs/load";
 import { buildExtractionMessages, buildExtractionSystem, EXTRACTION_PROMPT } from "../prompts/extraction_v2";
 import { interpretExtraction } from "./extraction";
+import { UNCLEAR_EXIT_MIN_CONFIDENCE } from "./plan";
 import type { StepRunner, TurnContext } from "./process-message";
 import type { PipelineStore } from "./store";
 
@@ -103,6 +104,15 @@ async function loadTurnPack(turn: TurnContext, deps: UnderstandDeps) {
   }
 }
 
+/** What the model reported, with a doubtful unclear_exit replaced by what the message otherwise is, and a leaving customer's words dropped. */
+function leavingReading(extraction: Extraction): Extraction {
+  if (extraction.intent === "unclear_exit" && extraction.confidence < UNCLEAR_EXIT_MIN_CONFIDENCE) {
+    const intent = extraction.question !== null ? "question" : Object.keys(extraction.fields).length > 0 ? "give_details" : "greeting";
+    return { ...extraction, intent };
+  }
+  return LEAVING_INTENTS.has(extraction.intent) ? { ...extraction, fields: {}, question: null } : extraction;
+}
+
 const summarise = (extraction: Extraction): ExtractionSummary => ({
   intent: extraction.intent,
   language: extraction.language,
@@ -195,8 +205,10 @@ export async function understandTurn(step: StepRunner, turn: TurnContext, deps: 
       const interpreted = interpretExtraction(text, loaded.fieldSchema);
       if (interpreted.ok) {
         const { dropped } = interpreted;
-        // A customer who is leaving: what they said is not kept as details or as a question to look up.
-        const extraction = LEAVING_INTENTS.has(interpreted.extraction.intent) ? { ...interpreted.extraction, fields: {}, question: null } : interpreted.extraction;
+        // A customer who is leaving: what they said is not kept as details or as a question to look up. An unclear_exit the
+        // model is not sure of (a stray character, "ok", "?") is read as what the message otherwise is, so a real question or
+        // details typed with it are not lost (plan.ts then answers it like any message).
+        const extraction = leavingReading(interpreted.extraction);
         await persist({ extraction, droppedFields: dropped, extractionFailed: null });
         return { outcome: "ok", summary: summarise(extraction) };
       }

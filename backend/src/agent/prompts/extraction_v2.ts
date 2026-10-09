@@ -43,7 +43,7 @@ Reply with one JSON object and nothing else: no prose, no explanation, no markdo
 - "sentiment": one of "positive", "neutral", "negative", "angry".
 - "notInterested": true only when the intent is "opt_out" and the customer says they have no interest in the business's offer; otherwise false.
 - "asksIfHuman": true only if the customer asks whether they are talking to a bot, an AI or a real person; otherwise false.
-- "confidence": a number from 0 to 1: how sure you are of the intent and the fields together. For "opt_out" and "unclear_exit" use 0.8 or more only when the customer clearly and unmistakably asks to stop; below 0.8 whenever it could also be a pause, a complaint or a request for a person. Use a low number when the message is unclear, very short or in a language you read poorly.
+- "confidence": a number from 0 to 1: how sure you are of the intent and the fields together. For "opt_out" use 0.8 or more only when the customer clearly and unmistakably asks to stop; below 0.8 whenever it could also be a pause, a complaint or a request for a person. For "unclear_exit" use 0.5 to 0.79 when the message really does sound like leaving, and below 0.5 when you are not even sure it is about leaving. Use a low number when the message is unclear, very short or in a language you read poorly.
 
 READING THE MESSAGE
 - Customers write casually: short forms, spelling mistakes, Tanglish, emojis. Read for meaning. "rate enna", "price evlo", "kitna hai" are all questions about price.

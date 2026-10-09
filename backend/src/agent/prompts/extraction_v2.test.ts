@@ -157,6 +157,7 @@ describe("version 2: leaving and asking for a person (Raja, 9 Oct)", () => {
 
   it("tells the model how sure it must be for a clear opt-out (0.8) and that it is not a keyword list", () => {
     expect(rules).toContain("0.8");
+    expect(rules).toMatch(/"unclear_exit" use 0.5 to 0.79/);
     expect(examples).toContain("meaning only");
     expect(examples).toContain("Read other wordings and spellings the same way");
   });
