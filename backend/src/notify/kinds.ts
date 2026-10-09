@@ -4,7 +4,7 @@ import type { FeatureKey } from "../billing/credit-costs";
 export type MessageCreditReason = "ai_reply" | "template_utility" | "template_marketing";
 
 // What each kind of outbound message is (docs/contracts.md, section 2 NotificationKind). Staff-facing
-// kinds (staff_alert, lead_card, daily_agenda) arrive with their jobs.
+// kinds: staff_alert and daily_agenda are built; lead_card arrives with Dev 1's lead card.
 export type NotificationKind =
   | "ai_reply"
   | "staff_reply"
@@ -17,7 +17,8 @@ export type NotificationKind =
   | "feedback_request"
   | "review_request"
   | "system_notice"
-  | "staff_alert";
+  | "staff_alert"
+  | "daily_agenda";
 
 export type KindConfig = {
   /** isEnabled gate; kinds without one are always allowed. */
@@ -61,4 +62,5 @@ export const KINDS: Record<NotificationKind, KindConfig> = {
   // To a staff member's own WhatsApp: free, behind the staff_alerts toggle; outside their 24-hour window the
   // approved staff_alert_vN template ({{1}} what happened, {{2}} the link).
   staff_alert: { feature: "staff_alerts", charged: false, template: "staff_alert", sender: "system", audience: "staff" },
+  daily_agenda: { feature: "daily_agenda", charged: false, template: "daily_agenda", sender: "system", audience: "staff" },
 };
